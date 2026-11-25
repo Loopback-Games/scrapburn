@@ -22,9 +22,15 @@ benchmarked offscreen:
 just bench --adapter integrated --offscreen --screenshot shot.png
 ```
 
+Quality: `--preset low|medium|high` (Low renders the 3D scene at 75% for integrated GPUs).
+
 Controls: W/S or triggers to drive and brake, A/D or left stick to steer, Space/Shift or a
-bumper to hop and drift (hold through a turn, release for a boost), R or B to respawn,
-F3 or Select for the frame graph, Esc to quit.
+bumper to hop and drift. While drifting, steer into the turn to tighten the arc (and charge
+faster) or away to widen it; release for a boost — blue, orange, then purple sparks mark the
+three tiers. Orange pads on the straights boost you too; sand slows you down. R or B respawns,
+F3 or Select shows the frame graph, Esc quits. Your best lap is saved and replays as a ghost.
+
+![Desert loop](docs/media/m1b-24.jpg)
 
 Linux builds need libudev headers (`libudev-dev` / `systemd-devel`, or Homebrew `systemd`).
 
