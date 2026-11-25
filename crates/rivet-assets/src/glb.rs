@@ -317,7 +317,7 @@ pub fn parse_glb(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
                 let count = pos.len() / 3;
                 let nrm = match attrs.get("NORMAL").and_then(Value::as_u64) {
                     Some(i) => doc.floats(i as usize, 3)?,
-                    None => vec![0.0, 1.0, 0.0].repeat(count),
+                    None => [0.0, 1.0, 0.0].repeat(count),
                 };
                 let uv = match attrs.get("TEXCOORD_0").and_then(Value::as_u64) {
                     Some(i) => doc.floats(i as usize, 2)?,
@@ -403,7 +403,7 @@ mod tests {
             "buffers": [{"byteLength": bin.len()}]
         });
         let mut js = serde_json::to_vec(&json).unwrap();
-        while js.len() % 4 != 0 {
+        while !js.len().is_multiple_of(4) {
             js.push(b' ');
         }
         let total = 12 + 8 + js.len() + 8 + bin.len();
