@@ -1,2 +1,4 @@
 /target
 /.superpowers
+/assets/models/tripo/**/*.json
+/assets/models/tripo/**/*.log

@@ -107,7 +107,7 @@ mod tests {
         std::fs::create_dir_all(root.join("assets/textures")).unwrap();
         std::fs::create_dir_all(&deep).unwrap();
         assert_eq!(
-            find_assets_dir_from(&[deep.clone()]),
+            find_assets_dir_from(std::slice::from_ref(&deep)),
             Some(root.join("assets"))
         );
         assert_eq!(find_assets_dir_from(&[std::path::PathBuf::from("/")]), None);
