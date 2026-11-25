@@ -7,8 +7,10 @@ pub mod bench;
 pub mod camera;
 pub mod controls;
 pub mod laps;
+pub mod materials;
 pub mod png;
 pub mod style;
+pub mod terrain;
 pub mod track;
 
 /// Fixed simulation tick.

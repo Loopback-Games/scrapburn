@@ -1,7 +1,7 @@
 //! Command-line arguments.
 
 pub use rivet_platform::AdapterPreference;
-pub use rivet_render::PresentChoice;
+pub use rivet_render::{PresentChoice, Preset};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Args {
@@ -15,10 +15,11 @@ pub struct Args {
     pub offscreen: bool,
     /// Write the last offscreen bench frame here as PNG.
     pub screenshot: Option<std::path::PathBuf>,
+    pub preset: Preset,
 }
 
 pub const USAGE: &str = "usage: nailrunners [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -32,6 +33,7 @@ pub fn parse(
     let mut bench = None;
     let mut offscreen = false;
     let mut screenshot = None;
+    let mut preset = Preset::Medium;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -63,6 +65,7 @@ pub fn parse(
                 );
             }
             "--offscreen" => offscreen = true,
+            "--preset" => preset = value()?.parse()?,
             "--screenshot" => screenshot = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
@@ -88,6 +91,7 @@ pub fn parse(
         bench,
         offscreen,
         screenshot,
+        preset,
     })
 }
 
@@ -159,6 +163,16 @@ mod tests {
                 .unwrap_err()
                 .contains("--offscreen")
         );
+    }
+
+    #[test]
+    fn args_preset() {
+        assert_eq!(parse_strs(&[], None).unwrap().preset, Preset::Medium);
+        assert_eq!(
+            parse_strs(&["--preset", "low"], None).unwrap().preset,
+            Preset::Low
+        );
+        assert!(parse_strs(&["--preset", "potato"], None).is_err());
     }
 
     #[test]

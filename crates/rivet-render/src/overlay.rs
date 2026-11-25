@@ -26,7 +26,7 @@ impl Overlay {
     pub fn new(
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
-        depth_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!("overlay.wgsl"));
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -61,8 +61,8 @@ impl Overlay {
                 compilation_options: Default::default(),
             },
             primitive: Default::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: depth_format,
+            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+                format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),

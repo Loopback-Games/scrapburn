@@ -64,6 +64,19 @@ impl ChaseCamera {
         self.fov
     }
 
+    pub fn view(&self) -> Mat4 {
+        glam::camera::rh::view::look_at_mat4(self.pos, self.target, Vec3::Y)
+    }
+
+    pub fn proj(&self, aspect: f32) -> Mat4 {
+        glam::camera::rh::proj::directx::perspective(
+            self.fov.to_radians(),
+            aspect.max(0.01),
+            0.1,
+            3000.0,
+        )
+    }
+
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         let proj = glam::camera::rh::proj::directx::perspective(
             self.fov.to_radians(),

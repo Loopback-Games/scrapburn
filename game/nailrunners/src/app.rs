@@ -12,14 +12,15 @@ use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
 use nailrunners::controls::{HopLatch, SteerRamp, actions, drive_input};
 use nailrunners::laps::{LapEvent, LapTracker};
+use nailrunners::materials::{find_assets_dir, load_layers, shading};
 use nailrunners::track::{Track, build_graybox_loop};
 use nailrunners::{MAX_STEPS, TICK_DT};
 use rivet_core::{FixedTimestep, FrameStats};
 use rivet_physics::{DriveInput, VehicleParams, VehicleState, step};
 use rivet_platform::{Gamepads, KeyInput};
 use rivet_render::{
-    CameraUniform, DEPTH_FORMAT, GpuContext, GpuMesh, GpuTimer, MeshData, MeshPipeline, Overlay,
-    box_mesh, draw_frame_graph,
+    Draw, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay, SceneRenderer, View, box_mesh,
+    draw_frame_graph,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -57,10 +58,10 @@ struct App {
 struct Game {
     window: Arc<Window>,
     ctx: GpuContext,
-    meshes: MeshPipeline,
+    scene: SceneRenderer,
     overlay: Overlay,
     timer: Option<GpuTimer>,
-    track_mesh: GpuMesh,
+    track_meshes: [GpuMesh; 3],
     kart_mesh: GpuMesh,
     track: Track,
     params: VehicleParams,
@@ -130,21 +131,33 @@ impl Game {
                 .context("creating the window")?,
         );
         let ctx = GpuContext::new(window.clone(), &args.adapter, args.present, args.offscreen)?;
-        let meshes = MeshPipeline::new(&ctx.device, ctx.format(), DEPTH_FORMAT);
-        let overlay = Overlay::new(&ctx.device, ctx.format(), DEPTH_FORMAT);
+        let assets =
+            find_assets_dir().context("could not find the assets directory (set RIVET_ASSETS)")?;
+        let layers = load_layers(&assets).context("loading material textures")?;
+        let scene = SceneRenderer::new(
+            &ctx.device,
+            &ctx.queue,
+            ctx.format(),
+            ctx.size(),
+            args.preset,
+            &layers,
+            &shading(),
+        );
+        let overlay = Overlay::new(&ctx.device, ctx.format(), None);
         let timer = GpuTimer::new(&ctx.device, &ctx.queue);
         let track = build_graybox_loop();
-        let track_mesh = GpuMesh::new(&ctx.device, &track.render);
+        let track_meshes =
+            [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
         let kart_mesh = GpuMesh::new(&ctx.device, &kart_mesh());
         let spawn = VehicleState::spawn(track.spawn.0 + Vec3::Y * SPAWN_LIFT, track.spawn.1);
         let laps = LapTracker::new(track.checkpoints.len());
         Ok(Self {
             window,
             ctx,
-            meshes,
+            scene,
             overlay,
             timer,
-            track_mesh,
+            track_meshes,
             kart_mesh,
             track,
             params: VehicleParams::default(),
@@ -292,16 +305,15 @@ impl Game {
         let (pos, rot) = VehicleState::lerp(&self.prev, &self.cur, self.clock.alpha());
         self.camera.update(pos, rot, self.cur.speed(), frame_dt);
         let (w, h) = self.ctx.size();
-        let vp = self.camera.view_proj(w as f32 / h as f32);
-        let cam = CameraUniform::new(vp, self.camera.position());
         let kart =
             Mat4::from_rotation_translation(rot, pos) * Mat4::from_translation(Vec3::Y * 0.05);
-        self.meshes.prepare(
-            &self.ctx.device,
-            &self.ctx.queue,
-            &cam,
-            &[Mat4::IDENTITY, kart],
-        );
+        let view = View {
+            view: self.camera.view(),
+            proj: self.camera.proj(w as f32 / h as f32),
+            eye: self.camera.position(),
+            focus: pos,
+            time: self.sim_time as f32,
+        };
         self.hud(w as f32, h as f32);
         self.overlay
             .prepare(&self.ctx.device, &self.ctx.queue, w, h);
@@ -310,38 +322,54 @@ impl Game {
             return;
         };
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        let draws = [
+            Draw {
+                mesh: &self.track_meshes[0],
+                model: Mat4::IDENTITY,
+                casts_shadow: true,
+            },
+            Draw {
+                mesh: &self.track_meshes[1],
+                model: Mat4::IDENTITY,
+                casts_shadow: true,
+            },
+            Draw {
+                mesh: &self.track_meshes[2],
+                model: Mat4::IDENTITY,
+                casts_shadow: true,
+            },
+            Draw {
+                mesh: &self.kart_mesh,
+                model: kart,
+                casts_shadow: true,
+            },
+        ];
+        self.scene.render(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &mut enc,
+            &frame.view,
+            &view,
+            &draws,
+            self.timer.as_mut(),
+        );
         {
-            let fog = cam.fog;
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene"),
+                label: Some("hud"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: fog.x as f64,
-                            g: fog.y as f64,
-                            b: fog.z as f64,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: self.ctx.depth_view(),
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: self.timer.as_mut().and_then(GpuTimer::pass_writes),
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.meshes
-                .draw(&mut pass, &[&self.track_mesh, &self.kart_mesh]);
             self.overlay.draw(&mut pass);
         }
         if let Some(t) = self.timer.as_mut() {
@@ -436,6 +464,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 game.minimized = size.width == 0 || size.height == 0;
                 game.ctx.resize(size.width, size.height);
+                game.scene.resize(&game.ctx.device, game.ctx.size());
             }
             WindowEvent::Focused(false) => game.keys.clear(),
             WindowEvent::KeyboardInput { event, .. } => {

@@ -63,8 +63,8 @@ impl GpuTimer {
         })
     }
 
-    /// Timestamp writes for this frame's pass, or `None` if no slot is free.
-    pub fn pass_writes(&mut self) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+    /// Beginning-of-frame timestamp for the first pass, or `None` if no slot is free.
+    pub fn begin_writes(&mut self) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
         let i = self.next;
         if self.slots[i].state.load(Ordering::Acquire) != IDLE {
             self.current = None;
@@ -75,6 +75,15 @@ impl GpuTimer {
         Some(wgpu::RenderPassTimestampWrites {
             query_set: &self.slots[i].queries,
             beginning_of_pass_write_index: Some(0),
+            end_of_pass_write_index: None,
+        })
+    }
+
+    /// End-of-frame timestamp for the last pass (same slot as `begin_writes`).
+    pub fn end_writes(&self) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        self.current.map(|i| wgpu::RenderPassTimestampWrites {
+            query_set: &self.slots[i].queries,
+            beginning_of_pass_write_index: None,
             end_of_pass_write_index: Some(1),
         })
     }

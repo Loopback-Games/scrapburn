@@ -8,6 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+rivet-assets.workspace = true
 rivet-core.workspace = true
 rivet-platform.workspace = true
 wgpu.workspace = true
