@@ -1,4 +1,4 @@
-//! Picking a GPU adapter. Min-spec-first: `Auto` prefers the integrated GPU.
+//! Picking a GPU adapter. `Auto` prefers the GPU driving a display, then integrated.
 
 use std::fmt;
 use std::str::FromStr;
@@ -6,7 +6,7 @@ use std::str::FromStr;
 /// Which GPU to run on. Parsed from `--adapter` or the `RIVET_ADAPTER` env var.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AdapterPreference {
-    /// Integrated first (the min-spec target), then discrete, then anything.
+    /// The GPU driving a display first, then integrated, discrete, anything (`candidate_order`).
     #[default]
     Auto,
     Integrated,
@@ -69,6 +69,16 @@ pub enum AdapterError {
         wanted: String,
         available: Vec<AdapterDesc>,
     },
+    #[error(
+        "{name} matches {wanted} but cannot present to this window (no monitor on that GPU?); \
+         available adapters:\n{}",
+        list_adapters(.available)
+    )]
+    CannotPresent {
+        name: String,
+        wanted: String,
+        available: Vec<AdapterDesc>,
+    },
 }
 
 fn list_adapters(list: &[AdapterDesc]) -> String {
@@ -110,6 +120,36 @@ pub fn candidate_order(
             .map(|i| vec![i])
             .unwrap_or_default(),
     }
+}
+
+/// Adapters (indices into `all`) to try for a window, best first, keeping only those whose
+/// `presentable[i]` is true. Errors list every adapter, including ones that can't present.
+pub fn window_candidates(
+    all: &[AdapterDesc],
+    presentable: &[bool],
+    pref: &AdapterPreference,
+    display_gpus: &[(u32, u32)],
+) -> Result<Vec<usize>, AdapterError> {
+    let order = candidate_order(all, pref, display_gpus);
+    let usable: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| presentable.get(i) == Some(&true))
+        .collect();
+    if !usable.is_empty() {
+        return Ok(usable);
+    }
+    Err(match order.first() {
+        Some(&i) => AdapterError::CannotPresent {
+            name: all[i].name.clone(),
+            wanted: pref.to_string(),
+            available: all.to_vec(),
+        },
+        None => AdapterError::NoMatch {
+            wanted: pref.to_string(),
+            available: all.to_vec(),
+        },
+    })
 }
 
 /// Returns the index of the adapter to use. Explicit requests never silently fall back.
@@ -225,6 +265,39 @@ mod tests {
         // Explicit requests ignore display hints.
         assert_eq!(
             candidate_order(&l, &AdapterPreference::Integrated, &[(0x10de, 0x2487)]),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn window_candidates_report_all_adapters() {
+        // Only the iGPU can present to this window.
+        let presentable = [false, true, false];
+        let err = window_candidates(&list(), &presentable, &AdapterPreference::Discrete, &[])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("RTX 3060") && msg.contains("cannot present"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("UHD Graphics 730") && msg.contains("llvmpipe"),
+            "{msg}"
+        );
+        let err = window_candidates(
+            &list(),
+            &presentable,
+            &AdapterPreference::NameContains("radeon".into()),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("RTX 3060") && err.contains("llvmpipe"),
+            "{err}"
+        );
+        assert_eq!(
+            window_candidates(&list(), &presentable, &AdapterPreference::Auto, &[]).unwrap(),
             vec![1]
         );
     }

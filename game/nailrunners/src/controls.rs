@@ -64,6 +64,25 @@ pub fn drive_input(keys: &KeyInput, pad: Option<&PadState>) -> DriveInput {
     }
 }
 
+/// Holds a hop press until a sim step consumes it, so presses on frames that run zero sim
+/// steps (common at high refresh rates) aren't lost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HopLatch {
+    pending: bool,
+}
+
+impl HopLatch {
+    /// Call once per rendered frame with this frame's `DriveInput::hop`.
+    pub fn press(&mut self, hop: bool) {
+        self.pending |= hop;
+    }
+
+    /// Call once per sim step; true for exactly one step per press.
+    pub fn take(&mut self) -> bool {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 pub fn actions(keys: &KeyInput, pad: Option<&PadState>) -> Actions {
     let pad_pressed = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
     Actions {
@@ -112,6 +131,15 @@ mod tests {
         let mut k = KeyInput::default();
         k.on_key(KeyCode::KeyD, true);
         assert_eq!(drive_input(&k, Some(&pad)).steer, 1.0);
+    }
+
+    #[test]
+    fn hop_survives_frames_without_sim_steps() {
+        let mut latch = HopLatch::default();
+        latch.press(true); // pressed on a frame that runs 0 sim steps
+        latch.press(false); // next frame, button no longer "just pressed"
+        assert!(latch.take(), "the press must reach the first sim step");
+        assert!(!latch.take(), "and hop only once");
     }
 
     #[test]

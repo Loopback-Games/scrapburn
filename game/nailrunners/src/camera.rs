@@ -7,6 +7,9 @@ const HEIGHT: f32 = 2.6;
 const LOOK_AHEAD: f32 = 3.0;
 const OMEGA: f32 = 8.0;
 const FOV_MIN: f32 = 70.0;
+/// Longest frame the spring integrates; longer hitches just catch up next frames.
+const MAX_FRAME_DT: f32 = 0.1;
+const SPRING_SUBSTEP: f32 = 1.0 / 120.0;
 const FOV_MAX: f32 = 82.0;
 /// Speed at which the FOV reaches its maximum (top speed + tier-2 boost).
 const FOV_FULL_SPEED: f32 = 39.0;
@@ -35,10 +38,16 @@ impl ChaseCamera {
             self.initialized = true;
             return;
         }
-        // Critically damped spring toward the desired position.
-        let accel = (desired - self.pos) * (OMEGA * OMEGA) - self.vel * (2.0 * OMEGA);
-        self.vel += accel * dt;
-        self.pos += self.vel * dt;
+        // Critically damped spring toward the desired position. Explicit Euler is only stable
+        // for small ω·dt, so cap long frames (hitches) and integrate in small substeps.
+        let dt = dt.clamp(0.0, MAX_FRAME_DT);
+        let steps = (dt / SPRING_SUBSTEP).ceil().max(1.0);
+        let h = dt / steps;
+        for _ in 0..steps as u32 {
+            let accel = (desired - self.pos) * (OMEGA * OMEGA) - self.vel * (2.0 * OMEGA);
+            self.vel += accel * h;
+            self.pos += self.vel * h;
+        }
         self.fov += (fov_goal - self.fov) * (1.0 - (-4.0 * dt).exp());
     }
 
@@ -80,6 +89,22 @@ mod tests {
         assert!(
             cam.position().distance(Vec3::new(0.0, 2.6, -7.0)) < 0.2,
             "{}",
+            cam.position()
+        );
+    }
+
+    #[test]
+    fn camera_survives_long_frame() {
+        let mut cam = ChaseCamera::default();
+        for _ in 0..120 {
+            cam.update(Vec3::ZERO, Quat::IDENTITY, 0.0, 1.0 / 60.0);
+        }
+        // The car moved 10 m during a 2 s stall.
+        cam.update(Vec3::new(0.0, 0.0, 10.0), Quat::IDENTITY, 0.0, 2.0);
+        let goal = Vec3::new(0.0, 2.6, 3.0);
+        assert!(
+            cam.position().distance(goal) < 12.0,
+            "camera flung to {}",
             cam.position()
         );
     }

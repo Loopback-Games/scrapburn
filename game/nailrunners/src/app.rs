@@ -10,12 +10,12 @@ use nailrunners::args::Args;
 use nailrunners::autopilot::autopilot;
 use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
-use nailrunners::controls::{actions, drive_input};
+use nailrunners::controls::{HopLatch, actions, drive_input};
 use nailrunners::laps::{LapEvent, LapTracker};
 use nailrunners::track::{Track, build_graybox_loop};
 use nailrunners::{MAX_STEPS, TICK_DT};
 use rivet_core::{FixedTimestep, FrameStats};
-use rivet_physics::{VehicleParams, VehicleState, step};
+use rivet_physics::{DriveInput, VehicleParams, VehicleState, step};
 use rivet_platform::{Gamepads, KeyInput};
 use rivet_render::{
     CameraUniform, DEPTH_FORMAT, GpuContext, GpuMesh, GpuTimer, MeshData, MeshPipeline, Overlay,
@@ -79,6 +79,7 @@ struct Game {
     last_frame: Instant,
     minimized: bool,
     bench: Option<Bench>,
+    hop: HopLatch,
     screenshot: Option<std::path::PathBuf>,
 }
 
@@ -161,6 +162,7 @@ impl Game {
             last_frame: Instant::now(),
             minimized: false,
             bench: args.bench.map(Bench::new),
+            hop: HopLatch::default(),
             screenshot: args.screenshot.clone(),
         })
     }
@@ -194,25 +196,29 @@ impl Game {
         if act.respawn {
             self.respawn();
         }
-        let mut input = if self.bench.is_some() {
+        let input = if self.bench.is_some() {
             autopilot(&self.cur, &self.track.centerline)
         } else {
             drive_input(&self.keys, pad)
         };
         self.keys.end_frame();
+        self.hop.press(input.hop);
 
         // --- Simulation ---
         let steps = self.clock.advance(frame_dt);
         for _ in 0..steps {
             self.prev = self.cur.clone();
+            let tick_input = DriveInput {
+                hop: self.hop.take(),
+                ..input
+            };
             step(
                 &mut self.cur,
                 &self.params,
-                input,
+                tick_input,
                 &self.track.collision,
                 TICK_DT as f32,
             );
-            input.hop = false; // a press hops once, not once per tick
             self.sim_time += TICK_DT;
             if let Some(LapEvent::Lap { time, .. }) = self.laps.update(
                 self.prev.position,

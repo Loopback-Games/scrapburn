@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use rivet_platform::{
-    AdapterDesc, AdapterError, AdapterPreference, candidate_order, select_adapter,
+    AdapterDesc, AdapterError, AdapterPreference, select_adapter, window_candidates,
 };
 use winit::window::Window;
 
@@ -80,6 +80,9 @@ pub struct GpuContext {
     pub timestamps: bool,
     target: Target,
     depth_view: wgpu::TextureView,
+    /// Kept to recreate the surface when it is lost.
+    instance: wgpu::Instance,
+    window: Arc<Window>,
 }
 
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -109,12 +112,16 @@ fn timestamp_features(adapter: &wgpu::Adapter) -> wgpu::Features {
 fn request_device(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("rivet device"),
         required_features: timestamp_features(adapter),
         required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
         ..Default::default()
-    }))
+    }))?;
+    // Runtime validation errors (e.g. a surface that went bad) are logged instead of
+    // panicking; frames that hit one are simply skipped.
+    device.on_uncaptured_error(Arc::new(|e: wgpu::Error| log::error!("wgpu: {e}")));
+    Ok((device, queue))
 }
 
 fn pick(
@@ -161,6 +168,23 @@ fn create_depth(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+/// Configures `surface`, returning false (and logging) instead of panicking on failure.
+fn configure_checked(
+    device: &wgpu::Device,
+    surface: &wgpu::Surface<'static>,
+    config: &wgpu::SurfaceConfiguration,
+) -> bool {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    surface.configure(device, config);
+    match pollster::block_on(scope.pop()) {
+        Some(e) => {
+            log::error!("surface configure failed: {e}");
+            false
+        }
+        None => true,
+    }
 }
 
 /// Creates a device on `adapter` and configures `surface`, catching "can render, can't
@@ -258,22 +282,19 @@ impl GpuContext {
             (adapter, device, queue, target, config)
         } else {
             let surface = instance.create_surface(window.clone())?;
-            let supported: Vec<wgpu::Adapter> = all
-                .into_iter()
-                .filter(|a| a.is_surface_supported(&surface))
-                .collect();
-            let descs: Vec<AdapterDesc> = supported
+            let descs: Vec<AdapterDesc> = all
                 .iter()
                 .map(|a| AdapterDesc::from_info(&a.get_info()))
                 .collect();
-            let order = candidate_order(&descs, pref, &rivet_platform::display_gpus());
-            if order.is_empty() {
-                select_adapter(&descs, pref)?; // produces the descriptive NoMatch error
-            }
+            let presentable: Vec<bool> = all
+                .iter()
+                .map(|a| a.is_surface_supported(&surface))
+                .collect();
+            let order =
+                window_candidates(&descs, &presentable, pref, &rivet_platform::display_gpus())?;
             let mut chosen = None;
             for (n, &i) in order.iter().enumerate() {
-                let adapter = &supported[i];
-                match try_window(adapter, &surface, present, w, h) {
+                match try_window(&all[i], &surface, present, w, h) {
                     Ok((device, queue, config)) => {
                         chosen = Some((i, device, queue, config));
                         break;
@@ -287,10 +308,10 @@ impl GpuContext {
                 }
             }
             let (i, device, queue, config) = chosen.ok_or(RenderError::NoSurfaceFormat)?;
-            let adapter = supported
+            let adapter = all
                 .into_iter()
                 .nth(i)
-                .expect("index from candidate_order");
+                .expect("index from window_candidates");
             let target = Target::Window {
                 surface,
                 needs_reconfigure: false,
@@ -316,6 +337,8 @@ impl GpuContext {
             timestamps,
             target,
             depth_view,
+            instance,
+            window,
         };
         log::info!(
             "present: {}, format {:?}, GPU timestamps: {timestamps}",
@@ -353,7 +376,9 @@ impl GpuContext {
         self.surface_config.width = w;
         self.surface_config.height = h;
         match &mut self.target {
-            Target::Window { surface, .. } => surface.configure(&self.device, &self.surface_config),
+            Target::Window { surface, .. } => {
+                configure_checked(&self.device, surface, &self.surface_config);
+            }
             Target::Offscreen { texture, .. } => *texture = create_offscreen(&self.device, w, h),
         }
         self.depth_view = create_depth(&self.device, w, h);
@@ -381,16 +406,29 @@ impl GpuContext {
                 *needs_reconfigure = true;
                 t
             }
-            C::Outdated | C::Lost => {
-                log::info!("surface outdated/lost; reconfiguring");
-                surface.configure(&self.device, &self.surface_config);
+            C::Outdated => {
+                log::info!("surface outdated; reconfiguring");
+                let size = self.window.inner_size();
+                if size.width > 0 && size.height > 0 {
+                    self.surface_config.width = size.width;
+                    self.surface_config.height = size.height;
+                }
+                configure_checked(&self.device, surface, &self.surface_config);
                 return None;
             }
-            C::Timeout | C::Occluded => return None,
-            C::Validation => {
-                log::error!("surface validation error on acquire");
+            C::Lost => {
+                log::warn!("surface lost; recreating it");
+                match self.instance.create_surface(self.window.clone()) {
+                    Ok(new_surface) => {
+                        *surface = new_surface;
+                        configure_checked(&self.device, surface, &self.surface_config);
+                    }
+                    Err(e) => log::error!("recreating the surface failed: {e}"),
+                }
                 return None;
             }
+            // Validation errors are already reported by the uncaptured-error logger.
+            C::Timeout | C::Occluded | C::Validation => return None,
         };
         let view = texture.texture.create_view(&Default::default());
         Some(Frame {
@@ -474,7 +512,7 @@ impl GpuContext {
             && *needs_reconfigure
         {
             *needs_reconfigure = false;
-            surface.configure(&self.device, &self.surface_config);
+            configure_checked(&self.device, surface, &self.surface_config);
         }
     }
 }
@@ -482,6 +520,27 @@ impl GpuContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runtime wgpu validation errors must be logged, not panic. Needs a GPU.
+    #[test]
+    #[ignore = "needs a GPU; run with RIVET_GPU_TESTS=1 -- --include-ignored"]
+    fn validation_errors_are_logged_not_fatal() {
+        if std::env::var("RIVET_GPU_TESTS").as_deref() != Ok("1") {
+            return;
+        }
+        let (device, _queue, _) = headless_device(&AdapterPreference::Auto).expect("adapter");
+        // MAP_READ | MAP_WRITE together is invalid: a validation error.
+        let _bad = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("invalid on purpose"),
+            size: 16,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE,
+            mapped_at_creation: false,
+        });
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+    }
 
     #[test]
     fn present_choice_parse() {
