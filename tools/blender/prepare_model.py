@@ -1,7 +1,7 @@
-"""Prepare a Tripo kart for the engine: join meshes, decimate to a triangle budget, keep only the
+"""Prepare a Tripo model (kart or prop) for the engine: join meshes, decimate to a triangle budget, keep only the
 base color texture at 1024x1024, export GLB. Run headless:
 
-    flatpak run org.blender.Blender -b --python tools/blender/prepare_kart.py -- IN.glb OUT.glb [TRIS]
+    flatpak run org.blender.Blender -b --python tools/blender/prepare_model.py -- IN.glb OUT.glb [TRIS]
 """
 
 import sys

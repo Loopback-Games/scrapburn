@@ -5,6 +5,7 @@ pub mod args;
 pub mod autopilot;
 pub mod bench;
 pub mod camera;
+pub mod combat;
 pub mod controls;
 pub mod effects;
 pub mod ghost;

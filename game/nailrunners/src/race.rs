@@ -4,6 +4,7 @@ use glam::Vec3;
 use rivet_ai::{BotDriver, RacingLine};
 use rivet_physics::{DriveInput, VehicleParams, VehicleState, collide_karts, step};
 
+use crate::combat::{Combat, CombatEvent};
 use crate::controls::HopLatch;
 use crate::laps::{LapEvent, LapTracker};
 use crate::track::Track;
@@ -47,6 +48,7 @@ pub enum RaceEvent {
         racer: usize,
         place: u32,
     },
+    Combat(CombatEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,6 +83,9 @@ pub struct Race {
     pub player: Option<usize>,
     line: RacingLine,
     finished: u32,
+    pub combat: Combat,
+    /// Items and weapons are on (any race with rivals).
+    pub combat_on: bool,
 }
 
 /// Grid positions behind the start line: two columns, staggered rows, facing forward.
@@ -150,6 +155,8 @@ impl Race {
             player: player.then_some(0),
             line,
             finished: 0,
+            combat: Combat::new(track, count),
+            combat_on: count > 1,
         }
     }
 
@@ -299,7 +306,19 @@ impl Race {
                 collide_karts(&mut ra.state, ra.mass, &mut rb.state, rb.mass, KART_RADIUS);
             }
         }
+        if racing && self.combat_on {
+            let standings = self.standings(track);
+            let ce = self
+                .combat
+                .step(&mut self.racers, &standings, &self.line, dt);
+            events.extend(ce.into_iter().map(RaceEvent::Combat));
+        }
         events
+    }
+
+    /// Racer `i` uses its held item.
+    pub fn fire(&mut self, i: usize) {
+        self.combat.fire(i);
     }
 
     /// Teleports racer `i` to its last checkpoint (player respawn button).

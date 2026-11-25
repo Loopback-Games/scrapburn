@@ -79,6 +79,8 @@ const DODGE_RANGE: f32 = 16.0;
 const DODGE_WIDTH: f32 = 2.4;
 const DODGE_SHIFT: f32 = 3.2;
 const MAX_LANE: f32 = 5.0;
+/// Above this speed a big heading error means brake; below it, turn around under power.
+const SHARP_BRAKE_SPEED: f32 = 10.0;
 
 /// One bot's driving style and short-term state.
 #[derive(Debug, Clone)]
@@ -154,7 +156,10 @@ impl BotDriver {
         let drift = !sharp && (corner || keep);
 
         let top = params.max_speed * self.skill * speed_scale;
-        let throttle = if sharp || speed > top { 0.0 } else { 1.0 };
+        // Off-line at speed: brake. Slow and pointing the wrong way (after a spin-out): drive
+        // forward on full lock to turn around rather than braking, which would reverse.
+        let brake_hard = sharp && speed > SHARP_BRAKE_SPEED;
+        let throttle = if brake_hard || speed > top { 0.0 } else { 1.0 };
         let steer = if drift {
             // Hold the arc to the line: a light bias into the corner plus tracking. Entry needs a
             // committed steer, so the first tick steers at least DRIFT_ENTRY_STEER into the turn.
@@ -169,7 +174,7 @@ impl BotDriver {
         };
         DriveInput {
             throttle,
-            brake: if sharp { 1.0 } else { 0.0 },
+            brake: if brake_hard { 1.0 } else { 0.0 },
             steer,
             drift,
             hop: drift && me.drift.is_none(),
@@ -274,6 +279,21 @@ mod tests {
             "but still racing: {}",
             s.speed()
         );
+    }
+
+    #[test]
+    fn turns_around_when_facing_backwards() {
+        let line = oval();
+        let p = VehicleParams::default();
+        // On the first straight (heading +Z) but facing -Z, nearly stopped (just spun out).
+        let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.45, -40.0), std::f32::consts::PI);
+        s.grounded = true;
+        let input = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0);
+        assert!(
+            input.brake == 0.0 && input.throttle > 0.5,
+            "drive out of it, don't reverse: {input:?}"
+        );
+        assert!(input.steer.abs() > 0.9, "full lock to turn around");
     }
 
     #[test]
