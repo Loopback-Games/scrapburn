@@ -8,6 +8,7 @@ pub mod camera;
 pub mod controls;
 pub mod effects;
 pub mod ghost;
+pub mod hud;
 pub mod kart;
 pub mod laps;
 pub mod materials;

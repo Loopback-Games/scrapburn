@@ -126,11 +126,6 @@ fn kart_mesh() -> MeshData {
     m
 }
 
-fn fmt_time(t: f64) -> String {
-    let m = (t / 60.0).floor();
-    format!("{}:{:06.3}", m as u32, t - m * 60.0)
-}
-
 impl Game {
     fn new(event_loop: &ActiveEventLoop, args: &Args) -> anyhow::Result<Self> {
         let attrs = Window::default_attributes()
@@ -218,7 +213,7 @@ impl Game {
             keys: KeyInput::default(),
             pads: Gamepads::new(),
             stats: FrameStats::new(240),
-            show_graph: true,
+            show_graph: args.bench.is_some(),
             last_frame: Instant::now(),
             minimized: false,
             bench: args.bench.map(Bench::new),
@@ -474,59 +469,28 @@ impl Game {
     }
 
     fn hud(&mut self, w: f32, h: f32) {
-        let o = &mut self.overlay;
+        let info = nailrunners::hud::HudInfo {
+            lap: self.laps.laps() + 1,
+            lap_time: self.sim_time - self.laps.lap_start(),
+            last: self.last_lap,
+            best: self
+                .best_lap
+                .or(self.best_ghost.ghost().map(|g| g.lap_time)),
+            ghost: self.best_ghost.ghost().is_some(),
+        };
+        nailrunners::hud::draw(&mut self.overlay, w, h, &self.cur, &self.params, &info);
         if self.show_graph {
-            draw_frame_graph(o, &self.stats, &self.ctx.adapter_info.name, 16.0, 16.0);
-        }
-        let s = 3.0;
-        let white = [1.0; 4];
-        let kmh = self.cur.speed().abs() * 3.6;
-        let y = h - 110.0;
-        o.rect(10.0, y - 10.0, 330.0, 104.0, [0.0, 0.0, 0.0, 0.45]);
-        o.text(20.0, y, s, white, &format!("{kmh:3.0} KM/H"));
-        let lap_time = self.sim_time - self.laps.lap_start();
-        o.text(
-            20.0,
-            y + 30.0,
-            s,
-            white,
-            &format!("LAP {} {}", self.laps.laps() + 1, fmt_time(lap_time)),
-        );
-        let best = self.best_lap.map_or_else(|| "--".to_string(), fmt_time);
-        let last = self.last_lap.map_or_else(|| "--".to_string(), fmt_time);
-        o.text(
-            20.0,
-            y + 60.0,
-            2.0,
-            white,
-            &format!("LAST {last}  BEST {best}"),
-        );
-        if let Some(d) = self.cur.drift {
-            let tier = self
-                .params
-                .boost_tiers
-                .iter()
-                .filter(|t| d.charge >= t.charge)
-                .count();
-            let color = nailrunners::style::tier_color(tier);
-            o.text(
-                w * 0.5 - 60.0,
-                h - 80.0,
-                4.0,
-                color,
-                &format!("DRIFT {tier}"),
-            );
-        } else if self.cur.boost_timer > 0.0 {
-            o.text(
-                w * 0.5 - 60.0,
-                h - 80.0,
-                4.0,
-                [1.0, 0.85, 0.2, 1.0],
-                "BOOST",
+            draw_frame_graph(
+                &mut self.overlay,
+                &self.stats,
+                &self.ctx.adapter_info.name,
+                16.0,
+                16.0,
             );
         }
         if self.bench.is_some() {
-            o.text(w - 200.0, 16.0, 3.0, [1.0, 0.4, 0.4, 1.0], "BENCH");
+            self.overlay
+                .text(w - 200.0, 16.0, 3.0, [1.0, 0.4, 0.4, 1.0], "BENCH");
         }
     }
 }
