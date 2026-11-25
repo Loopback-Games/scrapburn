@@ -161,6 +161,8 @@ pub struct VehicleState {
     pub boost_speed: f32,
     /// Share of grounded wheels on offroad surfaces last tick (0..1), for effects.
     pub offroad: f32,
+    /// Seconds of spin-out left (hit by a weapon): no control while > 0.
+    pub spin: f32,
 }
 
 impl VehicleState {
@@ -175,7 +177,18 @@ impl VehicleState {
             boost_timer: 0.0,
             boost_speed: 0.0,
             offroad: 0.0,
+            spin: 0.0,
         }
+    }
+
+    /// Knocks the kart into a spin for `secs`, keeping `keep` of its speed. Cancels drift and
+    /// boost.
+    pub fn spin_out(&mut self, secs: f32, keep: f32) {
+        self.spin = self.spin.max(secs);
+        self.velocity *= keep.clamp(0.0, 1.0);
+        self.drift = None;
+        self.boost_timer = 0.0;
+        self.boost_speed = 0.0;
     }
 
     /// Render interpolation between two ticks.
@@ -208,6 +221,10 @@ const MIN_CLEARANCE: f32 = 0.2;
 const GROUND_NORMAL_Y: f32 = 0.7;
 /// Share of damped sideways speed handed back to forward speed.
 const GRIP_REDIRECT: f32 = 0.9;
+/// Yaw rate while spun out (rad/s).
+const SPIN_YAW_RATE: f32 = 9.0;
+/// Bounciness of kart-to-kart hits.
+const KART_RESTITUTION: f32 = 0.3;
 
 fn approach(v: f32, target: f32, rate: f32) -> f32 {
     if v < target {
@@ -226,6 +243,14 @@ pub fn step(
     dt: f32,
 ) {
     let p = params;
+    // Spinning out: the player has no control until it ends.
+    let spinning = state.spin > 0.0;
+    let input = if spinning {
+        DriveInput::default()
+    } else {
+        input
+    };
+    state.spin = (state.spin - dt).max(0.0);
     let throttle = input.throttle.clamp(0.0, 1.0);
     let brake = input.brake.clamp(0.0, 1.0);
     let steer = input.steer.clamp(-1.0, 1.0);
@@ -367,6 +392,9 @@ pub fn step(
     if !state.grounded {
         yaw_rate *= 0.3;
     }
+    if spinning {
+        yaw_rate = SPIN_YAW_RATE;
+    }
     state.angular_yaw = yaw_rate;
     state.rotation = (Quat::from_axis_angle(up, yaw_rate * dt) * state.rotation).normalize();
 
@@ -425,6 +453,32 @@ pub fn step(
     }
 }
 
+/// Resolves overlap and impact between two karts modeled as spheres of `radius`. Masses decide
+/// who gets shoved: momentum is conserved and the lighter kart moves more.
+pub fn collide_karts(
+    a: &mut VehicleState,
+    mass_a: f32,
+    b: &mut VehicleState,
+    mass_b: f32,
+    radius: f32,
+) {
+    let d = b.position - a.position;
+    let dist = d.length();
+    if dist >= 2.0 * radius || dist < 1e-6 {
+        return;
+    }
+    let n = d / dist;
+    let total = mass_a + mass_b;
+    let overlap = 2.0 * radius - dist;
+    a.position -= n * overlap * (mass_b / total);
+    b.position += n * overlap * (mass_a / total);
+    let closing = (b.velocity - a.velocity).dot(n);
+    if closing < 0.0 {
+        let j = -(1.0 + KART_RESTITUTION) * closing / (1.0 / mass_a + 1.0 / mass_b);
+        a.velocity -= n * (j / mass_a);
+        b.velocity += n * (j / mass_b);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,6 +716,70 @@ mod tests {
         }
         let v = s.velocity.length();
         assert!(v > 18.0 && v < 31.0, "speed after glancing hit {v}");
+    }
+
+    #[test]
+    fn spin_out_takes_control_and_scrubs_speed() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        let mut s = with_speed(&w, &p, 30.0);
+        s.spin_out(1.0, 0.7);
+        assert!(
+            s.velocity.length() < 21.5,
+            "hit scrubs speed: {}",
+            s.velocity.length()
+        );
+        let h0 = heading(&s);
+        for _ in 0..30 {
+            step(
+                &mut s,
+                &p,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                &w,
+                DT,
+            );
+        }
+        assert!((heading(&s) - h0).abs() > 1.0, "the kart spins");
+        assert!(s.spin > 0.0);
+        for _ in 0..40 {
+            step(
+                &mut s,
+                &p,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                &w,
+                DT,
+            );
+        }
+        assert_eq!(s.spin, 0.0, "control returns");
+    }
+
+    #[test]
+    fn karts_collide_by_mass() {
+        let mut a = VehicleState::spawn(Vec3::new(0.0, 0.5, 0.0), 0.0);
+        let mut b = VehicleState::spawn(Vec3::new(1.2, 0.5, 0.0), 0.0);
+        a.velocity = Vec3::new(10.0, 0.0, 0.0);
+        let momentum = a.velocity * 400.0 + b.velocity * 250.0;
+        collide_karts(&mut a, 400.0, &mut b, 250.0, 1.0);
+        assert!(a.position.distance(b.position) >= 2.0 - 1e-4, "separated");
+        let after = a.velocity * 400.0 + b.velocity * 250.0;
+        assert!(
+            (after - momentum).length() < 1e-2,
+            "momentum kept: {momentum} vs {after}"
+        );
+        assert!(
+            b.velocity.x > a.velocity.x * 0.9,
+            "heavy kart shoves the light one forward"
+        );
+        assert!(
+            b.position.x - 1.2 > 0.0 && a.position.x < 0.0 + 1e-6,
+            "light kart moved more"
+        );
     }
 
     #[test]

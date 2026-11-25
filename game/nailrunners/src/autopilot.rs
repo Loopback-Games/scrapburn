@@ -1,70 +1,13 @@
-//! Follows the track centerline. Drives bench runs; the seed of the M4 bots.
+//! Bench/demo driving: a skilled `rivet_ai` bot on the track centerline.
 
 use glam::Vec3;
-use rivet_physics::{DriveInput, VehicleState};
+use rivet_ai::{BotDriver, RacingLine};
+use rivet_physics::{DriveInput, VehicleParams, VehicleState};
 
-/// How far ahead along the centerline to aim, in points (~2 m each).
-const LOOK_AHEAD_POINTS: usize = 8;
-const DRIFT_LOOK_AHEAD_POINTS: usize = 16;
-const DRIFT_ENTER_ANGLE: f32 = 0.16;
-const DRIFT_EXIT_ANGLE: f32 = 0.03;
-const DRIFT_MIN_SPEED: f32 = 18.0;
-
-fn nearest(points: &[Vec3], pos: Vec3) -> usize {
-    let mut best = (0, f32::MAX);
-    for (i, p) in points.iter().enumerate() {
-        let d = p.distance_squared(pos);
-        if d < best.1 {
-            best = (i, d);
-        }
-    }
-    best.0
-}
-
-/// Steer toward the centerline point ~15 m ahead, full throttle, brake on sharp heading error.
+/// Drives like a top bot with no lane offset and no traffic.
 pub fn autopilot(state: &VehicleState, centerline: &[Vec3]) -> DriveInput {
-    // The last point repeats the first; skip it so indices wrap cleanly.
-    let pts = &centerline[..centerline.len().saturating_sub(1).max(1)];
-    let i = nearest(pts, state.position);
-    let target = pts[(i + LOOK_AHEAD_POINTS) % pts.len()];
-    let f = state.forward();
-    let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::Z);
-    let d = Vec3::new(
-        target.x - state.position.x,
-        0.0,
-        target.z - state.position.z,
-    )
-    .normalize_or(f);
-    // Positive angle = target to the left (counter-clockwise from above).
-    let angle = f.cross(d).y.atan2(f.dot(d));
-    let sharp = angle.abs() > 0.9;
-    // Drift through real corners at speed: hop in, hold, and let the arc carry it.
-    // Corner detection looks farther ahead than steering does.
-    let far = pts[(i + DRIFT_LOOK_AHEAD_POINTS) % pts.len()];
-    let fd = Vec3::new(far.x - state.position.x, 0.0, far.z - state.position.z).normalize_or(f);
-    // Measure the corner against the direction of travel: mid-drift the nose points inward.
-    let travel = Vec3::new(state.velocity.x, 0.0, state.velocity.z).normalize_or(f);
-    let far_angle = travel.cross(fd).y.atan2(travel.dot(fd));
-    let same_way = far_angle.signum() == angle.signum();
-    let corner = far_angle.abs() > DRIFT_ENTER_ANGLE && same_way && state.speed() > DRIFT_MIN_SPEED;
-    // Hold the drift while the corner still bends the drift's way.
-    let keep = state
-        .drift
-        .is_some_and(|d| -far_angle.signum() == d.dir && far_angle.abs() > DRIFT_EXIT_ANGLE);
-    let drift = !sharp && (corner || keep);
-    DriveInput {
-        throttle: if sharp { 0.0 } else { 1.0 },
-        brake: if sharp { 1.0 } else { 0.0 },
-        steer: if drift {
-            // Commit into the corner (entry needs a real steer), then trim the arc.
-            let into = -far_angle.signum();
-            (into * 0.55 - angle * 3.0).clamp(-1.0, 1.0)
-        } else {
-            (-angle * 2.5).clamp(-1.0, 1.0)
-        },
-        drift,
-        hop: drift && state.drift.is_none(),
-    }
+    let line = RacingLine::new(centerline.to_vec());
+    BotDriver::new(1.0, 0.0).drive(state, &VehicleParams::default(), &line, &[], 1.0)
 }
 
 #[cfg(test)]

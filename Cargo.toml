@@ -16,6 +16,7 @@ rivet-platform = { path = "crates/rivet-platform" }
 rivet-render = { path = "crates/rivet-render" }
 rivet-physics = { path = "crates/rivet-physics" }
 rivet-assets = { path = "crates/rivet-assets" }
+rivet-ai = { path = "crates/rivet-ai" }
 wgpu = "30.0.2"
 winit = "0.30.13"
 glam = { version = "0.34.3", features = ["bytemuck"] }
