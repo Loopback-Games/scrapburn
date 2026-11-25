@@ -7,6 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rivet-platform.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+glam.workspace = true
+bytemuck.workspace = true
+pollster.workspace = true
+log.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
