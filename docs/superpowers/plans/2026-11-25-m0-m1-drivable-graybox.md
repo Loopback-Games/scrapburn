@@ -20,7 +20,7 @@
 - Sim tick: fixed 60 Hz (`TICK_DT = 1.0 / 60.0`), at most 5 sim steps per rendered frame.
 - New dependencies beyond the Tech Stack list go through the dependency-vetting rules (1000+ stars, commit within 6 months, not archived, compatible license).
 - GitHub Actions pinned by SHA: `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`, `jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0`.
-- Gamepads are **out of M1**: `gilrs` needs libudev headers, which this Bluefin host lacks. Keyboard only; gamepad is a follow-up decision (see end).
+- **Gamepad is required in M1** via `gilrs` 0.11.2 (user-approved exception to the 1000-star rule: hosted on GitLab with 90 stars, but 10.5M downloads, Bevy's backend, active, MIT/Apache — record this in `docs/dependencies.md`). Linux build needs libudev headers: locally from the keg-only Homebrew `systemd` (`$(brew --prefix systemd)/lib/pkgconfig`, added to `PKG_CONFIG_PATH` via `mise.toml` `[env]`); CI Ubuntu runs `sudo apt-get install -y libudev-dev`. Runtime links the system `libudev.so.1`.
 - Conventional Commits; American English; commit locally only, never push.
 
 ## Review Focus
@@ -41,7 +41,7 @@ rivet/
   mise.toml  justfile  rustfmt.toml  .gitignore  LICENSE-MIT  LICENSE-APACHE  README.md
   .github/workflows/ci.yml
   crates/rivet-core/src/{lib.rs, timestep.rs, frame_stats.rs}
-  crates/rivet-platform/src/{lib.rs, adapter.rs, input.rs}
+  crates/rivet-platform/src/{lib.rs, adapter.rs, input.rs, gamepad.rs}
   crates/rivet-render/src/{lib.rs, context.rs, gpu_timer.rs, mesh.rs, mesh_pipeline.rs,
                            mesh.wgsl, overlay.rs, overlay.wgsl, font.rs, frame_graph.rs}
   crates/rivet-physics/src/{lib.rs, trimesh.rs, vehicle.rs}
@@ -71,7 +71,7 @@ rivet/
   - `clean`: `cargo clean`
   - `ci`: `lint test security build`
 - [ ] **Step 3:** `Cargo.toml`: `resolver = "3"`, `edition = "2024"`, `[profile.dev.package."*"] opt-level = 2` (keeps debug builds playable), `[profile.release] debug = "line-tables-only"`.
-- [ ] **Step 4:** `ci.yml`: job id **`ci`**, matrix `ubuntu-latest`, `windows-latest`; steps: checkout (pinned), mise-action (pinned), `just ci`. `permissions: contents: read`. Cache `~/.cargo/registry` and `target` with the cache built into mise-action if available, otherwise none (no unvetted third-party cache action).
+- [ ] **Step 4:** `ci.yml`: job id **`ci`**, matrix `ubuntu-latest`, `windows-latest`; steps: checkout (pinned), mise-action (pinned), on Ubuntu only `sudo apt-get install -y libudev-dev`, then `just ci`. `permissions: contents: read`. Cache `~/.cargo/registry` and `target` with the cache built into mise-action if available, otherwise none (no unvetted third-party cache action).
 - [ ] **Step 5:** Run `just setup && just ci`. Expected: fmt/clippy clean, 0 tests run, `cargo audit` reports no vulnerabilities, release build succeeds.
 - [ ] **Step 6:** Commit `chore: scaffold Rivet workspace with mise, just and CI`.
 
@@ -97,26 +97,28 @@ rivet/
 
 ---
 
-### Task 3: `rivet-platform` — adapter selection and key input
+### Task 3: `rivet-platform` — adapter selection, keys and gamepad
 
-**Files:** `crates/rivet-platform/src/{adapter.rs, input.rs, lib.rs}`. Depends on `winit` (for `KeyCode`) and `wgpu` (for `DeviceType` and adapter enumeration only).
+**Files:** `crates/rivet-platform/src/{adapter.rs, input.rs, gamepad.rs, lib.rs}`, `docs/dependencies.md`. Depends on `winit` (for `KeyCode`), `gilrs`, and `wgpu` (for `DeviceType` and adapter enumeration only).
 
 **Interfaces — Produces:**
 - `pub enum AdapterPreference { Auto, Integrated, Discrete, NameContains(String) }`; `impl FromStr` parses `auto|integrated|discrete|<substring>` (case-insensitive). Env var `RIVET_ADAPTER` is the default when no CLI flag is given.
 - `pub struct AdapterDesc { pub name: String, pub device_type: wgpu::DeviceType, pub backend: wgpu::Backend }`.
 - `pub fn select_adapter(list: &[AdapterDesc], pref: &AdapterPreference) -> Result<usize, AdapterError>`. `Auto` = integrated first (min-spec-first project), then discrete, then anything; `NameContains` is case-insensitive. `AdapterError::NoMatch { wanted: String, available: Vec<AdapterDesc> }` with a `Display` that lists every adapter `name (type, backend)` one per line.
 - `pub struct KeyInput`: `on_key(&mut self, code: KeyCode, pressed: bool)`, `held(&self, code) -> bool`, `just_pressed(&self, code) -> bool`, `end_frame(&mut self)` (clears just-pressed). Key repeat events must not re-trigger `just_pressed`.
+- `gamepad.rs`: `pub struct PadState { pub left_x: f32, pub right_trigger: f32, pub left_trigger: f32, pub buttons: PadButtons /*South, East, West, North, LeftBumper, RightBumper, Start, Select bitflags*/, pub just_pressed: PadButtons }`; `pub struct Gamepads` wraps `gilrs::Gilrs`: `new() -> Option<Self>` (None + warn log if gilrs init fails — the game must still run on keyboard), `poll(&mut self)` drains events, `active(&self) -> Option<&PadState>` = the pad that most recently sent input (hot-plug safe: disconnect drops to keyboard without panic). `pub fn apply_deadzone(v: f32, dz: f32) -> f32` (radial-free 1D: 0 inside `dz`, rescaled to 0..1 outside, sign kept); stick deadzone 0.15, trigger deadzone 0.05.
 
 - [ ] **Step 1: Failing tests**
   - `auto_prefers_integrated`: list [3060 Discrete, "Intel(R) UHD Graphics 730" Integrated, llvmpipe Cpu] → 1.
   - `name_contains_case_insensitive`: `"uhd".parse()` → index 1.
   - `no_match_lists_all`: `NameContains("radeon")` → `Err`, and `to_string()` contains both "RTX 3060" and "UHD Graphics 730".
   - `discrete_falls_back_error`: list with only Integrated and `Discrete` → `Err(NoMatch)` (an explicit request never silently falls back).
+  - `deadzone`: `apply_deadzone(0.1, 0.15)` → 0.0; `(1.0, 0.15)` → 1.0; `(-0.575, 0.15)` → −0.5 (±1e-5).
   - `just_pressed_once`: press KeyR, `just_pressed` true; `end_frame`; press KeyR again (repeat, still held) → `just_pressed` false; release + press → true.
 - [ ] **Step 2:** `cargo test -p rivet-platform` → FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** PASS, lint clean.
-- [ ] **Step 5:** Commit `feat(platform): add adapter selection and key input`.
+- [ ] **Step 5:** Commit `feat(platform): add adapter selection, key input and gamepads`.
 
 ---
 
@@ -235,7 +237,7 @@ Approach (the parts tests don't pin): four suspension rays down the body's local
 **Interfaces — Consumes:** everything above. **Produces:** the `nailrunners` binary.
 
 - `args.rs`: `pub struct Args { adapter: AdapterPreference /*--adapter, else RIVET_ADAPTER, else Auto*/, size: (u32,u32) /*--size 1600x900 default*/, present: PresentChoice /*--present, default Vsync*/, bench: Option<u32> /*--bench SECS: autopilot drive, forces Immediate unless --present given*/ }`; `fn parse(iter: impl Iterator<Item=String>) -> Result<Args, String>` (hand-rolled, no clap in M1).
-- `controls.rs`: `fn drive_input(keys: &KeyInput) -> DriveInput` — W/Up throttle, S/Down brake/reverse, A/D or Left/Right steer, Space or Shift drift (held), hop on drift `just_pressed` (kart convention: hop starts drift), R respawn, F3 toggle graph, Esc quit.
+- `controls.rs`: `fn drive_input(keys: &KeyInput, pad: Option<&PadState>) -> DriveInput` — pad and keyboard are merged (max magnitude per axis, OR of buttons). Pad: left stick X steer, right trigger throttle, left trigger brake/reverse, RB or LB drift (held, hop on just-pressed), A (South) also throttle, B (East) respawn, Select toggle graph. Keyboard: — W/Up throttle, S/Down brake/reverse, A/D or Left/Right steer, Space or Shift drift (held), hop on drift `just_pressed` (kart convention: hop starts drift), R respawn, F3 toggle graph, Esc quit.
 - `camera.rs`: `ChaseCamera { update(&mut self, target_pos: Vec3, target_rot: Quat, speed: f32, dt: f32), view_proj(&self, aspect: f32) -> Mat4 }`: 7 m behind, 2.6 m up, look 3 m ahead; position spring-damped (critically damped, ω=8); FOV 70° rising to 82° at max speed + boost.
 - `autopilot.rs`: `fn autopilot(state: &VehicleState, centerline: &[Vec3]) -> DriveInput` — steer toward the centerline point 15 m ahead, full throttle, brake above 0.9 rad heading error. (Seed for M4 bots.)
 - `bench.rs`: after a 3 s warmup, collect `FrameStats` (capacity = all frames) for N seconds, then print one line `BENCH adapter="<name>" backend=<b> size=1600x900 present=<mode> frames=<n> avg_ms=<x> p50_ms=<x> p99_ms=<x> max_ms=<x> fps=<x> gpu_avg_ms=<x|na>` and write per-frame CSV `cpu_ms,gpu_ms` to `target/bench/<unix_time>.csv`; then exit 0.
@@ -246,10 +248,11 @@ Approach (the parts tests don't pin): four suspension rays down the body's local
   - `args_bench_forces_immediate`: `--bench 30` → present Immediate; `--bench 30 --present vsync` → Vsync.
   - `args_errors`: `--size 1600` → Err mentioning `WxH`.
   - `controls_map`: W + D held → throttle 1, steer +1; Space just-pressed → drift && hop.
+  - `controls_pad`: pad left_x 0.5, RT 0.8, RB just-pressed, no keys → steer 0.5, throttle 0.8, drift && hop; with D also held → steer 1.0.
   - `autopilot_completes_lap`: headless (no GPU) sim of autopilot + `vehicle::step` on `build_graybox_loop()` for 90 s of ticks → at least 1 `Lap` event, never respawned.
   - `camera_settles_behind`: static car facing +Z, 120 updates → camera at (0, 2.6, −7) ±0.2.
 - [ ] **Step 2:** FAIL. **Step 3:** Implement. **Step 4:** `just test` PASS, `just lint` clean.
-- [ ] **Step 5: Manual run:** `just run --adapter integrated` → window shows track and car on the "Intel(R) UHD Graphics 730" adapter (named in the frame graph); drive a lap with the keyboard; drift-boost works; jump lands; R respawns; resize, minimize and restore don't crash. Then `just run --adapter discrete` works too.
+- [ ] **Step 5: Manual run:** `just run --adapter integrated` → window shows track and car on the "Intel(R) UHD Graphics 730" adapter (named in the frame graph); drive a lap with the keyboard and again with a gamepad (unplug it mid-lap → keyboard still works, no crash); drift-boost works; jump lands; R respawns; resize, minimize and restore don't crash. Then `just run --adapter discrete` works too.
 - [ ] **Step 6:** Commit `feat(game): drive the gray-box loop with chase camera, HUD and bench mode`.
 
 ---
@@ -268,6 +271,5 @@ Approach (the parts tests don't pin): four suspension rays down the body's local
 
 ## Open follow-ups (not M1 tasks)
 
-- **Gamepad:** choose between installing libudev headers somewhere for `gilrs` (Linux) vs. a pure-Rust evdev route — needs a dependency decision with the user.
 - Windows manual test on real hardware (CI only proves it builds and tests pass).
 - Real profiler integration (Tracy) once the frame graph isn't enough.
