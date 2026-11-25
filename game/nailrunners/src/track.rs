@@ -496,7 +496,7 @@ pub fn build_graybox_loop() -> Track {
     let mut rng = Rng(0x5eed_cafe);
     let rock_mat = material(Layer::Rock as u32, Layer::Rock as u32, TRIPLANAR_B);
     let mut tries = 0;
-    while rocks.len() < 70 && tries < 5000 {
+    while rocks.len() < 110 && tries < 8000 {
         tries += 1;
         let x = lo.x + 100.0 + rng.next() * (hi.x - lo.x - 200.0);
         let z = lo.y + 100.0 + rng.next() * (hi.y - lo.y - 200.0);
@@ -504,7 +504,8 @@ pub fn build_graybox_loop() -> Track {
         if !(ROAD_HALF_WIDTH + 10.0..240.0).contains(&d) {
             continue;
         }
-        let scale = 1.2 + rng.next() * 2.2 + (d / 240.0) * 3.0;
+        // Boulders: bigger farther out, a few big ones near the road for parallax.
+        let scale = 2.0 + rng.next() * rng.next() * 6.0 + (d / 240.0) * 5.0;
         let y = terrain::height_at(&centerline, x, z) - 0.3 * scale;
         let pos = Vec3::new(x, y, z);
         let rot = Quat::from_rotation_y(rng.next() * std::f32::consts::TAU);

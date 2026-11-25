@@ -168,8 +168,8 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     if (up > 0.0) {
         let t = g.eye.w;
         let proj = dir.xz / (up + 0.12);
-        let n1 = textureSampleLevel(clouds, samp, proj * 0.035 + vec2<f32>(t * 0.0025, t * 0.0011), 0.0).r;
-        let n2 = textureSampleLevel(clouds, samp, proj * 0.11 - vec2<f32>(t * 0.004, 0.0), 0.0).r;
+        let n1 = textureSampleLevel(clouds, samp, proj * 0.22 + vec2<f32>(t * 0.0025, t * 0.0011), 0.0).r;
+        let n2 = textureSampleLevel(clouds, samp, proj * 0.61 - vec2<f32>(t * 0.004, 0.0), 0.0).r;
         let n = n1 * 0.7 + n2 * 0.3;
         let coverage = g.sky_horizon.w;
         let density = smoothstep(1.0 - coverage, 1.0 - coverage + 0.35, n) * smoothstep(0.0, 0.18, up);
