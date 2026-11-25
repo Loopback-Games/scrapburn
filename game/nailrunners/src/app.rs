@@ -9,12 +9,15 @@ use glam::{Mat4, Vec3};
 use nailrunners::args::{Args, Mode};
 use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
+use nailrunners::combat::CombatEvent;
 use nailrunners::controls::{SteerRamp, actions, drive_input, menu_input};
 use nailrunners::effects::Effects;
+use nailrunners::fx_meshes;
 use nailrunners::ghost::{BestGhost, GhostRecorder};
 use nailrunners::hud::{self, HudInfo, RaceHud};
 use nailrunners::materials::{find_assets_dir, load_layers, shading};
 use nailrunners::menu::{MenuAction, MenuState, Screen, Settings};
+use nailrunners::particles::{Blend, Particle, ParticleSystem};
 use nailrunners::race::{Phase, Race, RaceEvent};
 use nailrunners::track::{Track, build_graybox_loop};
 use nailrunners::{MAX_STEPS, TICK_DT};
@@ -68,6 +71,58 @@ enum Session {
     Play(Mode),
 }
 
+/// Tiny deterministic RNG for cosmetic effects.
+struct Lcg(u32);
+
+impl Lcg {
+    fn next(&mut self) -> f32 {
+        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (self.0 >> 8) as f32 / (1u32 << 24) as f32
+    }
+}
+
+/// A burst of additive sparks.
+#[allow(clippy::too_many_arguments)]
+fn fx_burst(
+    fx: &mut ParticleSystem,
+    rng: &mut Lcg,
+    at: Vec3,
+    n: u32,
+    speed: f32,
+    color: [f32; 4],
+    size: f32,
+    life: f32,
+) {
+    for _ in 0..n {
+        let dir =
+            Vec3::new(rng.next() - 0.5, rng.next() * 0.8, rng.next() - 0.5).normalize_or(Vec3::Y);
+        let vel = dir * speed * (0.4 + rng.next() * 0.6);
+        let life = life * (0.6 + rng.next() * 0.4);
+        fx.spawn(Particle {
+            pos: at,
+            vel,
+            age: 0.0,
+            life,
+            size: (size, size * 0.2),
+            color: (color, [color[0] * 0.3, color[1] * 0.2, color[2] * 0.2, 0.0]),
+            gravity: 6.0,
+            drag: 2.5,
+            blend: Blend::Additive,
+        });
+    }
+}
+
+/// GPU meshes for items and weapons.
+struct FxMeshes {
+    shell: GpuMesh,
+    core: GpuMesh,
+    nail: GpuMesh,
+    chain: GpuMesh,
+    hook: GpuMesh,
+    orb: GpuMesh,
+    orb_glow: GpuMesh,
+}
+
 struct Game {
     window: Arc<Window>,
     ctx: GpuContext,
@@ -79,6 +134,8 @@ struct Game {
     track_meshes: [GpuMesh; 3],
     kart_mesh: GpuMesh,
     ghost_mesh: GpuMesh,
+    fx_meshes: FxMeshes,
+    combat_fx: ParticleSystem,
     race: Race,
     session: Session,
     menu: MenuState,
@@ -187,6 +244,24 @@ impl Game {
             );
         }
         let ghost_mesh = GpuMesh::new(&ctx.device, &ghost_data);
+        let g = |m: MeshData| GpuMesh::new(&ctx.device, &m);
+        let fx_meshes = FxMeshes {
+            shell: g(fx_meshes::item_shell()),
+            core: g(fx_meshes::item_core()),
+            nail: g(fx_meshes::nail()),
+            chain: g(fx_meshes::chain()),
+            hook: g(fx_meshes::hook_head()),
+            orb: g(fx_meshes::sphere(
+                2,
+                [0.35, 1.0, 0.4, 0.0],
+                rivet_render::EMISSIVE,
+            )),
+            orb_glow: g(fx_meshes::sphere(
+                2,
+                [0.15, 0.6, 0.2, 0.0],
+                rivet_render::EMISSIVE | rivet_render::DITHER,
+            )),
+        };
         let ghost_file =
             nailrunners::ghost::data_dir().map(|d| nailrunners::ghost::ghost_path(&d, TRACK_ID));
         let best_ghost =
@@ -211,6 +286,8 @@ impl Game {
             track_meshes,
             kart_mesh,
             ghost_mesh,
+            fx_meshes,
+            combat_fx: ParticleSystem::new(2500),
             race,
             session,
             menu: MenuState::new(screen),
@@ -304,10 +381,13 @@ impl Game {
                 if pause && self.bench.is_none() {
                     self.menu.go(Screen::Paused);
                 }
-                if act.respawn
-                    && let Some(p) = self.race.player
-                {
-                    self.race.respawn_racer(p, &self.track);
+                if let Some(p) = self.race.player {
+                    if act.respawn {
+                        self.race.respawn_racer(p, &self.track);
+                    }
+                    if act.fire {
+                        self.race.fire(p);
+                    }
                 }
             }
             Screen::Title | Screen::Settings | Screen::Paused | Screen::Results => {
@@ -346,6 +426,7 @@ impl Game {
             for _ in 0..steps {
                 let events = self.race.step(&self.track, input, TICK_DT as f32);
                 self.after_step(&events);
+                self.combat_effects(&events);
             }
         }
         self.attract_t += frame_dt as f32;
@@ -430,6 +511,122 @@ impl Game {
         }
     }
 
+    /// Sparks, lightning and blasts for weapon events.
+    fn combat_effects(&mut self, events: &[RaceEvent]) {
+        let focus_pos = self.race.racers[self.focus()].state.position;
+        let mut rng = Lcg((self.race.time * 1000.0) as u32 | 1);
+        for e in events {
+            let RaceEvent::Combat(c) = e else { continue };
+            match *c {
+                CombatEvent::Hit { victim, .. } => {
+                    let p = self.race.racers[victim].state.position + Vec3::Y * 0.6;
+                    fx_burst(
+                        &mut self.combat_fx,
+                        &mut rng,
+                        p,
+                        30,
+                        9.0,
+                        [6.0, 4.0, 1.5, 1.0],
+                        0.3,
+                        0.5,
+                    );
+                }
+                CombatEvent::Zap { victim } => {
+                    let to = self.race.racers[victim].state.position + Vec3::Y * 0.6;
+                    if let Some(orb) = self
+                        .race
+                        .combat
+                        .orbs
+                        .iter()
+                        .min_by(|a, b| a.pos.distance(to).total_cmp(&b.pos.distance(to)))
+                    {
+                        // A jagged bolt from the orb to the victim.
+                        let from = orb.pos;
+                        for k in 0..24 {
+                            let t = k as f32 / 23.0;
+                            let jitter =
+                                Vec3::new(rng.next() - 0.5, rng.next() - 0.5, rng.next() - 0.5)
+                                    * 1.2
+                                    * (1.0 - (2.0 * t - 1.0).abs());
+                            self.combat_fx.spawn(Particle {
+                                pos: from.lerp(to, t) + jitter,
+                                vel: Vec3::ZERO,
+                                age: 0.0,
+                                life: 0.25,
+                                size: (0.45, 0.1),
+                                color: ([3.0, 8.0, 4.0, 1.0], [0.5, 2.0, 1.0, 0.0]),
+                                gravity: 0.0,
+                                drag: 0.0,
+                                blend: Blend::Additive,
+                            });
+                        }
+                    }
+                    fx_burst(
+                        &mut self.combat_fx,
+                        &mut rng,
+                        to,
+                        20,
+                        6.0,
+                        [2.0, 7.0, 3.0, 1.0],
+                        0.3,
+                        0.4,
+                    );
+                }
+                CombatEvent::Explode { pos, .. } => {
+                    fx_burst(
+                        &mut self.combat_fx,
+                        &mut rng,
+                        pos,
+                        160,
+                        24.0,
+                        [3.0, 9.0, 3.5, 1.0],
+                        1.1,
+                        1.0,
+                    );
+                    fx_burst(
+                        &mut self.combat_fx,
+                        &mut rng,
+                        pos,
+                        90,
+                        14.0,
+                        [9.0, 5.0, 1.5, 1.0],
+                        0.9,
+                        0.8,
+                    );
+                    let near = (1.0 - pos.distance(focus_pos) / 60.0).max(0.0);
+                    self.camera.kick(near);
+                }
+                CombatEvent::Slingshot { racer } => {
+                    let p = self.race.racers[racer].state.position;
+                    fx_burst(
+                        &mut self.combat_fx,
+                        &mut rng,
+                        p,
+                        40,
+                        10.0,
+                        [2.0, 4.0, 8.0, 1.0],
+                        0.4,
+                        0.5,
+                    );
+                }
+                CombatEvent::Pickup { racer, .. } => {
+                    let p = self.race.racers[racer].state.position + Vec3::Y;
+                    fx_burst(
+                        &mut self.combat_fx,
+                        &mut rng,
+                        p,
+                        24,
+                        6.0,
+                        [2.0, 5.0, 8.0, 1.0],
+                        0.25,
+                        0.4,
+                    );
+                }
+                CombatEvent::Fire { .. } => {}
+            }
+        }
+    }
+
     fn render(&mut self, frame_dt: f32, simulating: bool) {
         let alpha = self.clock.alpha();
         let focus = self.focus();
@@ -510,8 +707,101 @@ impl Game {
                 });
             }
         }
+        // Items and weapons.
+        let spin = Mat4::from_rotation_y(self.attract_t * 1.6)
+            * Mat4::from_rotation_x(self.attract_t * 0.9);
+        for b in self.race.combat.boxes.iter().filter(|b| b.active()) {
+            let bob = Vec3::Y * (self.attract_t * 2.0 + b.pos.x).sin() * 0.15;
+            let at = Mat4::from_translation(b.pos + bob);
+            draws.push(Draw {
+                mesh: &self.fx_meshes.core,
+                model: at * spin,
+                casts_shadow: false,
+                tint: [1.0; 3],
+            });
+            draws.push(Draw {
+                mesh: &self.fx_meshes.shell,
+                model: at * Mat4::from_rotation_y(-self.attract_t),
+                casts_shadow: true,
+                tint: [1.0; 3],
+            });
+        }
+        for n in &self.race.combat.nails {
+            let dir = n.vel.normalize_or(Vec3::Z);
+            let m =
+                Mat4::from_rotation_translation(glam::Quat::from_rotation_arc(Vec3::Z, dir), n.pos);
+            draws.push(Draw {
+                mesh: &self.fx_meshes.nail,
+                model: m,
+                casts_shadow: false,
+                tint: [1.0; 3],
+            });
+        }
+        for (from, to) in self.race.combat.chains(&self.race.racers) {
+            let d = to - from;
+            let len = d.length().max(0.01);
+            let rot = glam::Quat::from_rotation_arc(Vec3::Z, d / len);
+            let m = Mat4::from_scale_rotation_translation(
+                Vec3::new(1.0, 1.0, len),
+                rot,
+                from + d * 0.5,
+            );
+            draws.push(Draw {
+                mesh: &self.fx_meshes.chain,
+                model: m,
+                casts_shadow: true,
+                tint: [1.0; 3],
+            });
+            draws.push(Draw {
+                mesh: &self.fx_meshes.hook,
+                model: Mat4::from_rotation_translation(rot, to),
+                casts_shadow: true,
+                tint: [1.0; 3],
+            });
+        }
+        for orb in &self.race.combat.orbs {
+            let pulse = 1.0 + (self.attract_t * 9.0).sin() * 0.08;
+            draws.push(Draw {
+                mesh: &self.fx_meshes.orb,
+                model: Mat4::from_scale_rotation_translation(
+                    Vec3::splat(0.9 * pulse),
+                    glam::Quat::IDENTITY,
+                    orb.pos,
+                ),
+                casts_shadow: false,
+                tint: [1.0; 3],
+            });
+            draws.push(Draw {
+                mesh: &self.fx_meshes.orb_glow,
+                model: Mat4::from_scale_rotation_translation(
+                    Vec3::splat(1.6 / pulse),
+                    glam::Quat::IDENTITY,
+                    orb.pos,
+                ),
+                casts_shadow: false,
+                tint: [1.0; 3],
+            });
+            // A trail of green motes behind the orb.
+            self.combat_fx.spawn(Particle {
+                pos: orb.pos,
+                vel: Vec3::Y * 1.5,
+                age: 0.0,
+                life: 0.6,
+                size: (0.9, 0.1),
+                color: ([1.5, 5.0, 2.0, 1.0], [0.2, 1.0, 0.4, 0.0]),
+                gravity: 0.0,
+                drag: 1.0,
+                blend: Blend::Additive,
+            });
+        }
+        self.combat_fx.update(fx_dt);
         let mut additive: Vec<ParticleInstance> = Vec::new();
         let mut alpha_p: Vec<ParticleInstance> = Vec::new();
+        {
+            let (a, b) = self.combat_fx.instances();
+            additive.extend_from_slice(a);
+            alpha_p.extend_from_slice(b);
+        }
         for fx in &mut self.effects {
             let (a, b) = fx.particles.instances();
             additive.extend_from_slice(a);
@@ -625,6 +915,9 @@ impl Game {
                     .collect(),
             };
             hud::draw_race(o, w, h, &race_hud);
+            if race.combat_on {
+                hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t);
+            }
             let items = self.menu.items(&self.settings);
             match self.menu.screen {
                 Screen::Paused => {
@@ -642,7 +935,13 @@ impl Game {
             }
         }
         if self.settings.show_fps || self.bench.is_some() {
-            draw_frame_graph(o, &self.stats, &self.ctx.adapter_info.name, w - 270.0, 80.0);
+            draw_frame_graph(
+                o,
+                &self.stats,
+                &self.ctx.adapter_info.name,
+                w - 270.0,
+                200.0,
+            );
         }
     }
 }

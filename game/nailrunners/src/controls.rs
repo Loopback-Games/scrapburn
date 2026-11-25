@@ -8,6 +8,8 @@ use winit::keyboard::KeyCode;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Actions {
     pub respawn: bool,
+    /// Use the held item.
+    pub fire: bool,
     pub toggle_graph: bool,
     pub quit: bool,
 }
@@ -129,6 +131,10 @@ pub fn actions(keys: &KeyInput, pad: Option<&PadState>) -> Actions {
     let pad_pressed = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
     Actions {
         respawn: keys.just_pressed(KeyCode::KeyR) || pad_pressed(PadButtons::EAST),
+        fire: keys.just_pressed(KeyCode::KeyE)
+            || keys.just_pressed(KeyCode::ControlLeft)
+            || keys.just_pressed(KeyCode::KeyJ)
+            || pad_pressed(PadButtons::WEST),
         toggle_graph: keys.just_pressed(KeyCode::F3) || pad_pressed(PadButtons::SELECT),
         quit: keys.just_pressed(KeyCode::Escape),
     }
@@ -221,6 +227,13 @@ mod tests {
         let mut k = KeyInput::default();
         k.on_key(KeyCode::KeyR, true);
         assert!(actions(&k, None).respawn);
+        k.on_key(KeyCode::KeyE, true);
+        assert!(actions(&k, None).fire);
+        let pad = PadState {
+            just_pressed: PadButtons::WEST,
+            ..Default::default()
+        };
+        assert!(actions(&KeyInput::default(), Some(&pad)).fire);
         let pad = PadState {
             just_pressed: PadButtons::SELECT,
             ..Default::default()

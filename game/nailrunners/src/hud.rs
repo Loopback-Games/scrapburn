@@ -500,6 +500,85 @@ pub fn dim(o: &mut Overlay, w: f32, h: f32) {
     o.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, 0.45]);
 }
 
+/// The held-item slot, top right.
+pub fn draw_item_slot(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    item: Option<crate::combat::ItemKind>,
+    time: f32,
+) {
+    use crate::combat::ItemKind;
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let size = 92.0 * ui;
+    let (x, y) = (w - size - 26.0 * ui, 22.0 * ui);
+    o.rect(
+        x - 6.0 * ui,
+        y - 6.0 * ui,
+        size + 12.0 * ui,
+        size + 12.0 * ui,
+        PANEL,
+    );
+    o.rect(
+        x - 6.0 * ui,
+        y - 6.0 * ui,
+        size + 12.0 * ui,
+        3.0 * ui,
+        ACCENT,
+    );
+    let Some(item) = item else {
+        text(
+            o,
+            x + size * 0.5 - width("--", 3.0 * ui) * 0.5,
+            y + size * 0.4,
+            3.0 * ui,
+            DIM,
+            "--",
+        );
+        return;
+    };
+    let (color, glyph) = match item {
+        ItemKind::Nailer => ([1.0, 0.82, 0.35, 1.0], "///"),
+        ItemKind::Harpoon => ([0.75, 0.8, 0.85, 1.0], "-->"),
+        ItemKind::DoomOrb => ([0.4, 1.0, 0.45, 1.0], "( )"),
+    };
+    let pulse = 0.85 + 0.15 * (time * 6.0).sin();
+    o.rect(
+        x + 6.0 * ui,
+        y + 6.0 * ui,
+        size - 12.0 * ui,
+        size - 12.0 * ui,
+        [color[0] * 0.25, color[1] * 0.25, color[2] * 0.25, 0.8],
+    );
+    let c = [color[0] * pulse, color[1] * pulse, color[2] * pulse, 1.0];
+    text(
+        o,
+        x + size * 0.5 - width(glyph, 4.5 * ui) * 0.5,
+        y + size * 0.3,
+        4.5 * ui,
+        c,
+        glyph,
+    );
+    let name = item.name();
+    text(
+        o,
+        x + size * 0.5 - width(name, 1.6 * ui) * 0.5,
+        y + size + 14.0 * ui,
+        1.6 * ui,
+        color,
+        name,
+    );
+    let hint = "E / X";
+    text(
+        o,
+        x + size * 0.5 - width(hint, 1.4 * ui) * 0.5,
+        y + size + 34.0 * ui,
+        1.4 * ui,
+        DIM,
+        hint,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

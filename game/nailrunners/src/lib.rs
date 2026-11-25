@@ -8,6 +8,7 @@ pub mod camera;
 pub mod combat;
 pub mod controls;
 pub mod effects;
+pub mod fx_meshes;
 pub mod ghost;
 pub mod hud;
 pub mod kart;
