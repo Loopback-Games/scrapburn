@@ -31,7 +31,10 @@ pub struct FrameStats {
 impl FrameStats {
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "capacity must be positive");
-        Self { capacity, samples: VecDeque::with_capacity(capacity) }
+        Self {
+            capacity,
+            samples: VecDeque::with_capacity(capacity),
+        }
     }
 
     pub fn push(&mut self, cpu_ms: f32, gpu_ms: Option<f32>) {

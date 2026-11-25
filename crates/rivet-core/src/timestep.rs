@@ -13,7 +13,11 @@ pub struct FixedTimestep {
 impl FixedTimestep {
     pub fn new(dt: f64, max_steps: u32) -> Self {
         assert!(dt > 0.0, "dt must be positive");
-        Self { dt, max_steps, accumulator: 0.0 }
+        Self {
+            dt,
+            max_steps,
+            accumulator: 0.0,
+        }
     }
 
     /// Adds `frame_dt` seconds and returns the number of sim steps to run now.
@@ -47,7 +51,11 @@ mod tests {
         assert_eq!(ts.advance(0.010), 0);
         assert_eq!(ts.advance(0.010), 1);
         let expected = ((0.020 - 1.0 / 60.0) / (1.0 / 60.0)) as f32;
-        assert!((ts.alpha() - expected).abs() < 1e-6 * expected.max(1.0), "{}", ts.alpha());
+        assert!(
+            (ts.alpha() - expected).abs() < 1e-6 * expected.max(1.0),
+            "{}",
+            ts.alpha()
+        );
     }
 
     #[test]
