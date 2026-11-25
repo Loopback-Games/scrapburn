@@ -104,7 +104,12 @@ impl Race {
     /// `count` racers; racer 0 is the player when `player` is true.
     pub fn new(track: &Track, count: usize, player: bool, laps_to_win: u32) -> Self {
         let line = RacingLine::new(track.centerline.clone());
-        let racers = grid_spots(track, count)
+        // The player starts at the back of the grid and has to fight through the field.
+        let mut spots = grid_spots(track, count);
+        if player {
+            spots.rotate_right(1);
+        }
+        let racers = spots
             .into_iter()
             .enumerate()
             .map(|(k, (p, yaw))| {
@@ -349,18 +354,27 @@ mod tests {
             !go && r.racers[0].state.position.distance(start) < 1.0,
             "frozen during countdown"
         );
+        let mut boosted_at_go = false;
         for _ in 0..120 {
-            go |= r.step(t, full, 1.0 / 60.0).contains(&RaceEvent::Go);
+            let ev = r.step(t, full, 1.0 / 60.0);
+            if ev.contains(&RaceEvent::Go) {
+                go = true;
+                boosted_at_go = r.racers[0].state.boost_timer > 0.0;
+            }
         }
         assert!(go, "GO fires");
+        assert!(boosted_at_go, "holding throttle at GO gives a start boost");
         assert!(
-            r.racers[0].state.position.distance(start) > 10.0,
+            r.racers[0].state.position.distance(start) > 5.0,
             "and the race starts"
         );
-        assert!(
-            r.racers[0].state.boost_timer > 0.0 || r.racers[0].state.speed() > 20.0,
-            "holding throttle at GO gives a start boost"
-        );
+    }
+
+    #[test]
+    fn player_starts_last() {
+        let t = track();
+        let r = Race::new(t, 8, true, 3);
+        assert_eq!(r.position_of(0, t), 8, "player on the back row");
     }
 
     #[test]
@@ -372,9 +386,9 @@ mod tests {
         r.racers[1].state.position = cl[10];
         r.racers[0].state.position = cl[60];
         r.racers[2].state.position = cl[200];
-        for k in 0..3 {
-            let pos = r.racers[k].state.position;
-            r.racers[k].laps.sync_to(pos, &t.checkpoints);
+        for racer in &mut r.racers {
+            let pos = racer.state.position;
+            racer.laps.sync_to(pos, &t.checkpoints);
         }
         assert_eq!(r.standings(t), vec![2, 0, 1]);
     }

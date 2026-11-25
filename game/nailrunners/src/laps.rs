@@ -64,7 +64,8 @@ impl LapTracker {
         let next = &checkpoints[self.next];
         let prev = &checkpoints[self.last_checkpoint()];
         let span = prev.center.distance(next.center).max(1.0);
-        let frac = (1.0 - pos.distance(next.center) / span).clamp(0.0, 1.0);
+        // May go negative behind the previous checkpoint (the grid), so order still counts there.
+        let frac = (1.0 - pos.distance(next.center) / span).clamp(-1.5, 1.0);
         let passed = if self.next == 0 {
             self.count - 1
         } else {

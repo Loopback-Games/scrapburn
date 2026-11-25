@@ -15,6 +15,10 @@ impl PadButtons {
     pub const RIGHT_BUMPER: Self = Self(1 << 5);
     pub const START: Self = Self(1 << 6);
     pub const SELECT: Self = Self(1 << 7);
+    pub const DPAD_UP: Self = Self(1 << 8);
+    pub const DPAD_DOWN: Self = Self(1 << 9);
+    pub const DPAD_LEFT: Self = Self(1 << 10);
+    pub const DPAD_RIGHT: Self = Self(1 << 11);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0 && other.0 != 0
@@ -24,6 +28,14 @@ impl PadButtons {
     }
     pub fn remove(&mut self, other: Self) {
         self.0 &= !other.0;
+    }
+}
+
+impl std::ops::BitOr for PadButtons {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
     }
 }
 
@@ -61,6 +73,10 @@ fn map_button(b: Button) -> Option<PadButtons> {
         Button::RightTrigger => PadButtons::RIGHT_BUMPER,
         Button::Start => PadButtons::START,
         Button::Select => PadButtons::SELECT,
+        Button::DPadUp => PadButtons::DPAD_UP,
+        Button::DPadDown => PadButtons::DPAD_DOWN,
+        Button::DPadLeft => PadButtons::DPAD_LEFT,
+        Button::DPadRight => PadButtons::DPAD_RIGHT,
         _ => return None,
     })
 }

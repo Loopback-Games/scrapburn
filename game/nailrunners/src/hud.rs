@@ -47,6 +47,8 @@ fn width(s: &str, scale: f32) -> f32 {
 
 pub struct HudInfo {
     pub lap: u32,
+    /// Shown as "LAP n/total" in a race.
+    pub total_laps: Option<u32>,
     pub lap_time: f64,
     pub last: Option<f64>,
     pub best: Option<f64>,
@@ -65,7 +67,10 @@ pub fn draw(
     let ui = (h / 900.0).clamp(0.6, 2.0);
 
     // Lap and time, top center.
-    let lap = format!("LAP {}", info.lap);
+    let lap = match info.total_laps {
+        Some(t) => format!("LAP {}/{t}", info.lap.min(t)),
+        None => format!("LAP {}", info.lap),
+    };
     let time = fmt_time(info.lap_time);
     let ts = 5.0 * ui;
     let tw = width(&time, ts);
@@ -258,6 +263,9 @@ impl Minimap {
     }
 }
 
+/// One results line: name, kart tint, finish time.
+pub type ResultRow<'a> = (&'a str, [f32; 3], Option<f64>);
+
 /// Race-level HUD data.
 pub struct RaceHud<'a> {
     pub position: usize,
@@ -266,7 +274,7 @@ pub struct RaceHud<'a> {
     pub countdown: Option<f32>,
     pub finished: Option<u32>,
     /// (name, tint, finish time) in final order, once the player has finished.
-    pub results: Option<Vec<(&'a str, [f32; 3], Option<f64>)>>,
+    pub results: Option<Vec<ResultRow<'a>>>,
     pub track: &'a [glam::Vec3],
     /// (position, tint, is the player)
     pub karts: Vec<(glam::Vec3, [f32; 3], bool)>,
@@ -390,6 +398,106 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
             );
         }
     }
+}
+
+/// A centered menu panel with an optional big title (the game logo on the title screen).
+pub fn draw_menu(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    title: Option<&str>,
+    subtitle: &str,
+    items: &[String],
+    selected: usize,
+) {
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    if let Some(t) = title {
+        let s = 14.0 * ui;
+        let tw = width(t, s);
+        let y = h * 0.16;
+        o.rect(
+            w * 0.5 - tw * 0.5 - 30.0 * ui,
+            y - 20.0 * ui,
+            tw + 60.0 * ui,
+            s * 7.0 + 40.0 * ui,
+            [0.03, 0.02, 0.01, 0.55],
+        );
+        o.rect(
+            w * 0.5 - tw * 0.5 - 30.0 * ui,
+            y - 20.0 * ui,
+            tw + 60.0 * ui,
+            5.0 * ui,
+            ACCENT,
+        );
+        o.text(
+            w * 0.5 - tw * 0.5 + s * 0.8,
+            y + s * 0.8,
+            s,
+            [0.0, 0.0, 0.0, 0.7],
+            t,
+        );
+        o.text(w * 0.5 - tw * 0.5, y, s, ACCENT, t);
+        text(
+            o,
+            w * 0.5 - width(subtitle, 2.2 * ui) * 0.5,
+            y + s * 7.0 + 4.0 * ui,
+            2.2 * ui,
+            WHITE,
+            subtitle,
+        );
+    } else if !subtitle.is_empty() {
+        let s = 6.0 * ui;
+        text(
+            o,
+            w * 0.5 - width(subtitle, s) * 0.5,
+            h * 0.24,
+            s,
+            ACCENT,
+            subtitle,
+        );
+    }
+    let row = 52.0 * ui;
+    let s = 3.6 * ui;
+    let pw = items.iter().map(|i| width(i, s)).fold(320.0 * ui, f32::max) + 80.0 * ui;
+    // On the title screen the menu sits low so the featured kart stays visible.
+    let center = if title.is_some() { h * 0.66 } else { h * 0.5 };
+    let top = center - (items.len() as f32 * row) * 0.5 + 40.0 * ui;
+    o.rect(
+        w * 0.5 - pw * 0.5,
+        top - 24.0 * ui,
+        pw,
+        items.len() as f32 * row + 36.0 * ui,
+        PANEL,
+    );
+    for (k, item) in items.iter().enumerate() {
+        let y = top + k as f32 * row;
+        let sel = k == selected;
+        if sel {
+            o.rect(
+                w * 0.5 - pw * 0.5 + 10.0 * ui,
+                y - 12.0 * ui,
+                pw - 20.0 * ui,
+                row - 8.0 * ui,
+                [1.0, 0.55, 0.12, 0.85],
+            );
+        }
+        let c = if sel { [0.08, 0.05, 0.02, 1.0] } else { WHITE };
+        o.text(w * 0.5 - width(item, s) * 0.5, y, s, c, item);
+    }
+    let hint = "ARROWS/D-PAD  MOVE    ENTER/A  SELECT    ESC/B  BACK";
+    text(
+        o,
+        w * 0.5 - width(hint, 1.6 * ui) * 0.5,
+        h - 40.0 * ui,
+        1.6 * ui,
+        DIM,
+        hint,
+    );
+}
+
+/// Darkens the whole screen (pause, results).
+pub fn dim(o: &mut Overlay, w: f32, h: f32) {
+    o.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, 0.45]);
 }
 
 #[cfg(test)]

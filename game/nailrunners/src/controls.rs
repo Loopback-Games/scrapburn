@@ -111,6 +111,20 @@ impl HopLatch {
     }
 }
 
+/// Edge-triggered menu navigation from keyboard and gamepad.
+pub fn menu_input(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu::MenuInput {
+    let k = |a: KeyCode, b: KeyCode| keys.just_pressed(a) || keys.just_pressed(b);
+    let p = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
+    crate::menu::MenuInput {
+        up: k(KeyCode::ArrowUp, KeyCode::KeyW) || p(PadButtons::DPAD_UP),
+        down: k(KeyCode::ArrowDown, KeyCode::KeyS) || p(PadButtons::DPAD_DOWN),
+        left: k(KeyCode::ArrowLeft, KeyCode::KeyA) || p(PadButtons::DPAD_LEFT),
+        right: k(KeyCode::ArrowRight, KeyCode::KeyD) || p(PadButtons::DPAD_RIGHT),
+        select: k(KeyCode::Enter, KeyCode::Space) || p(PadButtons::SOUTH),
+        back: k(KeyCode::Escape, KeyCode::Backspace) || p(PadButtons::EAST),
+    }
+}
+
 pub fn actions(keys: &KeyInput, pad: Option<&PadState>) -> Actions {
     let pad_pressed = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
     Actions {
@@ -185,6 +199,21 @@ mod tests {
         latch.press(false); // next frame, button no longer "just pressed"
         assert!(latch.take(), "the press must reach the first sim step");
         assert!(!latch.take(), "and hop only once");
+    }
+
+    #[test]
+    fn menu_input_from_keys_and_pad() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::ArrowDown, true);
+        k.on_key(KeyCode::Enter, true);
+        let m = menu_input(&k, None);
+        assert!(m.down && m.select && !m.up);
+        let pad = PadState {
+            just_pressed: PadButtons::DPAD_UP | PadButtons::EAST,
+            ..Default::default()
+        };
+        let m = menu_input(&KeyInput::default(), Some(&pad));
+        assert!(m.up && m.back);
     }
 
     #[test]

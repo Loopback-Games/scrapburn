@@ -17,6 +17,8 @@ pub struct Args {
     pub screenshot: Option<std::path::PathBuf>,
     pub preset: Preset,
     pub mode: Mode,
+    /// Benchmark the title screen (attract mode) instead of a race.
+    pub attract: bool,
 }
 
 /// What to play.
@@ -58,6 +60,7 @@ pub fn parse(
     let mut screenshot = None;
     let mut preset = Preset::Medium;
     let mut mode = Mode::Race;
+    let mut attract = false;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -91,6 +94,7 @@ pub fn parse(
             "--offscreen" => offscreen = true,
             "--preset" => preset = value()?.parse()?,
             "--mode" => mode = value()?.parse()?,
+            "--attract" => attract = true,
             "--screenshot" => screenshot = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
@@ -118,6 +122,7 @@ pub fn parse(
         screenshot,
         preset,
         mode,
+        attract,
     })
 }
 
