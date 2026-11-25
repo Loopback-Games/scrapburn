@@ -16,9 +16,14 @@ not translate code. License: **MIT OR Apache-2.0**.
 
 ## Goals
 - Original Rust engine, cargo workspace of small separately reusable crates.
-- Smooth on **Intel UHD 730 (this PC) as minimum spec**: target ≥60 fps at 900p on the Low preset
-  (to be confirmed by measurement); a ThinkPad iGPU (model TBD by user) as second target; RTX 3060
-  as high-end. Scalable presets Low → Ultra; 120+ fps on stronger GPUs.
+- **Minimum spec: the user's ThinkPad — Intel Core i7-8550U (4C/8T, 15 W) with Intel UHD
+  Graphics 620, 16 GB RAM** (updated 2026-11-25; it is weaker than the desktop UHD 730, so per the
+  rule below it became the floor). Target ≥60 fps on the Low preset at the laptop's native
+  resolution with render-resolution scaling (to be confirmed by measurement). The desktop UHD 730
+  is the everyday measuring stick; RTX 3060 is high-end.
+- Render-resolution scaling (3D at a fraction of output resolution, HUD at native) is an early
+  engine feature, not a late polish item. CPU budget matters too: 4 cores at 15 W, thermal
+  throttling. Scalable presets Low → Ultra; 120+ fps on stronger GPUs.
 - "AAA as possible" through art direction: stylized-premium look (Mario Kart 8 / Overwatch-ish
   clarity), not photorealism.
 - Linux + Windows builds.
@@ -139,8 +144,8 @@ Tripo cap **800 credits** for this project, spend tracked in a ledger, no per-ca
   build/machine (enough for client prediction replay). Avoids fixed-point math everywhere.
 - **Quality gates:** art milestones stop for the user's screenshot sign-off; frame-time gates are
   checked automatically from captures on the UHD 730.
-- **ThinkPad:** model to be provided later; when known, if it's weaker than the UHD 730 it becomes the
-  floor and the Low preset is re-tuned.
+- **ThinkPad:** i7-8550U / UHD 620 — weaker than the UHD 730, so it is now the floor and the Low
+  preset is tuned for it.
 
 ## Left to the builder
 Exact crate choices beyond the named foundation (after vetting), ECS vs plain data layout, snapshot
