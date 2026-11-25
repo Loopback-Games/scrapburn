@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+wgpu.workspace = true
+winit.workspace = true
+gilrs.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true
