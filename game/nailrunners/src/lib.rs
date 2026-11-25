@@ -8,6 +8,7 @@ pub mod camera;
 pub mod controls;
 pub mod laps;
 pub mod png;
+pub mod style;
 pub mod track;
 
 /// Fixed simulation tick.

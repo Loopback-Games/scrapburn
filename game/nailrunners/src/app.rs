@@ -10,7 +10,7 @@ use nailrunners::args::Args;
 use nailrunners::autopilot::autopilot;
 use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
-use nailrunners::controls::{HopLatch, actions, drive_input};
+use nailrunners::controls::{HopLatch, SteerRamp, actions, drive_input};
 use nailrunners::laps::{LapEvent, LapTracker};
 use nailrunners::track::{Track, build_graybox_loop};
 use nailrunners::{MAX_STEPS, TICK_DT};
@@ -80,6 +80,7 @@ struct Game {
     minimized: bool,
     bench: Option<Bench>,
     hop: HopLatch,
+    steer: SteerRamp,
     screenshot: Option<std::path::PathBuf>,
 }
 
@@ -163,6 +164,7 @@ impl Game {
             minimized: false,
             bench: args.bench.map(Bench::new),
             hop: HopLatch::default(),
+            steer: SteerRamp::default(),
             screenshot: args.screenshot.clone(),
         })
     }
@@ -203,6 +205,11 @@ impl Game {
         };
         self.keys.end_frame();
         self.hop.press(input.hop);
+        let digital = self.bench.is_none() && pad.is_none_or(|p| p.left_x.abs() < 0.01);
+        let input = DriveInput {
+            steer: self.steer.apply(input.steer, digital, frame_dt as f32),
+            ..input
+        };
 
         // --- Simulation ---
         let steps = self.clock.advance(frame_dt);
@@ -382,11 +389,7 @@ impl Game {
                 .iter()
                 .filter(|t| d.charge >= t.charge)
                 .count();
-            let color = [
-                [0.8, 0.8, 0.8, 1.0],
-                [0.3, 0.7, 1.0, 1.0],
-                [1.0, 0.55, 0.15, 1.0],
-            ][tier.min(2)];
+            let color = nailrunners::style::tier_color(tier);
             o.text(
                 w * 0.5 - 60.0,
                 h - 80.0,

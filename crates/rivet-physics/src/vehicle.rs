@@ -2,7 +2,7 @@
 //!
 //! Conventions: +Y up, yaw 0 faces +Z, the kart's right is local -X, `steer > 0` turns right.
 
-use crate::trimesh::{Contact, TriMesh};
+use crate::trimesh::{Contact, Surface, TriMesh};
 use glam::{Quat, Vec3};
 
 /// One tick of player or bot intent.
@@ -52,14 +52,37 @@ pub struct VehicleParams {
     /// Yaw rate (rad/s) at low speed and at max speed.
     pub steer_rate_low: f32,
     pub steer_rate_high: f32,
-    /// Extra yaw (rad/s) into the drift direction.
-    pub drift_yaw_bias: f32,
+    /// Drift yaw rate as a multiple of the normal steer rate: counter-steering gives `min`
+    /// (wide arc), steering into the drift gives `max` (tight arc).
+    pub drift_arc_min: f32,
+    pub drift_arc_max: f32,
+    /// Extra charge rate at full tightness (1.0 + this).
+    pub drift_tight_charge_bonus: f32,
     pub drift_min_speed: f32,
     pub hop_speed: f32,
     pub body_radius: f32,
     /// Acceleration toward the boosted top speed while a boost runs.
     pub boost_accel: f32,
-    pub boost_tiers: [BoostTier; 2],
+    /// Drift boost tiers, ascending by charge.
+    pub boost_tiers: [BoostTier; 3],
+    pub boost_pad: BoostTier,
+    /// Top speed multiplier when fully on offroad surfaces.
+    pub offroad_speed_scale: f32,
+    /// Deceleration (m/s²) above the offroad top speed.
+    pub offroad_drag: f32,
+    /// Share of the tangential speed lost per unit of head-on wall impact.
+    pub wall_scrub: f32,
+}
+
+impl VehicleParams {
+    /// The best boost earned by `charge` seconds of drifting, if any.
+    pub fn boost_for_charge(&self, charge: f32) -> Option<BoostTier> {
+        self.boost_tiers
+            .iter()
+            .rev()
+            .find(|t| charge >= t.charge)
+            .copied()
+    }
 }
 
 impl Default for VehicleParams {
@@ -81,23 +104,38 @@ impl Default for VehicleParams {
             drift_grip: 2.5,
             steer_rate_low: 2.2,
             steer_rate_high: 1.1,
-            drift_yaw_bias: 0.5,
+            drift_arc_min: 0.55,
+            drift_arc_max: 1.45,
+            drift_tight_charge_bonus: 0.6,
             drift_min_speed: 10.0,
             hop_speed: 4.5,
             body_radius: 0.8,
             boost_accel: 40.0,
             boost_tiers: [
                 BoostTier {
-                    charge: 0.6,
-                    speed: 4.0,
-                    duration: 0.5,
+                    charge: 0.55,
+                    speed: 5.0,
+                    duration: 0.6,
                 },
                 BoostTier {
-                    charge: 1.4,
+                    charge: 1.2,
                     speed: 7.0,
-                    duration: 1.0,
+                    duration: 1.1,
+                },
+                BoostTier {
+                    charge: 2.0,
+                    speed: 9.0,
+                    duration: 1.7,
                 },
             ],
+            boost_pad: BoostTier {
+                charge: 0.0,
+                speed: 8.0,
+                duration: 1.2,
+            },
+            offroad_speed_scale: 0.55,
+            offroad_drag: 10.0,
+            wall_scrub: 0.25,
         }
     }
 }
@@ -194,12 +232,19 @@ pub fn step(
     // --- Suspension ---
     let mut normal_sum = Vec3::ZERO;
     let mut hits = 0;
+    let mut offroad_hits = 0;
+    let mut on_pad = false;
     let mut accel = Vec3::new(0.0, -p.gravity, 0.0);
     for corner in CORNERS {
         let origin = state.position + state.rotation * corner;
         if let Some(hit) = world.raycast(origin, -up, p.suspension_rest) {
             hits += 1;
             normal_sum += hit.normal;
+            match hit.surface {
+                Surface::Offroad => offroad_hits += 1,
+                Surface::BoostPad => on_pad = true,
+                Surface::Road | Surface::Wall => {}
+            }
             let compression = p.suspension_rest - hit.t;
             let closing = state.velocity.dot(up);
             let force = (p.spring * compression - p.damping * closing).max(0.0);
@@ -214,6 +259,12 @@ pub fn step(
     };
 
     state.velocity += accel * dt;
+    let offroad = if hits > 0 {
+        offroad_hits as f32 / hits as f32
+    } else {
+        0.0
+    };
+    let top_speed = p.max_speed * (1.0 + (p.offroad_speed_scale - 1.0) * offroad);
 
     // --- Boost timer, drift state ---
     if state.boost_timer > 0.0 {
@@ -221,6 +272,11 @@ pub fn step(
         if state.boost_timer == 0.0 {
             state.boost_speed = 0.0;
         }
+    }
+
+    if on_pad {
+        state.boost_speed = state.boost_speed.max(p.boost_pad.speed);
+        state.boost_timer = state.boost_timer.max(p.boost_pad.duration);
     }
 
     let fwd = state.rotation * Vec3::Z;
@@ -231,19 +287,15 @@ pub fn step(
     match state.drift {
         Some(ref mut d) => {
             if !input.drift || speed < p.drift_min_speed * 0.5 {
-                let earned = p
-                    .boost_tiers
-                    .iter()
-                    .rev()
-                    .find(|t| d.charge >= t.charge)
-                    .copied();
+                let earned = p.boost_for_charge(d.charge);
                 state.drift = None;
                 if let Some(t) = earned {
-                    state.boost_speed = t.speed;
-                    state.boost_timer = t.duration;
+                    state.boost_speed = state.boost_speed.max(t.speed);
+                    state.boost_timer = state.boost_timer.max(t.duration);
                 }
-            } else if state.grounded {
-                d.charge += dt;
+            } else if state.grounded && offroad < 0.5 {
+                let tightness = (steer * d.dir + 1.0) * 0.5;
+                d.charge += dt * (1.0 + p.drift_tight_charge_bonus * tightness);
             }
         }
         None => {
@@ -261,12 +313,17 @@ pub fn step(
         let boosting = state.boost_timer > 0.0;
         if boosting {
             speed = approach(speed, p.max_speed + state.boost_speed, p.boost_accel * dt);
+        } else if speed > top_speed {
+            // Faster than this surface allows (left a boost, ran onto grass).
+            let drag = if offroad > 0.0 {
+                p.offroad_drag
+            } else {
+                p.coast_decel * 4.0
+            };
+            speed = approach(speed, top_speed, drag * dt);
         } else if throttle > 0.0 && speed >= -0.5 {
-            let r = (speed / p.max_speed).clamp(0.0, 1.0);
+            let r = (speed / top_speed).clamp(0.0, 1.0);
             speed += p.accel * throttle * (1.0 - r * r) * dt;
-            if speed > p.max_speed {
-                speed = approach(speed, p.max_speed, p.coast_decel * 4.0 * dt);
-            }
         } else if brake > 0.0 && speed > 0.5 {
             speed = (speed - p.brake_decel * brake * dt).max(0.0);
         } else if brake > 0.0 {
@@ -294,10 +351,15 @@ pub fn step(
     let t = (speed_abs / p.max_speed).clamp(0.0, 1.0);
     let rate = p.steer_rate_low + (p.steer_rate_high - p.steer_rate_low) * t;
     let low_speed_scale = (speed_abs / 5.0).min(1.0);
-    let mut yaw_rate = -steer * rate * low_speed_scale * speed.signum();
-    if let Some(d) = state.drift {
-        yaw_rate -= d.dir * p.drift_yaw_bias;
-    }
+    let mut yaw_rate = match state.drift {
+        // Drifting: the turn direction is locked; steering only tightens or widens the arc.
+        Some(d) => {
+            let tightness = (steer * d.dir + 1.0) * 0.5;
+            let arc = p.drift_arc_min + (p.drift_arc_max - p.drift_arc_min) * tightness;
+            -d.dir * rate * arc * low_speed_scale
+        }
+        None => -steer * rate * low_speed_scale * speed.signum(),
+    };
     if !state.grounded {
         yaw_rate *= 0.3;
     }
@@ -334,7 +396,10 @@ pub fn step(
         state.position += c.normal * c.depth;
         let into = state.velocity.dot(c.normal);
         if into < 0.0 {
+            let speed_before = state.velocity.length().max(1e-3);
             state.velocity -= c.normal * into;
+            // Scrub speed in proportion to how head-on the hit was.
+            state.velocity *= 1.0 - p.wall_scrub * (-into / speed_before).min(1.0);
         }
     }
 
@@ -359,6 +424,7 @@ pub fn step(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trimesh::Surface;
     use glam::{Quat, Vec3};
 
     const DT: f32 = 1.0 / 60.0;
@@ -460,6 +526,139 @@ mod tests {
         s
     }
 
+    fn flat_world_with(surface: Surface) -> TriMesh {
+        let h = 400.0;
+        let p = vec![
+            Vec3::new(-h, 0.0, -h),
+            Vec3::new(h, 0.0, -h),
+            Vec3::new(h, 0.0, h),
+            Vec3::new(-h, 0.0, h),
+        ];
+        TriMesh::with_surfaces(p, vec![[0, 2, 1], [0, 3, 2]], vec![surface; 2], 8.0)
+    }
+
+    #[test]
+    fn boost_tiers_by_charge() {
+        let p = VehicleParams::default();
+        assert_eq!(p.boost_for_charge(0.5), None);
+        assert_eq!(p.boost_for_charge(0.6).map(|t| t.speed), Some(5.0));
+        assert_eq!(p.boost_for_charge(1.3).map(|t| t.speed), Some(7.0));
+        assert_eq!(
+            p.boost_for_charge(2.1).map(|t| (t.speed, t.duration)),
+            Some((9.0, 1.7))
+        );
+    }
+
+    #[test]
+    fn tight_drift_charges_faster_and_turns_more() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        let run = |steer_after_start: f32| {
+            let mut s = with_speed(&w, &p, 25.0);
+            let h0 = heading(&s);
+            step(
+                &mut s,
+                &p,
+                DriveInput {
+                    throttle: 1.0,
+                    steer: 1.0,
+                    drift: true,
+                    hop: true,
+                    ..Default::default()
+                },
+                &w,
+                DT,
+            );
+            for _ in 0..40 {
+                step(
+                    &mut s,
+                    &p,
+                    DriveInput {
+                        throttle: 1.0,
+                        steer: steer_after_start,
+                        drift: true,
+                        ..Default::default()
+                    },
+                    &w,
+                    DT,
+                );
+            }
+            (s.drift.expect("drifting").charge, h0 - heading(&s))
+        };
+        let (tight_charge, tight_turn) = run(1.0);
+        let (wide_charge, wide_turn) = run(-1.0);
+        assert!(
+            tight_charge > wide_charge * 1.3,
+            "tight {tight_charge} vs wide {wide_charge}"
+        );
+        assert!(
+            tight_turn > wide_turn * 1.5,
+            "tight {tight_turn} vs wide {wide_turn}"
+        );
+        assert!(
+            wide_turn > 0.0,
+            "counter-steer widens the drift but it still turns into it"
+        );
+    }
+
+    #[test]
+    fn offroad_caps_speed() {
+        let w = flat_world_with(Surface::Offroad);
+        let p = VehicleParams::default();
+        let mut s = settled(&w, &p);
+        for _ in 0..600 {
+            step(
+                &mut s,
+                &p,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                &w,
+                DT,
+            );
+        }
+        let v = forward_speed(&s);
+        assert!(
+            (v - p.max_speed * p.offroad_speed_scale).abs() < 0.6,
+            "offroad speed {v}"
+        );
+    }
+
+    #[test]
+    fn boost_pad_triggers_boost() {
+        let w = flat_world_with(Surface::BoostPad);
+        let p = VehicleParams::default();
+        let s = settled(&w, &p);
+        assert_eq!(s.boost_speed, p.boost_pad.speed);
+        assert!(s.boost_timer > p.boost_pad.duration - 0.05);
+    }
+
+    #[test]
+    fn glancing_wall_hit_keeps_most_speed() {
+        let w = walled_world();
+        let p = VehicleParams::default();
+        let mut s = settled(&w, &p);
+        // Head 30 degrees off the wall's tangent, toward the z = 50 wall.
+        s.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_3);
+        s.position.z = 45.0;
+        s.velocity = s.rotation * Vec3::Z * 30.0;
+        for _ in 0..60 {
+            step(
+                &mut s,
+                &p,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                &w,
+                DT,
+            );
+        }
+        let v = s.velocity.length();
+        assert!(v > 18.0 && v < 31.0, "speed after glancing hit {v}");
+    }
+
     #[test]
     fn settles_at_ride_height() {
         let w = flat_world();
@@ -516,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn drift_tier2_boost() {
+    fn drift_full_charge_gives_top_tier() {
         let w = flat_world();
         let p = VehicleParams::default();
         let mut s = with_speed(&w, &p, 25.0);
@@ -535,9 +734,9 @@ mod tests {
             ..Default::default()
         };
         step(&mut s, &p, release, &w, DT);
-        assert_eq!(s.boost_speed, 7.0);
+        assert_eq!(s.boost_speed, 9.0, "a long tight drift earns the top tier");
         assert!(
-            (s.boost_timer - 1.0).abs() < 0.02,
+            (s.boost_timer - 1.7).abs() < 0.02,
             "timer {}",
             s.boost_timer
         );
@@ -562,7 +761,7 @@ mod tests {
             drift: true,
             ..Default::default()
         };
-        for _ in 0..20 {
+        for _ in 0..15 {
             step(&mut s, &p, drifting, &w, DT);
         }
         step(

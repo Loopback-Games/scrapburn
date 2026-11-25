@@ -2,6 +2,19 @@
 
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
+/// What a triangle is made of, for handling.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Surface {
+    #[default]
+    Road = 0,
+    /// Grass, dirt, sand: slow.
+    Offroad = 1,
+    Wall = 2,
+    /// Gives a speed boost while touched.
+    BoostPad = 3,
+}
+
 /// Nearest ray intersection.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RayHit {
@@ -10,6 +23,7 @@ pub struct RayHit {
     /// Unit normal facing against the ray direction.
     pub normal: Vec3,
     pub tri: u32,
+    pub surface: Surface,
 }
 
 /// Sphere penetration: push the sphere along `normal` by `depth` to resolve it.
@@ -26,6 +40,7 @@ pub struct Contact {
 pub struct TriMesh {
     positions: Vec<Vec3>,
     indices: Vec<[u32; 3]>,
+    surfaces: Vec<Surface>,
     origin: Vec2,
     cell: f32,
     nx: usize,
@@ -38,7 +53,20 @@ pub struct TriMesh {
 const MAX_CELLS_PER_AXIS: usize = 2048;
 
 impl TriMesh {
+    /// All triangles are `Surface::Road`.
     pub fn new(positions: Vec<Vec3>, indices: Vec<[u32; 3]>, cell_size: f32) -> Self {
+        let n = indices.len();
+        Self::with_surfaces(positions, indices, vec![Surface::Road; n], cell_size)
+    }
+
+    /// One `Surface` per triangle.
+    pub fn with_surfaces(
+        positions: Vec<Vec3>,
+        indices: Vec<[u32; 3]>,
+        surfaces: Vec<Surface>,
+        cell_size: f32,
+    ) -> Self {
+        assert_eq!(surfaces.len(), indices.len(), "one surface per triangle");
         assert!(cell_size > 0.0, "cell_size must be positive");
         let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
         for p in &positions {
@@ -58,6 +86,7 @@ impl TriMesh {
         let mut mesh = Self {
             positions,
             indices,
+            surfaces,
             origin: lo,
             cell,
             nx,
@@ -191,6 +220,7 @@ impl TriMesh {
                         point: origin + dir * ht,
                         normal: n,
                         tri: t,
+                        surface: self.surfaces[t as usize],
                     });
                 }
             }

@@ -4,5 +4,5 @@
 pub mod trimesh;
 pub mod vehicle;
 
-pub use trimesh::{Contact, RayHit, TriMesh};
-pub use vehicle::{DriftState, DriveInput, VehicleParams, VehicleState, step};
+pub use trimesh::{Contact, RayHit, Surface, TriMesh};
+pub use vehicle::{BoostTier, DriftState, DriveInput, VehicleParams, VehicleState, step};

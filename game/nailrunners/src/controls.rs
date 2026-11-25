@@ -64,6 +64,34 @@ pub fn drive_input(keys: &KeyInput, pad: Option<&PadState>) -> DriveInput {
     }
 }
 
+/// Smooths digital (keyboard) steering so taps don't snap the kart; analog passes through.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SteerRamp {
+    value: f32,
+}
+
+/// Keyboard steer ramp rates (full lock per second): in, and back toward center.
+const STEER_RAMP_IN: f32 = 6.0;
+const STEER_RAMP_OUT: f32 = 10.0;
+
+impl SteerRamp {
+    /// `digital` is true when the steer came from keys rather than a stick.
+    pub fn apply(&mut self, target: f32, digital: bool, dt: f32) -> f32 {
+        if !digital {
+            self.value = target;
+            return target;
+        }
+        let returning = target.abs() < self.value.abs() || target.signum() != self.value.signum();
+        let rate = if returning {
+            STEER_RAMP_OUT
+        } else {
+            STEER_RAMP_IN
+        } * dt;
+        self.value += (target - self.value).clamp(-rate, rate);
+        self.value
+    }
+}
+
 /// Holds a hop press until a sim step consumes it, so presses on frames that run zero sim
 /// steps (common at high refresh rates) aren't lost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -131,6 +159,23 @@ mod tests {
         let mut k = KeyInput::default();
         k.on_key(KeyCode::KeyD, true);
         assert_eq!(drive_input(&k, Some(&pad)).steer, 1.0);
+    }
+
+    #[test]
+    fn digital_steering_ramps_analog_passes() {
+        let mut ramp = SteerRamp::default();
+        let first = ramp.apply(1.0, true, 1.0 / 60.0);
+        assert!(
+            first > 0.05 && first < 0.2,
+            "keyboard steer ramps in: {first}"
+        );
+        for _ in 0..30 {
+            ramp.apply(1.0, true, 1.0 / 60.0);
+        }
+        assert_eq!(ramp.apply(1.0, true, 1.0 / 60.0), 1.0);
+        let back = ramp.apply(0.0, true, 1.0 / 60.0);
+        assert!(back < 0.9, "and ramps out faster: {back}");
+        assert_eq!(SteerRamp::default().apply(0.37, false, 1.0 / 60.0), 0.37);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The gray-box loop: a closed spline road with walls, a banked turn and a jump.
 
 use glam::{Quat, Vec2, Vec3};
-use rivet_physics::TriMesh;
+use rivet_physics::{Surface, TriMesh};
 use rivet_render::{MeshData, Vertex};
 
 pub const ROAD_HALF_WIDTH: f32 = 7.0;
@@ -109,13 +109,14 @@ fn bank_weight(p: Vec2) -> f32 {
     window(p.y, 80.0, 200.0, 30.0)
 }
 
-fn quad(
-    m: &mut MeshData,
-    c: &mut Vec<Vec3>,
-    ci: &mut Vec<[u32; 3]>,
-    v: [Vec3; 4],
-    color: [f32; 4],
-) {
+#[derive(Default)]
+struct Collision {
+    positions: Vec<Vec3>,
+    indices: Vec<[u32; 3]>,
+    surfaces: Vec<Surface>,
+}
+
+fn quad(m: &mut MeshData, c: &mut Collision, v: [Vec3; 4], color: [f32; 4], surface: Surface) {
     let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or_zero();
     let base = m.vertices.len() as u32;
     for p in v {
@@ -127,9 +128,11 @@ fn quad(
     }
     m.indices
         .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    let cb = c.len() as u32;
-    c.extend(v);
-    ci.extend([[cb, cb + 1, cb + 2], [cb, cb + 2, cb + 3]]);
+    let cb = c.positions.len() as u32;
+    c.positions.extend(v);
+    c.indices
+        .extend([[cb, cb + 1, cb + 2], [cb, cb + 2, cb + 3]]);
+    c.surfaces.extend([surface, surface]);
 }
 
 pub fn build_graybox_loop() -> Track {
@@ -160,7 +163,7 @@ pub fn build_graybox_loop() -> Track {
     }
 
     let mut render = MeshData::default();
-    let (mut cpos, mut cidx) = (Vec::new(), Vec::new());
+    let mut col = Collision::default();
     for i in 0..n {
         let (c0, _, r0, u0) = frames[i];
         let (c1, _, r1, u1) = frames[(i + 1) % n];
@@ -171,10 +174,10 @@ pub fn build_graybox_loop() -> Track {
         // Road, counter-clockwise seen from above (normal up).
         quad(
             &mut render,
-            &mut cpos,
-            &mut cidx,
+            &mut col,
             [l0, rr0, rr1, l1],
             if stripe { ROAD_STRIPE } else { ROAD },
+            Surface::Road,
         );
         let wall = if ((s / 4.0) as usize).is_multiple_of(2) {
             WALL
@@ -184,17 +187,17 @@ pub fn build_graybox_loop() -> Track {
         // Left wall faces right (inward), right wall faces left.
         quad(
             &mut render,
-            &mut cpos,
-            &mut cidx,
+            &mut col,
             [l0, l1, l1 + u1 * WALL_HEIGHT, l0 + u0 * WALL_HEIGHT],
             wall,
+            Surface::Wall,
         );
         quad(
             &mut render,
-            &mut cpos,
-            &mut cidx,
+            &mut col,
             [rr0, rr0 + u0 * WALL_HEIGHT, rr1 + u1 * WALL_HEIGHT, rr1],
             wall,
+            Surface::Wall,
         );
     }
 
@@ -209,13 +212,13 @@ pub fn build_graybox_loop() -> Track {
     let g = |x: f32, z: f32| Vec3::new(x, GROUND_Y, z);
     quad(
         &mut render,
-        &mut cpos,
-        &mut cidx,
+        &mut col,
         [g(lo.x, lo.y), g(lo.x, hi.y), g(hi.x, hi.y), g(hi.x, lo.y)],
         GROUND,
+        Surface::Offroad,
     );
 
-    let collision = TriMesh::new(cpos, cidx, 8.0);
+    let collision = TriMesh::with_surfaces(col.positions, col.indices, col.surfaces, 8.0);
 
     let mut centerline: Vec<Vec3> = frames.iter().map(|f| f.0).collect();
     centerline.push(centerline[0]);
@@ -319,6 +322,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn surfaces_road_offroad_wall() {
+        use rivet_physics::Surface;
+        let t = build_graybox_loop();
+        let c = t.centerline[20];
+        let down = |p: Vec3| {
+            t.collision
+                .raycast(p + Vec3::Y * 3.0, Vec3::NEG_Y, 10.0)
+                .unwrap()
+                .surface
+        };
+        assert_eq!(down(c), Surface::Road);
+        assert_eq!(
+            down(Vec3::new(140.0, 0.0, 140.0)),
+            Surface::Offroad,
+            "infield is offroad"
+        );
+        let fwd = (t.centerline[21] - t.centerline[19]).normalize();
+        let right = fwd.cross(Vec3::Y).normalize();
+        let wall = t.collision.raycast(c + Vec3::Y * 0.5, right, 20.0).unwrap();
+        assert_eq!(wall.surface, Surface::Wall);
     }
 
     #[test]
