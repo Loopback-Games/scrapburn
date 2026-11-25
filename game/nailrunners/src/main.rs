@@ -1,5 +1,30 @@
 #![forbid(unsafe_code)]
+//! Nailrunners: drive the gray-box loop.
 
-fn main() {
-    println!("nailrunners {}", env!("CARGO_PKG_VERSION"));
+mod app;
+
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"),
+    )
+    .init();
+    let args = match nailrunners::args::parse(
+        std::env::args().skip(1),
+        std::env::var("RIVET_ADAPTER").ok(),
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    match app::run(args) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
 }

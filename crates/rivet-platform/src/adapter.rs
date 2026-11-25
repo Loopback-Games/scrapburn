@@ -45,6 +45,9 @@ pub struct AdapterDesc {
     pub name: String,
     pub device_type: wgpu::DeviceType,
     pub backend: wgpu::Backend,
+    /// PCI vendor and device ids (0 when the backend doesn't report them).
+    pub vendor: u32,
+    pub device: u32,
 }
 
 impl AdapterDesc {
@@ -53,6 +56,8 @@ impl AdapterDesc {
             name: info.name.clone(),
             device_type: info.device_type,
             backend: info.backend,
+            vendor: info.vendor,
+            device: info.device,
         }
     }
 }
@@ -74,6 +79,37 @@ fn list_adapters(list: &[AdapterDesc]) -> String {
         .map(|a| format!("  {} ({:?}, {:?})", a.name, a.device_type, a.backend))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Adapters to try, best first, so a caller can fall through when one can't present.
+/// `Auto` puts GPUs that drive a display (`display_gpus`, PCI vendor/device ids) first — the
+/// system's own choice on desktops and hybrid laptops — then integrated, discrete, the rest.
+/// Explicit requests list only their match.
+pub fn candidate_order(
+    list: &[AdapterDesc],
+    pref: &AdapterPreference,
+    display_gpus: &[(u32, u32)],
+) -> Vec<usize> {
+    use wgpu::DeviceType as T;
+    match pref {
+        AdapterPreference::Auto => {
+            let rank = |a: &AdapterDesc| {
+                let drives_display = display_gpus.contains(&(a.vendor, a.device));
+                let by_type = match a.device_type {
+                    T::IntegratedGpu => 0,
+                    T::DiscreteGpu => 1,
+                    _ => 2,
+                };
+                (!drives_display, by_type)
+            };
+            let mut idx: Vec<usize> = (0..list.len()).collect();
+            idx.sort_by_key(|&i| rank(&list[i]));
+            idx
+        }
+        _ => select_adapter(list, pref)
+            .map(|i| vec![i])
+            .unwrap_or_default(),
+    }
 }
 
 /// Returns the index of the adapter to use. Explicit requests never silently fall back.
@@ -112,16 +148,22 @@ mod tests {
                 name: "NVIDIA GeForce RTX 3060".into(),
                 device_type: DeviceType::DiscreteGpu,
                 backend: Backend::Vulkan,
+                vendor: 0,
+                device: 0,
             },
             AdapterDesc {
                 name: "Intel(R) UHD Graphics 730 (ADL-S GT1)".into(),
                 device_type: DeviceType::IntegratedGpu,
                 backend: Backend::Vulkan,
+                vendor: 0,
+                device: 0,
             },
             AdapterDesc {
                 name: "llvmpipe (LLVM 20)".into(),
                 device_type: DeviceType::Cpu,
                 backend: Backend::Vulkan,
+                vendor: 0,
+                device: 0,
             },
         ]
     }
@@ -149,6 +191,42 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("RTX 3060"), "{msg}");
         assert!(msg.contains("UHD Graphics 730"), "{msg}");
+    }
+
+    #[test]
+    fn candidate_order_auto_and_explicit() {
+        assert_eq!(
+            candidate_order(&list(), &AdapterPreference::Auto, &[]),
+            vec![1, 0, 2]
+        );
+        assert_eq!(
+            candidate_order(&list(), &AdapterPreference::Discrete, &[]),
+            vec![0]
+        );
+        assert!(
+            candidate_order(
+                &list(),
+                &AdapterPreference::NameContains("radeon".into()),
+                &[]
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn candidate_order_prefers_display_gpu() {
+        let mut l = list();
+        l[0].vendor = 0x10de;
+        l[0].device = 0x2487;
+        assert_eq!(
+            candidate_order(&l, &AdapterPreference::Auto, &[(0x10de, 0x2487)]),
+            vec![0, 1, 2]
+        );
+        // Explicit requests ignore display hints.
+        assert_eq!(
+            candidate_order(&l, &AdapterPreference::Integrated, &[(0x10de, 0x2487)]),
+            vec![1]
+        );
     }
 
     #[test]

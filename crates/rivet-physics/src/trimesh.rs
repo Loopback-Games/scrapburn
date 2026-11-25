@@ -17,6 +17,8 @@ pub struct RayHit {
 pub struct Contact {
     pub normal: Vec3,
     pub depth: f32,
+    /// Unit normal of the touched triangle's plane (either side), to tell walls from floors.
+    pub face_normal: Vec3,
 }
 
 /// Static triangle soup with a uniform grid over XZ. Built once, queried every tick.
@@ -236,11 +238,8 @@ impl TriMesh {
                 continue;
             }
             let dist = dist2.sqrt();
-            let normal = if dist > 1e-6 {
-                d / dist
-            } else {
-                (b - a).cross(c - a).normalize_or_zero()
-            };
+            let face_normal = (b - a).cross(c - a).normalize_or_zero();
+            let normal = if dist > 1e-6 { d / dist } else { face_normal };
             let depth = radius - dist;
             // Merge with an existing contact on the same surface (shared edges, coplanar tris).
             if let Some(existing) = out[first..]
@@ -249,7 +248,11 @@ impl TriMesh {
             {
                 existing.depth = existing.depth.max(depth);
             } else {
-                out.push(Contact { normal, depth });
+                out.push(Contact {
+                    normal,
+                    depth,
+                    face_normal,
+                });
             }
         }
     }

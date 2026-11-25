@@ -1,0 +1,129 @@
+//! Keyboard + gamepad → drive input and app actions.
+
+use rivet_physics::DriveInput;
+use rivet_platform::{KeyInput, PadButtons, PadState};
+use winit::keyboard::KeyCode;
+
+/// App-level actions this frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Actions {
+    pub respawn: bool,
+    pub toggle_graph: bool,
+    pub quit: bool,
+}
+
+fn axis(neg: bool, pos: bool) -> f32 {
+    (pos as i32 - neg as i32) as f32
+}
+
+/// Larger magnitude wins, so a full keyboard press beats a partial stick.
+fn merge(a: f32, b: f32) -> f32 {
+    if a.abs() >= b.abs() { a } else { b }
+}
+
+pub fn drive_input(keys: &KeyInput, pad: Option<&PadState>) -> DriveInput {
+    let held = |a: KeyCode, b: KeyCode| keys.held(a) || keys.held(b);
+    let pressed = |a: KeyCode, b: KeyCode| keys.just_pressed(a) || keys.just_pressed(b);
+    let mut throttle = if held(KeyCode::KeyW, KeyCode::ArrowUp) {
+        1.0f32
+    } else {
+        0.0
+    };
+    let mut brake = if held(KeyCode::KeyS, KeyCode::ArrowDown) {
+        1.0f32
+    } else {
+        0.0
+    };
+    let key_steer = axis(
+        held(KeyCode::KeyA, KeyCode::ArrowLeft),
+        held(KeyCode::KeyD, KeyCode::ArrowRight),
+    );
+    let mut drift = held(KeyCode::Space, KeyCode::ShiftLeft) || keys.held(KeyCode::ShiftRight);
+    let mut hop =
+        pressed(KeyCode::Space, KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight);
+    let mut steer = key_steer;
+    if let Some(p) = pad {
+        let bumpers = |set: PadButtons| {
+            set.contains(PadButtons::LEFT_BUMPER) || set.contains(PadButtons::RIGHT_BUMPER)
+        };
+        throttle = throttle.max(p.right_trigger);
+        if p.buttons.contains(PadButtons::SOUTH) {
+            throttle = 1.0;
+        }
+        brake = brake.max(p.left_trigger);
+        steer = merge(key_steer, p.left_x);
+        drift |= bumpers(p.buttons);
+        hop |= bumpers(p.just_pressed);
+    }
+    DriveInput {
+        throttle,
+        brake,
+        steer: steer.clamp(-1.0, 1.0),
+        drift,
+        hop,
+    }
+}
+
+pub fn actions(keys: &KeyInput, pad: Option<&PadState>) -> Actions {
+    let pad_pressed = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
+    Actions {
+        respawn: keys.just_pressed(KeyCode::KeyR) || pad_pressed(PadButtons::EAST),
+        toggle_graph: keys.just_pressed(KeyCode::F3) || pad_pressed(PadButtons::SELECT),
+        quit: keys.just_pressed(KeyCode::Escape),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rivet_platform::{KeyInput, PadButtons, PadState};
+    use winit::keyboard::KeyCode;
+
+    #[test]
+    fn controls_map() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyW, true);
+        k.on_key(KeyCode::KeyD, true);
+        let i = drive_input(&k, None);
+        assert_eq!(i.throttle, 1.0);
+        assert_eq!(i.steer, 1.0);
+        k.on_key(KeyCode::Space, true);
+        let i = drive_input(&k, None);
+        assert!(i.drift && i.hop);
+        k.end_frame();
+        let i = drive_input(&k, None);
+        assert!(i.drift && !i.hop, "hop only on the press");
+    }
+
+    #[test]
+    fn controls_pad() {
+        let k = KeyInput::default();
+        let pad = PadState {
+            left_x: 0.5,
+            right_trigger: 0.8,
+            buttons: PadButtons::RIGHT_BUMPER,
+            just_pressed: PadButtons::RIGHT_BUMPER,
+            ..Default::default()
+        };
+        let i = drive_input(&k, Some(&pad));
+        assert_eq!(i.steer, 0.5);
+        assert_eq!(i.throttle, 0.8);
+        assert!(i.drift && i.hop);
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyD, true);
+        assert_eq!(drive_input(&k, Some(&pad)).steer, 1.0);
+    }
+
+    #[test]
+    fn actions_from_both_devices() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyR, true);
+        assert!(actions(&k, None).respawn);
+        let pad = PadState {
+            just_pressed: PadButtons::SELECT,
+            ..Default::default()
+        };
+        let a = actions(&KeyInput::default(), Some(&pad));
+        assert!(a.toggle_graph && !a.respawn && !a.quit);
+    }
+}

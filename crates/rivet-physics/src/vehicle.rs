@@ -326,7 +326,11 @@ pub fn step(
     // --- Walls ---
     let mut contacts: Vec<Contact> = Vec::new();
     world.sphere_contacts(state.position, p.body_radius, &mut contacts);
-    for c in contacts.iter().filter(|c| c.normal.y < GROUND_NORMAL_Y) {
+    // Only wall-like faces push the body; floors (and their edges) belong to the suspension.
+    for c in contacts
+        .iter()
+        .filter(|c| c.face_normal.y.abs() < GROUND_NORMAL_Y)
+    {
         state.position += c.normal * c.depth;
         let into = state.velocity.dot(c.normal);
         if into < 0.0 {
@@ -384,6 +388,49 @@ mod tests {
             Vec3::new(-50.0, 5.0, 50.0),
         ];
         TriMesh::new(p, vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]], 8.0)
+    }
+
+    /// Ground built from 2 m tiles, like real track meshes.
+    fn tiled_world() -> TriMesh {
+        let (mut p, mut idx) = (Vec::new(), Vec::new());
+        for zi in -10..200 {
+            for xi in -10..10 {
+                let (x, z) = (xi as f32 * 2.0, zi as f32 * 2.0);
+                let b = p.len() as u32;
+                p.extend([
+                    Vec3::new(x, 0.0, z),
+                    Vec3::new(x + 2.0, 0.0, z),
+                    Vec3::new(x + 2.0, 0.0, z + 2.0),
+                    Vec3::new(x, 0.0, z + 2.0),
+                ]);
+                idx.extend([[b, b + 2, b + 1], [b, b + 3, b + 2]]);
+            }
+        }
+        TriMesh::new(p, idx, 8.0)
+    }
+
+    #[test]
+    fn tile_seams_do_not_snag() {
+        let w = tiled_world();
+        let p = VehicleParams::default();
+        let mut s = VehicleState::spawn(Vec3::new(0.3, 1.0, 0.0), 0.0);
+        let input = DriveInput {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..300 {
+            step(&mut s, &p, input, &w, DT);
+        }
+        assert!(
+            forward_speed(&s) > 25.0,
+            "speed after 5 s on tiles: {}",
+            forward_speed(&s)
+        );
+        assert!(
+            s.position.x.abs() < 1.0,
+            "pushed sideways to x = {}",
+            s.position.x
+        );
     }
 
     fn forward(s: &VehicleState) -> Vec3 {

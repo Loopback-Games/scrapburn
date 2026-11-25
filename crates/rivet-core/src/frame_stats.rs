@@ -29,11 +29,12 @@ pub struct FrameStats {
 }
 
 impl FrameStats {
+    /// `capacity` may be huge (e.g. `usize::MAX` for "keep everything"); memory grows on demand.
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "capacity must be positive");
         Self {
             capacity,
-            samples: VecDeque::with_capacity(capacity),
+            samples: VecDeque::with_capacity(capacity.min(4096)),
         }
     }
 

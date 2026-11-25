@@ -168,12 +168,12 @@ pub fn build_graybox_loop() -> Track {
         let stripe = s % 10.0 < SAMPLE_SPACING;
         let (l0, rr0) = (c0 - r0 * ROAD_HALF_WIDTH, c0 + r0 * ROAD_HALF_WIDTH);
         let (l1, rr1) = (c1 - r1 * ROAD_HALF_WIDTH, c1 + r1 * ROAD_HALF_WIDTH);
-        // Road, CCW seen from above.
+        // Road, counter-clockwise seen from above (normal up).
         quad(
             &mut render,
             &mut cpos,
             &mut cidx,
-            [l0, l1, rr1, rr0],
+            [l0, rr0, rr1, l1],
             if stripe { ROAD_STRIPE } else { ROAD },
         );
         let wall = if ((s / 4.0) as usize).is_multiple_of(2) {
@@ -186,14 +186,14 @@ pub fn build_graybox_loop() -> Track {
             &mut render,
             &mut cpos,
             &mut cidx,
-            [l0, l0 + u0 * WALL_HEIGHT, l1 + u1 * WALL_HEIGHT, l1],
+            [l0, l1, l1 + u1 * WALL_HEIGHT, l0 + u0 * WALL_HEIGHT],
             wall,
         );
         quad(
             &mut render,
             &mut cpos,
             &mut cidx,
-            [rr0, rr1, rr1 + u1 * WALL_HEIGHT, rr0 + u0 * WALL_HEIGHT],
+            [rr0, rr0 + u0 * WALL_HEIGHT, rr1 + u1 * WALL_HEIGHT, rr1],
             wall,
         );
     }
@@ -290,6 +290,34 @@ mod tests {
                 .raycast(c + Vec3::Y * 0.5, side, 20.0)
                 .expect("wall");
             assert!((hit.t - ROAD_HALF_WIDTH).abs() < 0.3, "wall at {} m", hit.t);
+        }
+    }
+
+    #[test]
+    fn render_faces_point_up_and_inward() {
+        let t = build_graybox_loop();
+        let center =
+            t.centerline.iter().fold(Vec3::ZERO, |a, p| a + *p) / t.centerline.len() as f32;
+        let m = &t.render;
+        for tri in m.indices.chunks(3) {
+            let [a, b, c] = [0, 1, 2].map(|i| Vec3::from_array(m.vertices[tri[i] as usize].pos));
+            let n = (b - a).cross(c - a).normalize_or_zero();
+            if n.y.abs() > 0.7 {
+                assert!(n.y > 0.0, "floor triangle faces down at {a}");
+            } else {
+                // Walls face back toward the road; the road centerline is nearest.
+                let mid = (a + b + c) / 3.0;
+                let nearest = t
+                    .centerline
+                    .iter()
+                    .min_by(|p, q| p.distance_squared(mid).total_cmp(&q.distance_squared(mid)))
+                    .unwrap();
+                let to_road = Vec3::new(nearest.x - mid.x, 0.0, nearest.z - mid.z);
+                assert!(
+                    n.dot(to_road) > 0.0,
+                    "wall faces away from the road at {mid} (loop center {center})"
+                );
+            }
         }
     }
 
