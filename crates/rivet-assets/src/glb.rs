@@ -69,9 +69,12 @@ impl Doc<'_> {
             .and_then(Value::as_u64)
             .ok_or_else(|| bad("byteLength"))? as usize;
         let stride = v.get("byteStride").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let end = off
+            .checked_add(len)
+            .ok_or_else(|| bad("bufferView range overflows"))?;
         let data = self
             .bin
-            .get(off..off + len)
+            .get(off..end)
             .ok_or_else(|| bad("bufferView out of range"))?;
         Ok((data, stride))
     }
@@ -96,6 +99,8 @@ impl Doc<'_> {
         )?;
         let base = a.get("byteOffset").and_then(Value::as_u64).unwrap_or(0) as usize;
         let stride = if stride == 0 { n * 4 } else { stride };
+        // Validate the whole range before allocating: counts come from untrusted JSON.
+        fits(data.len(), base, count, stride, n * 4)?;
         let mut out = Vec::with_capacity(count * n);
         for i in 0..count {
             for c in 0..n {
@@ -134,6 +139,7 @@ impl Doc<'_> {
             5125 => 4,
             _ => return Err(bad("index component type")),
         };
+        fits(data.len(), base, count, size, size)?;
         (0..count)
             .map(|i| {
                 let at = base + i * size;
@@ -178,6 +184,27 @@ impl Doc<'_> {
             pixels: decoded.into_raw(),
         }))
     }
+}
+
+/// Most vertices accepted from one file (props and vehicles are far below this).
+const MAX_VERTICES: usize = 4_000_000;
+/// Most pending nodes during traversal (guards against child-list bombs).
+const MAX_STACK: usize = 10_000;
+
+/// Errors unless `count` elements of `elem` bytes at `stride` starting at `base` fit in `len`.
+fn fits(len: usize, base: usize, count: usize, stride: usize, elem: usize) -> Result<(), GlbError> {
+    if count == 0 {
+        return Ok(());
+    }
+    let last = (count - 1)
+        .checked_mul(stride)
+        .and_then(|v| v.checked_add(base))
+        .and_then(|v| v.checked_add(elem))
+        .ok_or_else(|| bad("accessor range overflows"))?;
+    if last > len {
+        return Err(bad("accessor exceeds its buffer view"));
+    }
+    Ok(())
 }
 
 /// Column-major 4×4 transform of a node (matrix, or translation/rotation/scale).
@@ -323,6 +350,12 @@ pub fn parse_glb(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
                     Some(i) => doc.floats(i as usize, 2)?,
                     None => vec![0.0; count * 2],
                 };
+                if nrm.len() != count * 3 || uv.len() != count * 2 {
+                    return Err(bad("attribute counts differ from POSITION"));
+                }
+                if out.positions.len() + count > MAX_VERTICES {
+                    return Err(bad("too many vertices"));
+                }
                 let base = out.positions.len() as u32;
                 for v in 0..count {
                     out.positions.push(xform_point(
@@ -336,9 +369,13 @@ pub fn parse_glb(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
                     out.uvs.push([uv[v * 2], uv[v * 2 + 1]]);
                 }
                 match prim.get("indices").and_then(Value::as_u64) {
-                    Some(i) => out
-                        .indices
-                        .extend(doc.indices(i as usize)?.into_iter().map(|x| x + base)),
+                    Some(i) => {
+                        let idx = doc.indices(i as usize)?;
+                        if idx.iter().any(|&x| x as usize >= count) {
+                            return Err(bad("index out of range"));
+                        }
+                        out.indices.extend(idx.into_iter().map(|x| x + base));
+                    }
                     None => out.indices.extend(base..base + count as u32),
                 }
             }
@@ -350,6 +387,9 @@ pub fn parse_glb(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
                     .filter_map(Value::as_u64)
                     .map(|c| (c as usize, world)),
             );
+            if stack.len() > MAX_STACK {
+                return Err(bad("node graph too large or cyclic"));
+            }
         }
     }
     out.base_color = doc.base_color()?;
@@ -360,8 +400,13 @@ pub fn parse_glb(bytes: &[u8]) -> Result<GlbMesh, GlbError> {
 mod tests {
     use super::*;
 
-    /// A GLB with one triangle (u16 indices) under a node translated by (0, 0, 5).
     fn tiny_glb() -> Vec<u8> {
+        glb_with(|_| {})
+    }
+
+    /// A GLB with one triangle (u16 indices) under a node translated by (0, 0, 5); `patch` edits
+    /// the JSON before packing.
+    fn glb_with(patch: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
         let mut bin = Vec::new();
         for v in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
             for c in v {
@@ -402,6 +447,8 @@ mod tests {
             ],
             "buffers": [{"byteLength": bin.len()}]
         });
+        let mut json = json;
+        patch(&mut json);
         let mut js = serde_json::to_vec(&json).unwrap();
         while !js.len().is_multiple_of(4) {
             js.push(b' ');
@@ -428,6 +475,35 @@ mod tests {
         assert_eq!(m.normals[0], [0.0, 0.0, 1.0]);
         assert_eq!(m.uvs[2], [0.0, 1.0]);
         assert!(m.base_color.is_none());
+    }
+
+    #[test]
+    fn rejects_attribute_count_mismatch() {
+        let g = glb_with(|j| j["accessors"][1]["count"] = 2.into());
+        assert!(parse_glb(&g).is_err());
+    }
+
+    #[test]
+    fn rejects_absurd_counts_without_allocating() {
+        let g = glb_with(|j| j["accessors"][0]["count"] = 1_000_000_000_000_000u64.into());
+        assert!(parse_glb(&g).is_err());
+    }
+
+    #[test]
+    fn rejects_child_bombs() {
+        let g = glb_with(|j| {
+            j["nodes"][0]["children"] = serde_json::Value::Array(vec![0.into(); 1000])
+        });
+        assert!(parse_glb(&g).is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_indices() {
+        let mut g = tiny_glb();
+        // Patch the third u16 index (byte 96 + 4 into BIN) to 9.
+        let bin_start = g.len() - 104;
+        g[bin_start + 100] = 9;
+        assert!(parse_glb(&g).is_err());
     }
 
     #[test]

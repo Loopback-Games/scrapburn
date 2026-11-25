@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rivet_assets::{AssetError, Rgba8Image, load_rgba, mip_chain};
+use rivet_assets::{AssetError, Rgba8Image, load_rgba, mip_chain, resized};
 use rivet_render::MaterialShading;
 
 /// Texture array layers, in `LAYER_FILES` order.
@@ -88,10 +88,25 @@ pub fn find_assets_dir() -> Option<PathBuf> {
 
 /// Loads every layer and builds its mip chain.
 pub fn load_layers(assets: &Path) -> Result<Vec<Vec<Rgba8Image>>, AssetError> {
-    LAYER_FILES
+    let images = LAYER_FILES
         .iter()
-        .map(|f| load_rgba(&assets.join("textures").join(f)).map(|img| mip_chain(&img)))
-        .collect()
+        .map(|f| load_rgba(&assets.join("textures").join(f)))
+        .collect::<Result<Vec<_>, _>>()?;
+    // The texture array needs every layer at one size; match the first layer.
+    let (w, h) = (images[0].width, images[0].height);
+    Ok(images
+        .iter()
+        .map(|img| {
+            if (img.width, img.height) != (w, h) {
+                log::warn!(
+                    "texture layer is {}x{}, resizing to {w}x{h}",
+                    img.width,
+                    img.height
+                );
+            }
+            mip_chain(&resized(img, w, h))
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -103,6 +118,26 @@ mod tests {
         assert_eq!(LAYER_FILES.len(), Layer::COUNT);
         assert_eq!(shading().len(), Layer::COUNT + 1);
         assert_eq!(LAYER_FILES[Layer::Rock as usize], "rock.png");
+    }
+
+    #[test]
+    fn mismatched_layer_sizes_are_resized_to_the_first() {
+        let root = std::env::temp_dir().join(format!("rivet-layers-test-{}", std::process::id()));
+        let tex = root.join("textures");
+        std::fs::create_dir_all(&tex).unwrap();
+        for (i, f) in LAYER_FILES.iter().enumerate() {
+            let size = if i == 2 { 16 } else { 32 };
+            image::RgbaImage::from_pixel(size, size, image::Rgba([90, 80, 70, 255]))
+                .save(tex.join(f))
+                .unwrap();
+        }
+        let layers = load_layers(&root).unwrap();
+        assert!(
+            layers
+                .iter()
+                .all(|l| (l[0].width, l[0].height) == (32, 32) && l.len() == layers[0].len())
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

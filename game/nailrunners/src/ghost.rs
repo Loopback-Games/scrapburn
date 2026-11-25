@@ -64,7 +64,7 @@ impl Ghost {
         let body = b.get(20..20 + n.checked_mul(SAMPLE_BYTES)?)?;
         let f =
             |i: usize| f32::from_le_bytes(body[i * 4..i * 4 + 4].try_into().expect("4-byte slice"));
-        let samples = (0..n)
+        let samples: Vec<GhostSample> = (0..n)
             .map(|k| {
                 let o = k * 8;
                 GhostSample {
@@ -74,7 +74,16 @@ impl Ghost {
                 }
             })
             .collect();
-        (lap_time.is_finite() && lap_time > 0.0).then_some(Ghost { lap_time, samples })
+        // Only accept ghosts that can be played back: 2+ samples, finite values, ordered time.
+        let finite =
+            |s: &GhostSample| s.t.is_finite() && s.pos.iter().chain(&s.rot).all(|v| v.is_finite());
+        let ordered = samples.windows(2).all(|w: &[GhostSample]| w[1].t > w[0].t);
+        let ok = lap_time.is_finite()
+            && lap_time > 0.0
+            && samples.len() >= 2
+            && samples.iter().all(finite)
+            && ordered;
+        ok.then_some(Ghost { lap_time, samples })
     }
 }
 
@@ -226,6 +235,22 @@ mod tests {
         assert_eq!(back.samples.len(), g.samples.len());
         assert_eq!(back.samples[7].pos, g.samples[7].pos);
         assert!(Ghost::decode(b"garbage").is_none());
+    }
+
+    #[test]
+    fn decode_rejects_unplayable_ghosts() {
+        let mut one = lap(1.0);
+        one.samples.truncate(1);
+        assert!(Ghost::decode(&one.encode()).is_none(), "one sample");
+        let mut nan = lap(1.0);
+        nan.samples[3].pos[0] = f32::NAN;
+        assert!(Ghost::decode(&nan.encode()).is_none(), "NaN position");
+        let mut backwards = lap(1.0);
+        backwards.samples.swap(2, 5);
+        assert!(
+            Ghost::decode(&backwards.encode()).is_none(),
+            "out-of-order time"
+        );
     }
 
     #[test]

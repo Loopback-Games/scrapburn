@@ -1097,6 +1097,7 @@ dependencies = [
  "anyhow",
  "env_logger",
  "glam",
+ "image",
  "log",
  "rivet-assets",
  "rivet-core",
