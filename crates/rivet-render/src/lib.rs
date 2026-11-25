@@ -16,7 +16,9 @@ pub mod texture;
 pub use context::{Frame, GpuContext, PresentChoice, RenderError, headless_device};
 pub use frame_graph::draw_frame_graph;
 pub use gpu_timer::GpuTimer;
-pub use mesh::{EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material};
+pub use mesh::{
+    DITHER, EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material,
+};
 pub use overlay::Overlay;
 pub use preset::{Preset, QualitySettings};
 pub use scene::{

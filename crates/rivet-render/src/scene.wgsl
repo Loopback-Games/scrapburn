@@ -39,6 +39,7 @@ struct VsOut {
 const FLAG_TRIPLANAR_B: u32 = 1u;
 const FLAG_UNTEXTURED: u32 = 2u;
 const FLAG_EMISSIVE: u32 = 4u;
+const FLAG_DITHER: u32 = 8u;
 
 @vertex
 fn vs_main(v: VsIn) -> VsOut {
@@ -90,6 +91,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let dwdx = dpdx(in.world);
     let dwdy = dpdy(in.world);
 
+    // Screen-door transparency (ghosts): drop half the pixels in a 2×2 checker.
+    if (((in.material >> 16u) & FLAG_DITHER) != 0u) {
+        let p = vec2<u32>(in.clip.xy);
+        if (((p.x + p.y) & 1u) == 0u) {
+            discard;
+        }
+    }
     let la = i32(in.material & 255u);
     let lb = i32((in.material >> 8u) & 255u);
     let flags = in.material >> 16u;

@@ -12,6 +12,7 @@ use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
 use nailrunners::controls::{HopLatch, SteerRamp, actions, drive_input};
 use nailrunners::effects::Effects;
+use nailrunners::ghost::{BestGhost, GhostRecorder};
 use nailrunners::laps::{LapEvent, LapTracker};
 use nailrunners::materials::{find_assets_dir, load_layers, shading};
 use nailrunners::track::{Track, build_graybox_loop};
@@ -29,6 +30,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
+
+/// Identifies this track's saved data (ghosts).
+const TRACK_ID: &str = "dustbowl-loop";
 
 /// Below this height the kart is considered lost and respawns.
 const FALL_LIMIT_Y: f32 = -30.0;
@@ -64,6 +68,10 @@ struct Game {
     timer: Option<GpuTimer>,
     track_meshes: [GpuMesh; 3],
     kart_mesh: GpuMesh,
+    ghost_mesh: GpuMesh,
+    ghost_file: Option<std::path::PathBuf>,
+    best_ghost: BestGhost,
+    recorder: GhostRecorder,
     track: Track,
     params: VehicleParams,
     prev: VehicleState,
@@ -166,6 +174,23 @@ impl Game {
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
         let kart_mesh = GpuMesh::new(&ctx.device, &kart_data);
+        let mut ghost_data = kart_data.clone();
+        for v in &mut ghost_data.vertices {
+            v.color = [0.2, 0.5, 0.6, 0.0];
+            v.material = rivet_render::material(
+                0,
+                0,
+                rivet_render::UNTEXTURED | rivet_render::EMISSIVE | rivet_render::DITHER,
+            );
+        }
+        let ghost_mesh = GpuMesh::new(&ctx.device, &ghost_data);
+        let ghost_file =
+            nailrunners::ghost::data_dir().map(|d| nailrunners::ghost::ghost_path(&d, TRACK_ID));
+        let best_ghost =
+            BestGhost::from_ghost(ghost_file.as_deref().and_then(nailrunners::ghost::load));
+        if let Some(g) = best_ghost.ghost() {
+            log::info!("loaded best ghost: {:.3} s", g.lap_time);
+        }
         let spawn = VehicleState::spawn(track.spawn.0 + Vec3::Y * SPAWN_LIFT, track.spawn.1);
         let laps = LapTracker::new(track.checkpoints.len());
         Ok(Self {
@@ -176,6 +201,10 @@ impl Game {
             timer,
             track_meshes,
             kart_mesh,
+            ghost_mesh,
+            ghost_file,
+            best_ghost,
+            recorder: GhostRecorder::default(),
             track,
             params: VehicleParams::default(),
             prev: spawn.clone(),
@@ -259,6 +288,9 @@ impl Game {
                 TICK_DT as f32,
             );
             self.sim_time += TICK_DT;
+            let lap_t = (self.sim_time - self.laps.lap_start()) as f32;
+            self.recorder
+                .record(lap_t, self.cur.position, self.cur.rotation);
             if let Some(LapEvent::Lap { time, .. }) = self.laps.update(
                 self.prev.position,
                 self.cur.position,
@@ -266,6 +298,18 @@ impl Game {
                 self.sim_time,
             ) {
                 self.last_lap = Some(time);
+                let lap = self.recorder.finish(time);
+                if self.best_ghost.offer(lap)
+                    && self.bench.is_none()
+                    && let (Some(path), Some(g)) = (&self.ghost_file, self.best_ghost.ghost())
+                {
+                    match nailrunners::ghost::save(path, g) {
+                        Ok(()) => {
+                            log::info!("new best lap {time:.3} s saved to {}", path.display())
+                        }
+                        Err(e) => log::warn!("saving the ghost failed: {e}"),
+                    }
+                }
                 self.best_lap = Some(self.best_lap.map_or(time, |b| b.min(time)));
             }
             if self.cur.position.y < FALL_LIMIT_Y {
@@ -374,6 +418,17 @@ impl Game {
                 casts_shadow: true,
             },
         ];
+        let lap_t = (self.sim_time - self.laps.lap_start()) as f32;
+        let ghost_draw = self
+            .best_ghost
+            .ghost()
+            .and_then(|g| g.sample(lap_t))
+            .map(|(p, r)| Draw {
+                mesh: &self.ghost_mesh,
+                model: Mat4::from_rotation_translation(r, p),
+                casts_shadow: false,
+            });
+        let draws: Vec<Draw> = draws.into_iter().chain(ghost_draw).collect();
         let (additive, alpha) = self.effects.particles.instances();
         let content = FrameContent {
             draws: &draws,

@@ -16,6 +16,8 @@ pub const TRIPLANAR_B: u32 = 1;
 pub const UNTEXTURED: u32 = 2;
 /// Self-lit, unaffected by sun and fog (boost pads, lights).
 pub const EMISSIVE: u32 = 4;
+/// Screen-door transparency: half the pixels are discarded (ghosts).
+pub const DITHER: u32 = 8;
 
 /// Vertex: position, normal, texture coordinates, sRGB tint (alpha = blend weight toward the
 /// material's `b` layer), packed material word.
