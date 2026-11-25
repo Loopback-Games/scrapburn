@@ -16,10 +16,33 @@ pub struct Args {
     /// Write the last offscreen bench frame here as PNG.
     pub screenshot: Option<std::path::PathBuf>,
     pub preset: Preset,
+    pub mode: Mode,
+}
+
+/// What to play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Combat race against seven rivals.
+    #[default]
+    Race,
+    /// Solo laps against your best-lap ghost.
+    TimeTrial,
+}
+
+impl std::str::FromStr for Mode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "race" => Ok(Self::Race),
+            "timetrial" | "time-trial" | "tt" => Ok(Self::TimeTrial),
+            other => Err(format!("unknown mode '{other}' (use race or timetrial)")),
+        }
+    }
 }
 
 pub const USAGE: &str = "usage: nailrunners [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -34,6 +57,7 @@ pub fn parse(
     let mut offscreen = false;
     let mut screenshot = None;
     let mut preset = Preset::Medium;
+    let mut mode = Mode::Race;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -66,6 +90,7 @@ pub fn parse(
             }
             "--offscreen" => offscreen = true,
             "--preset" => preset = value()?.parse()?,
+            "--mode" => mode = value()?.parse()?,
             "--screenshot" => screenshot = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
@@ -92,6 +117,7 @@ pub fn parse(
         offscreen,
         screenshot,
         preset,
+        mode,
     })
 }
 
@@ -173,6 +199,16 @@ mod tests {
             Preset::Low
         );
         assert!(parse_strs(&["--preset", "potato"], None).is_err());
+    }
+
+    #[test]
+    fn args_mode() {
+        assert_eq!(parse_strs(&[], None).unwrap().mode, Mode::Race);
+        assert_eq!(
+            parse_strs(&["--mode", "timetrial"], None).unwrap().mode,
+            Mode::TimeTrial
+        );
+        assert!(parse_strs(&["--mode", "derby"], None).is_err());
     }
 
     #[test]

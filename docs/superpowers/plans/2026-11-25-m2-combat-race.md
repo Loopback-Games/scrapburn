@@ -30,9 +30,12 @@ track, combat race, 3 weapons, bots).
   distance to the player), steer around a kart ahead, fire items when a target is in front or
   drop bombs when someone is close behind.
 - **Items:** boxes in rows of 4 at 3 places; respawn after 3 s; position-weighted odds (leaders
-  get Nailer/Nail Bomb, the back of the pack gets the Doom Orb more often).
+  get the Nailer, the middle the Harpoon, the back of the pack gets the Doom Orb more often).
   - Nailer: 12 nails over 0.6 s forward; each hit = small spin-out (0.6 s, speed ×0.75).
-  - Nail Bomb: dropped behind; a spike ring hazard for 12 s; driving over it = spin-out 1.0 s.
+  - Harpoon (replaces the Nail Bomb, which was too close to the Nailer — user call): fires a
+    chained hook at the nearest kart ahead within 70 m in a forward cone; on hit it reels the
+    shooter in (boost toward the target) for up to 1.2 s, then releases with a slingshot boost
+    while yanking the target (speed ×0.6). Misses retract after 0.5 s.
   - Doom Orb: slow green orb homes on the leader along the track; arcs lightning at karts within
     8 m it passes (small slow); detonates on the leader (big spin-out 1.6 s, launch).
 - **Spin-out:** physics state; steering/throttle ignored, yaw spin, speed scrub.

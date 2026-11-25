@@ -73,6 +73,20 @@ pub struct Draw<'a> {
     pub mesh: &'a GpuMesh,
     pub model: Mat4,
     pub casts_shadow: bool,
+    /// Linear color multiplier (paint variants); `[1.0; 3]` for none.
+    pub tint: [f32; 3],
+}
+
+impl<'a> Draw<'a> {
+    /// An untinted, shadow-casting draw.
+    pub fn new(mesh: &'a GpuMesh, model: Mat4) -> Self {
+        Self {
+            mesh,
+            model,
+            casts_shadow: true,
+            tint: [1.0; 3],
+        }
+    }
 }
 
 /// Per-layer material shading: specular strength, gloss, triplanar scale (1/m).
@@ -316,7 +330,7 @@ fn model_bind_group(
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: buf,
                 offset: 0,
-                size: wgpu::BufferSize::new(64),
+                size: wgpu::BufferSize::new(80),
             }),
         }],
     })
@@ -982,6 +996,8 @@ impl SceneRenderer {
         for (i, d) in draws.iter().enumerate() {
             let o = i * MODEL_STRIDE as usize;
             bytes[o..o + 64].copy_from_slice(bytemuck::bytes_of(&d.model));
+            let tint = [d.tint[0], d.tint[1], d.tint[2], 1.0f32];
+            bytes[o + 64..o + 80].copy_from_slice(bytemuck::cast_slice(&tint));
         }
         if !bytes.is_empty() {
             queue.write_buffer(&self.model_buf, 0, &bytes);

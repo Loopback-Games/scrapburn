@@ -53,6 +53,47 @@ impl LapTracker {
         (self.next + self.count - 1) % self.count
     }
 
+    /// Index of the checkpoint to cross next.
+    pub fn next_checkpoint(&self) -> usize {
+        self.next
+    }
+
+    /// Lap progress in checkpoints, fractional: passed checkpoints this lap plus the share of
+    /// the way to the next one.
+    pub fn progress(&self, pos: Vec3, checkpoints: &[Checkpoint]) -> f32 {
+        let next = &checkpoints[self.next];
+        let prev = &checkpoints[self.last_checkpoint()];
+        let span = prev.center.distance(next.center).max(1.0);
+        let frac = (1.0 - pos.distance(next.center) / span).clamp(0.0, 1.0);
+        let passed = if self.next == 0 {
+            self.count - 1
+        } else {
+            self.next - 1
+        };
+        (self.laps as usize * self.count + passed) as f32 + frac
+    }
+
+    /// Points `next` at the first checkpoint ahead of `pos` (after teleports in tests/tools).
+    pub fn sync_to(&mut self, pos: Vec3, checkpoints: &[Checkpoint]) {
+        let nearest = (0..checkpoints.len())
+            .min_by(|&a, &b| {
+                checkpoints[a]
+                    .center
+                    .distance(pos)
+                    .total_cmp(&checkpoints[b].center.distance(pos))
+            })
+            .unwrap_or(0);
+        let ahead = (pos - checkpoints[nearest].center).dot(checkpoints[nearest].forward) < 0.0;
+        self.next = if ahead {
+            nearest
+        } else {
+            (nearest + 1) % self.count
+        };
+        if self.next == 0 {
+            self.next = 1 % self.count;
+        }
+    }
+
     pub fn update(
         &mut self,
         prev: Vec3,

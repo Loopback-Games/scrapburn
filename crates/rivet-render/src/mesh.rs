@@ -215,11 +215,7 @@ mod gpu_tests {
             time: 0.0,
         };
         let mut enc = device.create_command_encoder(&Default::default());
-        let draws = [Draw {
-            mesh: &mesh,
-            model: Mat4::IDENTITY,
-            casts_shadow: true,
-        }];
+        let draws = [Draw::new(&mesh, Mat4::IDENTITY)];
         let spark = crate::ParticleInstance {
             pos: [0.0, 0.8, 0.6],
             size: 0.3,

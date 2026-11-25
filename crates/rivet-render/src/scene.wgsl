@@ -2,6 +2,7 @@
 
 struct Model {
     model: mat4x4<f32>,
+    tint: vec4<f32>,
 };
 
 struct MaterialParams {
@@ -49,7 +50,7 @@ fn vs_main(v: VsIn) -> VsOut {
     o.world = world.xyz;
     o.normal = normalize((obj.model * vec4<f32>(v.normal, 0.0)).xyz);
     o.uv = v.uv;
-    o.color = vec4<f32>(pow(v.color.rgb, vec3<f32>(2.2)), v.color.a);
+    o.color = vec4<f32>(pow(v.color.rgb, vec3<f32>(2.2)) * obj.tint.rgb, v.color.a);
     o.material = v.material;
     o.light_pos = g.light_view_proj * world;
     return o;
