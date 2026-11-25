@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Rivet physics: triangle-mesh collision queries and the arcade kart vehicle.
 
 pub mod trimesh;

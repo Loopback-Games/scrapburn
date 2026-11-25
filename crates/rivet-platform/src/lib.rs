@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Rivet platform layer: GPU adapter choice, keyboard state and gamepads.
 
 pub mod adapter;

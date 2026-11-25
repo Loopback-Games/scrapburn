@@ -12,6 +12,8 @@ within 6 months, not archived or deprecated, license compatible with MIT OR Apac
 | pollster | Blocking on wgpu setup futures | MIT/Apache |
 | log, env_logger | Logging | rust-lang/rust-cli, MIT/Apache |
 | anyhow | App-level errors | MIT/Apache |
+| thiserror | Library error types | dtolnay, MIT/Apache |
+| cargo-deny (tool) | License/ban/source checks in `just security` | EmbarkStudios, MIT/Apache |
 | cargo-audit (tool) | `just security` | RustSec (Rust working group), first-party carve-out |
 
 ## Exceptions

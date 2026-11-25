@@ -18,6 +18,7 @@ test:
 
 security:
     cargo audit
+    cargo deny check licenses bans sources
 
 build:
     cargo build --workspace --release

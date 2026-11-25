@@ -2,6 +2,7 @@
 rust = { version = "1.100.0", components = "rustfmt,clippy" }
 just = "1.59.0"
 "cargo:cargo-audit" = "0.22.2"
+"aqua:EmbarkStudios/cargo-deny" = "0.22.1"
 
 [env]
 # gilrs needs libudev headers on Linux. On Bluefin they come from the keg-only

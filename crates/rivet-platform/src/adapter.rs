@@ -57,32 +57,24 @@ impl AdapterDesc {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AdapterError {
+    #[error("no GPU adapter matches {wanted}; available adapters:\n{}", list_adapters(.available))]
     NoMatch {
         wanted: String,
         available: Vec<AdapterDesc>,
     },
 }
 
-impl fmt::Display for AdapterError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoMatch { wanted, available } => {
-                writeln!(f, "no GPU adapter matches {wanted}; available adapters:")?;
-                if available.is_empty() {
-                    writeln!(f, "  (none)")?;
-                }
-                for a in available {
-                    writeln!(f, "  {} ({:?}, {:?})", a.name, a.device_type, a.backend)?;
-                }
-                Ok(())
-            }
-        }
+fn list_adapters(list: &[AdapterDesc]) -> String {
+    if list.is_empty() {
+        return "  (none)".into();
     }
+    list.iter()
+        .map(|a| format!("  {} ({:?}, {:?})", a.name, a.device_type, a.backend))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
-
-impl std::error::Error for AdapterError {}
 
 /// Returns the index of the adapter to use. Explicit requests never silently fall back.
 pub fn select_adapter(
