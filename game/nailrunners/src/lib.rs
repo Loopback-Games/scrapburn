@@ -7,6 +7,7 @@ pub mod bench;
 pub mod camera;
 pub mod controls;
 pub mod effects;
+pub mod kart;
 pub mod laps;
 pub mod materials;
 pub mod particles;

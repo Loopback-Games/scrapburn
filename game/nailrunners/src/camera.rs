@@ -2,8 +2,8 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-const BACK: f32 = 7.0;
-const HEIGHT: f32 = 2.6;
+const BACK: f32 = 6.0;
+const HEIGHT: f32 = 2.2;
 const LOOK_AHEAD: f32 = 3.0;
 const OMEGA: f32 = 8.0;
 const FOV_MIN: f32 = 70.0;
@@ -134,7 +134,7 @@ mod tests {
             cam.update(Vec3::ZERO, Quat::IDENTITY, 0.0, 1.0 / 60.0);
         }
         assert!(
-            cam.position().distance(Vec3::new(0.0, 2.6, -7.0)) < 0.2,
+            cam.position().distance(Vec3::new(0.0, HEIGHT, -BACK)) < 0.2,
             "{}",
             cam.position()
         );
@@ -161,7 +161,7 @@ mod tests {
         }
         // The car moved 10 m during a 2 s stall.
         cam.update(Vec3::new(0.0, 0.0, 10.0), Quat::IDENTITY, 0.0, 2.0);
-        let goal = Vec3::new(0.0, 2.6, 3.0);
+        let goal = Vec3::new(0.0, HEIGHT, 10.0 - BACK);
         assert!(
             cam.position().distance(goal) < 12.0,
             "camera flung to {}",

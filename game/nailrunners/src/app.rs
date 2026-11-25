@@ -136,7 +136,18 @@ impl Game {
         let ctx = GpuContext::new(window.clone(), &args.adapter, args.present, args.offscreen)?;
         let assets =
             find_assets_dir().context("could not find the assets directory (set RIVET_ASSETS)")?;
-        let layers = load_layers(&assets).context("loading material textures")?;
+        let mut layers = load_layers(&assets).context("loading material textures")?;
+        // The kart model brings its own texture as an extra layer; fall back to the box kart.
+        let (kart_data, kart_tex) = match nailrunners::kart::load(&assets, "scrapper") {
+            Ok((mesh, Some(tex))) => (mesh, Some(tex)),
+            Ok((_, None)) | Err(_) => {
+                log::warn!("kart model unavailable; using the placeholder kart");
+                (kart_mesh(), None)
+            }
+        };
+        let size = (layers[0][0].width, layers[0][0].height);
+        let kart_layer = kart_tex.map_or_else(|| layers[0][0].clone(), |t| rivet_assets::resized(&t, size.0, size.1));
+        layers.push(rivet_assets::mip_chain(&kart_layer));
         let scene = SceneRenderer::new(
             &ctx.device,
             &ctx.queue,
@@ -151,7 +162,7 @@ impl Game {
         let track = build_graybox_loop();
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
-        let kart_mesh = GpuMesh::new(&ctx.device, &kart_mesh());
+        let kart_mesh = GpuMesh::new(&ctx.device, &kart_data);
         let spawn = VehicleState::spawn(track.spawn.0 + Vec3::Y * SPAWN_LIFT, track.spawn.1);
         let laps = LapTracker::new(track.checkpoints.len());
         Ok(Self {
@@ -323,7 +334,6 @@ impl Game {
         self.lean += (target_lean - self.lean) * (1.0 - (-8.0 * frame_dt).exp());
         let (w, h) = self.ctx.size();
         let kart = Mat4::from_rotation_translation(rot, pos)
-            * Mat4::from_translation(Vec3::Y * 0.05)
             * Mat4::from_rotation_z(self.lean);
         let view = View {
             view: self.camera.view(),

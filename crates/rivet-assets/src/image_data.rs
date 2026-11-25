@@ -52,6 +52,16 @@ fn linear_to_srgb(l: f32) -> u8 {
     (c * 255.0 + 0.5) as u8
 }
 
+/// Resamples to `w`×`h` (triangle filter).
+pub fn resized(img: &Rgba8Image, w: u32, h: u32) -> Rgba8Image {
+    if img.width == w && img.height == h {
+        return img.clone();
+    }
+    let buf = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone()).expect("pixel buffer matches its dimensions");
+    let out = image::imageops::resize(&buf, w, h, image::imageops::FilterType::Triangle);
+    Rgba8Image { width: w, height: h, pixels: out.into_raw() }
+}
+
 /// The full mip chain down to 1×1 (level 0 is a copy of `base`). Color channels are averaged in
 /// linear space so mips don't darken; alpha is averaged directly.
 pub fn mip_chain(base: &Rgba8Image) -> Vec<Rgba8Image> {
@@ -124,6 +134,13 @@ mod tests {
         let px = &chain[1].pixels;
         assert!((px[0] as i32 - 188).abs() <= 1, "got {}", px[0]);
         assert_eq!(px[3], 255, "alpha averages linearly and stays opaque");
+    }
+
+    #[test]
+    fn resize_changes_dimensions() {
+        let r = resized(&solid(8, 8, [10, 20, 30, 255]), 4, 2);
+        assert_eq!((r.width, r.height, r.pixels.len()), (4, 2, 32));
+        assert_eq!(&r.pixels[0..4], &[10, 20, 30, 255]);
     }
 
     #[test]

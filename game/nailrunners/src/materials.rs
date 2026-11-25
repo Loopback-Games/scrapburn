@@ -18,8 +18,12 @@ pub enum Layer {
 }
 
 impl Layer {
+    /// Layers loaded from `LAYER_FILES`.
     pub const COUNT: usize = 7;
 }
+
+/// The kart's own texture, appended after the file layers.
+pub const KART_LAYER: u32 = Layer::COUNT as u32;
 
 pub const LAYER_FILES: [&str; Layer::COUNT] = [
     "asphalt.png",
@@ -32,7 +36,7 @@ pub const LAYER_FILES: [&str; Layer::COUNT] = [
 ];
 
 /// Specular, gloss and triplanar scale per layer.
-pub fn shading() -> [MaterialShading; Layer::COUNT] {
+pub fn shading() -> [MaterialShading; Layer::COUNT + 1] {
     let m = |specular, gloss, triplanar_scale| MaterialShading {
         specular,
         gloss,
@@ -46,6 +50,7 @@ pub fn shading() -> [MaterialShading; Layer::COUNT] {
         m(0.06, 14.0, 0.20), // concrete
         m(0.35, 40.0, 0.25), // rusty metal
         m(0.02, 8.0, 0.12),  // grass
+        m(0.30, 32.0, 0.25), // kart paint and metal
     ]
 }
 
@@ -96,7 +101,7 @@ mod tests {
     #[test]
     fn layer_tables_line_up() {
         assert_eq!(LAYER_FILES.len(), Layer::COUNT);
-        assert_eq!(shading().len(), Layer::COUNT);
+        assert_eq!(shading().len(), Layer::COUNT + 1);
         assert_eq!(LAYER_FILES[Layer::Rock as usize], "rock.png");
     }
 
