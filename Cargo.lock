@@ -1512,6 +1512,7 @@ dependencies = [
  "glam",
  "log",
  "pollster",
+ "rivet-core",
  "rivet-platform",
  "thiserror 2.0.21",
  "wgpu",

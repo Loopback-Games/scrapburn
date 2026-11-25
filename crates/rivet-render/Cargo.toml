@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rivet-core.workspace = true
 rivet-platform.workspace = true
 wgpu.workspace = true
 winit.workspace = true
