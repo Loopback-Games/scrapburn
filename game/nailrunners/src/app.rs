@@ -11,6 +11,7 @@ use nailrunners::autopilot::autopilot;
 use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
 use nailrunners::controls::{HopLatch, SteerRamp, actions, drive_input};
+use nailrunners::effects::Effects;
 use nailrunners::laps::{LapEvent, LapTracker};
 use nailrunners::materials::{find_assets_dir, load_layers, shading};
 use nailrunners::track::{Track, build_graybox_loop};
@@ -19,8 +20,8 @@ use rivet_core::{FixedTimestep, FrameStats};
 use rivet_physics::{DriveInput, VehicleParams, VehicleState, step};
 use rivet_platform::{Gamepads, KeyInput};
 use rivet_render::{
-    Draw, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay, SceneRenderer, View, box_mesh,
-    draw_frame_graph,
+    Draw, FrameContent, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay, SceneRenderer, View,
+    box_mesh, draw_frame_graph,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -81,6 +82,8 @@ struct Game {
     minimized: bool,
     bench: Option<Bench>,
     hop: HopLatch,
+    effects: Effects,
+    lean: f32,
     steer: SteerRamp,
     screenshot: Option<std::path::PathBuf>,
 }
@@ -177,6 +180,8 @@ impl Game {
             minimized: false,
             bench: args.bench.map(Bench::new),
             hop: HopLatch::default(),
+            effects: Effects::new(),
+            lean: 0.0,
             steer: SteerRamp::default(),
             screenshot: args.screenshot.clone(),
         })
@@ -303,14 +308,27 @@ impl Game {
 
     fn render(&mut self, frame_dt: f32) {
         let (pos, rot) = VehicleState::lerp(&self.prev, &self.cur, self.clock.alpha());
+        let shake = self.effects.update(&self.cur, &self.params, frame_dt);
+        self.camera.kick(shake);
+        self.camera.set_boost(self.cur.boost_timer > 0.0);
         self.camera.update(pos, rot, self.cur.speed(), frame_dt);
+        // Body lean (render only): roll into turns and drifts, smoothed.
+        let drift_roll = self.cur.drift.map_or(0.0, |d| d.dir * 0.10);
+        let turn_roll = (self.cur.angular_yaw * self.cur.speed() * 0.006).clamp(-0.18, 0.18);
+        let target_lean = if self.cur.grounded {
+            turn_roll + drift_roll
+        } else {
+            0.0
+        };
+        self.lean += (target_lean - self.lean) * (1.0 - (-8.0 * frame_dt).exp());
         let (w, h) = self.ctx.size();
-        let kart =
-            Mat4::from_rotation_translation(rot, pos) * Mat4::from_translation(Vec3::Y * 0.05);
+        let kart = Mat4::from_rotation_translation(rot, pos)
+            * Mat4::from_translation(Vec3::Y * 0.05)
+            * Mat4::from_rotation_z(self.lean);
         let view = View {
             view: self.camera.view(),
             proj: self.camera.proj(w as f32 / h as f32),
-            eye: self.camera.position(),
+            eye: self.camera.eye(),
             focus: pos,
             time: self.sim_time as f32,
         };
@@ -344,13 +362,19 @@ impl Game {
                 casts_shadow: true,
             },
         ];
+        let (additive, alpha) = self.effects.particles.instances();
+        let content = FrameContent {
+            draws: &draws,
+            additive,
+            alpha,
+        };
         self.scene.render(
             &self.ctx.device,
             &self.ctx.queue,
             &mut enc,
             &frame.view,
             &view,
-            &draws,
+            &content,
             self.timer.as_mut(),
         );
         {

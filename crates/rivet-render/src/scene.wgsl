@@ -179,3 +179,57 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(sky, 1.0);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Particles: camera-facing soft discs, instanced. Additive (sparks, flames) or alpha (dust).
+
+struct ParticleIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) size: f32,
+    @location(2) color: vec4<f32>,
+};
+
+struct ParticleOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) world: vec3<f32>,
+};
+
+@vertex
+fn vs_particle(@builtin(vertex_index) vi: u32, p: ParticleIn) -> ParticleOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let c = corners[vi];
+    let world = p.pos + (g.cam_right.xyz * c.x + g.cam_up.xyz * c.y) * (p.size * 0.5);
+    var o: ParticleOut;
+    o.clip = g.view_proj * vec4<f32>(world, 1.0);
+    o.local = c;
+    o.color = p.color;
+    o.world = world;
+    return o;
+}
+
+fn particle_fog(world: vec3<f32>) -> f32 {
+    let d = length(g.eye.xyz - world);
+    return exp(-g.fog.a * d);
+}
+
+@fragment
+fn fs_particle_add(in: ParticleOut) -> @location(0) vec4<f32> {
+    let r2 = dot(in.local, in.local);
+    let a = clamp(1.0 - r2, 0.0, 1.0);
+    let glow = a * a * in.color.a * particle_fog(in.world);
+    return vec4<f32>(in.color.rgb * glow, 0.0);
+}
+
+@fragment
+fn fs_particle_alpha(in: ParticleOut) -> @location(0) vec4<f32> {
+    let r2 = dot(in.local, in.local);
+    let a = smoothstep(1.0, 0.2, r2) * in.color.a;
+    let lit = in.color.rgb * (0.55 + 0.45 * max(-g.sun_dir.y, 0.0));
+    let f = particle_fog(in.world);
+    return vec4<f32>(mix(g.fog.rgb, lit, f), a);
+}

@@ -104,7 +104,7 @@ impl Default for VehicleParams {
             drift_grip: 2.5,
             steer_rate_low: 2.2,
             steer_rate_high: 1.1,
-            drift_arc_min: 0.55,
+            drift_arc_min: 0.30,
             drift_arc_max: 1.45,
             drift_tight_charge_bonus: 0.6,
             drift_min_speed: 10.0,
@@ -159,6 +159,8 @@ pub struct VehicleState {
     pub drift: Option<DriftState>,
     pub boost_timer: f32,
     pub boost_speed: f32,
+    /// Share of grounded wheels on offroad surfaces last tick (0..1), for effects.
+    pub offroad: f32,
 }
 
 impl VehicleState {
@@ -172,6 +174,7 @@ impl VehicleState {
             drift: None,
             boost_timer: 0.0,
             boost_speed: 0.0,
+            offroad: 0.0,
         }
     }
 
@@ -264,6 +267,7 @@ pub fn step(
     } else {
         0.0
     };
+    state.offroad = offroad;
     let top_speed = p.max_speed * (1.0 + (p.offroad_speed_scale - 1.0) * offroad);
 
     // --- Boost timer, drift state ---
@@ -623,6 +627,7 @@ mod tests {
             (v - p.max_speed * p.offroad_speed_scale).abs() < 0.6,
             "offroad speed {v}"
         );
+        assert_eq!(s.offroad, 1.0);
     }
 
     #[test]

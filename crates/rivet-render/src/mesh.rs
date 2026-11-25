@@ -145,7 +145,7 @@ mod tests {
 #[cfg(test)]
 mod gpu_tests {
     use super::*;
-    use crate::scene::{Draw, MaterialShading, SceneRenderer, View};
+    use crate::scene::{Draw, FrameContent, MaterialShading, SceneRenderer, View};
     use crate::{Preset, headless_device};
     use glam::{Mat4, Vec3};
     use rivet_assets::{Rgba8Image, mip_chain};
@@ -213,19 +213,27 @@ mod gpu_tests {
             time: 0.0,
         };
         let mut enc = device.create_command_encoder(&Default::default());
-        r.render(
-            &device,
-            &queue,
-            &mut enc,
-            &view_tex,
-            &v,
-            &[Draw {
-                mesh: &mesh,
-                model: Mat4::IDENTITY,
-                casts_shadow: true,
-            }],
-            None,
-        );
+        let draws = [Draw {
+            mesh: &mesh,
+            model: Mat4::IDENTITY,
+            casts_shadow: true,
+        }];
+        let spark = crate::ParticleInstance {
+            pos: [0.0, 0.8, 0.6],
+            size: 0.3,
+            color: [4.0, 2.0, 0.5, 1.0],
+        };
+        let dust = crate::ParticleInstance {
+            pos: [0.6, -0.6, 0.6],
+            size: 0.4,
+            color: [0.6, 0.5, 0.4, 0.5],
+        };
+        let content = FrameContent {
+            draws: &draws,
+            additive: &[spark],
+            alpha: &[dust],
+        };
+        r.render(&device, &queue, &mut enc, &view_tex, &v, &content, None);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("smoke readback"),
             size: 256 * 64,

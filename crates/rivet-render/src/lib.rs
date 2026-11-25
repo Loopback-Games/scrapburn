@@ -19,6 +19,8 @@ pub use gpu_timer::GpuTimer;
 pub use mesh::{EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material};
 pub use overlay::Overlay;
 pub use preset::{Preset, QualitySettings};
-pub use scene::{Draw, Lighting, MaterialShading, SceneRenderer, View};
+pub use scene::{
+    Draw, FrameContent, Lighting, MaterialShading, ParticleInstance, SceneRenderer, View,
+};
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;

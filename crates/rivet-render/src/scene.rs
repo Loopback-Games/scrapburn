@@ -97,6 +97,33 @@ struct Globals {
     ambient_ground: Vec4,
     fog: Vec4,
     fog_params: Vec4,
+    cam_right: Vec4,
+    cam_up: Vec4,
+}
+
+/// One camera-facing particle. Color is linear HDR; alpha is opacity (alpha mode) or a glow
+/// multiplier (additive mode).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct ParticleInstance {
+    pub pos: [f32; 3],
+    pub size: f32,
+    pub color: [f32; 4],
+}
+
+impl ParticleInstance {
+    const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<ParticleInstance>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32x4],
+    };
+}
+
+/// Everything drawn in one frame.
+pub struct FrameContent<'a> {
+    pub draws: &'a [Draw<'a>],
+    pub additive: &'a [ParticleInstance],
+    pub alpha: &'a [ParticleInstance],
 }
 
 #[repr(C)]
@@ -150,6 +177,10 @@ pub struct SceneRenderer {
     composite_ldr_pipeline: wgpu::RenderPipeline,
     composite_out_pipeline: wgpu::RenderPipeline,
     fxaa_pipeline: wgpu::RenderPipeline,
+    particle_add_pipeline: wgpu::RenderPipeline,
+    particle_alpha_pipeline: wgpu::RenderPipeline,
+    particle_buf: wgpu::Buffer,
+    particle_capacity: u64,
     targets: Targets,
     pub lighting: Lighting,
 }
@@ -478,6 +509,65 @@ impl SceneRenderer {
             multiview_mask: None,
             cache: None,
         });
+        let particle_pipeline = |label: &str, fs: &str, blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&sky_layout),
+                vertex: wgpu::VertexState {
+                    module: &scene_module,
+                    entry_point: Some("vs_particle"),
+                    buffers: &[Some(ParticleInstance::LAYOUT)],
+                    compilation_options: Default::default(),
+                },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &scene_module,
+                    entry_point: Some(fs),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let add_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let particle_add_pipeline =
+            particle_pipeline("particles additive", "fs_particle_add", add_blend);
+        let particle_alpha_pipeline = particle_pipeline(
+            "particles alpha",
+            "fs_particle_alpha",
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
+        let particle_capacity = 2048;
+        let particle_buf = buffer(
+            device,
+            "particles",
+            particle_capacity * std::mem::size_of::<ParticleInstance>() as u64,
+            wgpu::BufferUsages::VERTEX,
+        );
         let additive = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -662,6 +752,10 @@ impl SceneRenderer {
             composite_ldr_pipeline,
             composite_out_pipeline,
             fxaa_pipeline,
+            particle_add_pipeline,
+            particle_alpha_pipeline,
+            particle_buf,
+            particle_capacity,
             targets,
             lighting: Lighting::default(),
         }
@@ -925,9 +1019,10 @@ impl SceneRenderer {
         encoder: &mut wgpu::CommandEncoder,
         output: &wgpu::TextureView,
         view: &View,
-        draws: &[Draw<'_>],
+        content: &FrameContent<'_>,
         mut timer: Option<&mut GpuTimer>,
     ) {
+        let draws = content.draws;
         let l = self.lighting;
         let radius = 70.0;
         let light_vp =
@@ -948,11 +1043,39 @@ impl SceneRenderer {
             ambient_ground: l.ambient_ground.extend(0.0),
             fog: l.fog_color.extend(l.fog_density),
             fog_params: Vec4::new(l.fog_height_falloff, 0.0, 0.0, 0.0),
+            cam_right: view.view.row(0).truncate().normalize().extend(0.0),
+            cam_up: view.view.row(1).truncate().normalize().extend(0.0),
         };
         queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         queue.write_buffer(&self.shadow_globals_buf, 0, bytemuck::bytes_of(&light_vp));
         self.write_models(device, queue, draws);
         self.write_post_params(queue);
+        let n_add = content.additive.len() as u64;
+        let n_alpha = content.alpha.len() as u64;
+        if n_add + n_alpha > self.particle_capacity {
+            self.particle_capacity = (n_add + n_alpha).next_power_of_two();
+            self.particle_buf = buffer(
+                device,
+                "particles",
+                self.particle_capacity * std::mem::size_of::<ParticleInstance>() as u64,
+                wgpu::BufferUsages::VERTEX,
+            );
+        }
+        let stride = std::mem::size_of::<ParticleInstance>() as u64;
+        if n_add > 0 {
+            queue.write_buffer(
+                &self.particle_buf,
+                0,
+                bytemuck::cast_slice(content.additive),
+            );
+        }
+        if n_alpha > 0 {
+            queue.write_buffer(
+                &self.particle_buf,
+                n_add * stride,
+                bytemuck::cast_slice(content.alpha),
+            );
+        }
 
         // --- Shadow pass ---
         {
@@ -1017,6 +1140,16 @@ impl SceneRenderer {
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.scene_bg, &[]);
             pass.draw(0..3, 0..1);
+            if n_alpha > 0 {
+                pass.set_pipeline(&self.particle_alpha_pipeline);
+                pass.set_vertex_buffer(0, self.particle_buf.slice(n_add * stride..));
+                pass.draw(0..6, 0..n_alpha as u32);
+            }
+            if n_add > 0 {
+                pass.set_pipeline(&self.particle_add_pipeline);
+                pass.set_vertex_buffer(0, self.particle_buf.slice(..n_add * stride));
+                pass.draw(0..6, 0..n_add as u32);
+            }
         }
 
         // --- Bloom ---
