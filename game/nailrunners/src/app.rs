@@ -146,7 +146,10 @@ impl Game {
             }
         };
         let size = (layers[0][0].width, layers[0][0].height);
-        let kart_layer = kart_tex.map_or_else(|| layers[0][0].clone(), |t| rivet_assets::resized(&t, size.0, size.1));
+        let kart_layer = kart_tex.map_or_else(
+            || layers[0][0].clone(),
+            |t| rivet_assets::resized(&t, size.0, size.1),
+        );
         layers.push(rivet_assets::mip_chain(&kart_layer));
         let scene = SceneRenderer::new(
             &ctx.device,
@@ -333,8 +336,7 @@ impl Game {
         };
         self.lean += (target_lean - self.lean) * (1.0 - (-8.0 * frame_dt).exp());
         let (w, h) = self.ctx.size();
-        let kart = Mat4::from_rotation_translation(rot, pos)
-            * Mat4::from_rotation_z(self.lean);
+        let kart = Mat4::from_rotation_translation(rot, pos) * Mat4::from_rotation_z(self.lean);
         let view = View {
             view: self.camera.view(),
             proj: self.camera.proj(w as f32 / h as f32),

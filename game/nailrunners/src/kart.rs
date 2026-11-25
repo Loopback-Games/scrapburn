@@ -37,7 +37,11 @@ pub fn normalize(g: &GlbMesh, length: f32, extra_yaw: f32) -> MeshData {
     }
     let size = hi - lo;
     // Align the long horizontal axis with +X first, then apply the model yaw (+X -> +Z).
-    let align = if size.z > size.x { Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2) } else { Mat4::IDENTITY };
+    let align = if size.z > size.x {
+        Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2)
+    } else {
+        Mat4::IDENTITY
+    };
     let rot = Mat4::from_rotation_y(MODEL_YAW + extra_yaw) * align;
     let scale = length / size.x.max(size.z).max(1e-6);
     let center = (lo + hi) * 0.5;
@@ -46,8 +50,13 @@ pub fn normalize(g: &GlbMesh, length: f32, extra_yaw: f32) -> MeshData {
     let mut m = MeshData::default();
     for i in 0..g.positions.len() {
         m.vertices.push(Vertex {
-            pos: xf.transform_point3(Vec3::from_array(g.positions[i])).to_array(),
-            normal: rot.transform_vector3(Vec3::from_array(g.normals[i])).normalize_or_zero().to_array(),
+            pos: xf
+                .transform_point3(Vec3::from_array(g.positions[i]))
+                .to_array(),
+            normal: rot
+                .transform_vector3(Vec3::from_array(g.normals[i]))
+                .normalize_or_zero()
+                .to_array(),
             uv: g.uvs[i],
             color: [1.0, 1.0, 1.0, 0.0],
             material: mat,
@@ -63,7 +72,12 @@ pub fn normalize(g: &GlbMesh, length: f32, extra_yaw: f32) -> MeshData {
 
 /// Loads `models/karts/<name>.glb`: the mesh and its base color texture.
 pub fn load(assets: &Path, name: &str) -> Result<(MeshData, Option<Rgba8Image>), GlbError> {
-    let g = load_glb(&assets.join("models").join("karts").join(format!("{name}.glb")))?;
+    let g = load_glb(
+        &assets
+            .join("models")
+            .join("karts")
+            .join(format!("{name}.glb")),
+    )?;
     let tex = g.base_color.clone();
     Ok((normalize(&g, KART_LENGTH, 0.0), tex))
 }
@@ -89,9 +103,19 @@ mod tests {
         g.indices = (0..8).collect();
         let m = normalize(&g, KART_LENGTH, 0.0);
         let (lo, hi) = bounds(&m.vertices);
-        assert!(((hi[2] - lo[2]) - KART_LENGTH).abs() < 1e-3, "length along +Z after the yaw: {lo:?} {hi:?}");
+        assert!(
+            ((hi[2] - lo[2]) - KART_LENGTH).abs() < 1e-3,
+            "length along +Z after the yaw: {lo:?} {hi:?}"
+        );
         assert!((lo[1] + GROUND_OFFSET).abs() < 1e-4, "wheels on the ground");
-        assert!((hi[0] + lo[0]).abs() < 1e-4 && (hi[2] + lo[2]).abs() < 1e-4, "centered");
-        assert!(m.vertices.iter().all(|v| v.material == material(KART_LAYER, KART_LAYER, 0)));
+        assert!(
+            (hi[0] + lo[0]).abs() < 1e-4 && (hi[2] + lo[2]).abs() < 1e-4,
+            "centered"
+        );
+        assert!(
+            m.vertices
+                .iter()
+                .all(|v| v.material == material(KART_LAYER, KART_LAYER, 0))
+        );
     }
 }
