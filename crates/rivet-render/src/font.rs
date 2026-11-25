@@ -6,7 +6,7 @@ pub const GLYPH_H: usize = 7;
 pub const ADVANCE: f32 = 6.0;
 
 /// 5×7 bitmaps, one byte per row, bit 4 = leftmost column. Lowercase maps to uppercase.
-pub const GLYPHS: [(char, [u8; 7]); 48] = [
+pub const GLYPHS: [(char, [u8; 7]); 49] = [
     (
         '0',
         [
@@ -287,6 +287,12 @@ pub const GLYPHS: [(char, [u8; 7]); 48] = [
         ',',
         [
             0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b00100, 0b01000,
+        ],
+    ),
+    (
+        '!',
+        [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100,
         ],
     ),
     (
