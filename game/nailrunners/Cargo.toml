@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rivet-core.workspace = true
+rivet-platform.workspace = true
+rivet-render.workspace = true
+rivet-physics.workspace = true
+glam.workspace = true
 
 [lints]
 workspace = true

@@ -866,6 +866,13 @@ dependencies = [
 [[package]]
 name = "nailrunners"
 version = "0.1.0"
+dependencies = [
+ "glam",
+ "rivet-core",
+ "rivet-physics",
+ "rivet-platform",
+ "rivet-render",
+]
 
 [[package]]
 name = "ndk"
