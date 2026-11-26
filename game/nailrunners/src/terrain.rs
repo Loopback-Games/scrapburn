@@ -151,7 +151,11 @@ pub fn build_kind(
             let dz = h(i, j + 1) - h(i, j.saturating_sub(1));
             let n = Vec3::new(-dx, 2.0 * CELL, -dz).normalize();
             // Rock on steep faces and on the high mesa bands.
-            let rock = smoothstep(0.9, 0.72, n.y).max(smoothstep(22.0, 40.0, y) * 0.85);
+            let rock = match kind {
+                // Green hills: bare rock only on genuinely steep faces.
+                TerrainKind::Hills => smoothstep(0.8, 0.6, n.y),
+                _ => smoothstep(0.9, 0.72, n.y).max(smoothstep(22.0, 40.0, y) * 0.85),
+            };
             let d = dists[j * nx + i];
             // Dusty, slightly darker ochre near the road; gentle large-scale color variation.
             let near = 1.0 - smoothstep(FLAT_RADIUS - 6.0, FLAT_RADIUS + 20.0, d);

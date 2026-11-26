@@ -88,6 +88,8 @@ impl TrackId {
 pub struct TrackStyle {
     pub road: Layer,
     pub road_tint: [f32; 4],
+    /// Meters per repeat of the road texture.
+    pub road_tex: f32,
     pub curbs: ([f32; 4], [f32; 4]),
     /// Curbs glow (Skyway neon).
     pub curb_glow: bool,
@@ -160,6 +162,7 @@ pub const TRACKS: [TrackDef; 3] = [
         style: TrackStyle {
             road: Layer::Asphalt,
             road_tint: [0.72, 0.72, 0.74, 0.0],
+            road_tex: ROAD_TEX,
             curbs: ([0.95, 0.18, 0.12, 0.0], [1.0, 0.98, 0.95, 0.0]),
             curb_glow: false,
             barrier_low: Layer::Concrete,
@@ -188,6 +191,7 @@ pub const TRACKS: [TrackDef; 3] = [
         style: TrackStyle {
             road: Layer::Cobblestone,
             road_tint: [0.85, 0.82, 0.78, 0.0],
+            road_tex: 3.5,
             curbs: ([0.55, 0.08, 0.1, 0.0], [0.82, 0.74, 0.55, 0.0]),
             curb_glow: false,
             barrier_low: Layer::StoneWall,
@@ -216,6 +220,7 @@ pub const TRACKS: [TrackDef; 3] = [
         style: TrackStyle {
             road: Layer::TechPanel,
             road_tint: [0.8, 0.85, 0.95, 0.0],
+            road_tex: 7.0,
             curbs: ([0.1, 0.9, 1.0, 0.0], [1.0, 0.15, 0.75, 0.0]),
             curb_glow: true,
             barrier_low: Layer::MetalRust,
@@ -534,14 +539,15 @@ pub fn build_track(def: &TrackDef) -> Track {
     let mut road = MeshData::default();
     let mut col = Collision::default();
     let asphalt = material(st.road as u32, st.road as u32, 0);
+    let road_tex = st.road_tex;
 
     // Road surface first (contiguous, so its UVs can be checked).
     for i in 0..n {
         let (v0, v1) = (
-            i as f32 * SAMPLE_SPACING / ROAD_TEX,
-            (i + 1) as f32 * SAMPLE_SPACING / ROAD_TEX,
+            i as f32 * SAMPLE_SPACING / road_tex,
+            (i + 1) as f32 * SAMPLE_SPACING / road_tex,
         );
-        let u = 2.0 * ROAD_HALF_WIDTH / ROAD_TEX;
+        let u = 2.0 * ROAD_HALF_WIDTH / road_tex;
         let v = [
             edge(i, -1.0, 0.0),
             edge(i, 1.0, 0.0),
