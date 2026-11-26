@@ -74,6 +74,31 @@ enum Session {
     Play(Mode),
 }
 
+/// One kart design on the GPU: body, four wheels around their hubs, tire radius.
+struct KartGpu {
+    /// Index into `kart::KARTS`.
+    design: usize,
+    body: GpuMesh,
+    wheels: [GpuMesh; 4],
+    hubs: [Vec3; 4],
+    radius: f32,
+}
+
+impl KartGpu {
+    fn new(device: &wgpu::Device, design: usize, data: &MeshData) -> Self {
+        let k = &nailrunners::kart::KARTS[design];
+        let parts =
+            nailrunners::kart::split_wheels(data, nailrunners::kart::KART_LENGTH * k.wheel_ratio);
+        Self {
+            design,
+            body: GpuMesh::new(device, &parts.body),
+            wheels: parts.wheels.each_ref().map(|w| GpuMesh::new(device, w)),
+            hubs: parts.hubs,
+            radius: parts.radius,
+        }
+    }
+}
+
 /// Online role of this machine.
 enum Net {
     Off,
@@ -158,10 +183,10 @@ struct Game {
     timer: Option<GpuTimer>,
     track: Track,
     track_meshes: [GpuMesh; 3],
-    kart_mesh: GpuMesh,
-    wheel_meshes: [GpuMesh; 4],
-    wheel_hubs: [Vec3; 4],
-    wheel_radius: f32,
+    /// Loaded kart designs (index into `kart::KARTS` order; missing ones are skipped).
+    karts: Vec<KartGpu>,
+    /// Design each racer drives (index into `karts`).
+    kart_of: Vec<usize>,
     wheel_spin: Vec<f32>,
     ghost_mesh: GpuMesh,
     fx_meshes: FxMeshes,
@@ -212,6 +237,19 @@ struct Game {
     flame_fx: ParticleSystem,
     flame_points: Vec<Vec3>,
     flame_acc: f32,
+}
+
+/// Which loaded kart design each racer drives (by weight; the player keeps the scrapper).
+fn kart_assignment(race: &Race, karts: &[KartGpu]) -> Vec<usize> {
+    race.racers
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let human = race.player == Some(i) || r.remote;
+            let want = nailrunners::kart::model_for(r.mass / nailrunners::race::BASE_MASS, human);
+            karts.iter().position(|k| k.design == want).unwrap_or(0)
+        })
+        .collect()
 }
 
 /// Where flames burn: the track's torches and the top of every brazier.
@@ -269,7 +307,12 @@ impl Game {
         let assets =
             find_assets_dir().context("could not find the assets directory (set RIVET_ASSETS)")?;
         let mut layers = load_layers(&assets).context("loading material textures")?;
-        let (kart_data, kart_tex) = match nailrunners::kart::load(&assets, "scrapper") {
+        let kart_designs = &nailrunners::kart::KARTS;
+        let (kart_data, kart_tex) = match nailrunners::kart::load(
+            &assets,
+            &kart_designs[0],
+            nailrunners::materials::KART_LAYER,
+        ) {
             Ok((mesh, tex)) => (mesh, tex),
             Err(e) => {
                 log::warn!("kart model unavailable ({e}); using the placeholder kart");
@@ -305,6 +348,27 @@ impl Game {
                     log::warn!("prop {} unavailable ({e})", kind.name);
                     prop_meshes.push(None);
                 }
+            }
+        }
+        // The other kart designs, each with its own texture layer after the props.
+        let mut extra_karts: Vec<(usize, MeshData)> = Vec::new();
+        for (d, design) in kart_designs.iter().enumerate().skip(1) {
+            let layer = layers.len() as u32;
+            match nailrunners::kart::load(&assets, design, layer) {
+                Ok((mesh, tex)) => {
+                    let img = tex.map_or_else(
+                        || layers[0][0].clone(),
+                        |t| rivet_assets::resized(&t, size.0, size.1),
+                    );
+                    layers.push(rivet_assets::mip_chain(&img));
+                    shading_table.push(rivet_render::MaterialShading {
+                        specular: 0.3,
+                        gloss: 32.0,
+                        triplanar_scale: 0.25,
+                    });
+                    extra_karts.push((d, mesh));
+                }
+                Err(e) => log::info!("kart {} not available ({e})", design.name),
             }
         }
         let settings = Settings {
@@ -343,13 +407,12 @@ impl Game {
                 .map(|w| w.indices.len() / 3)
                 .sum::<usize>()
         );
-        let kart_mesh = GpuMesh::new(&ctx.device, &parts.body);
-        let wheel_meshes = parts
-            .wheels
-            .each_ref()
-            .map(|w| GpuMesh::new(&ctx.device, w));
-        let wheel_hubs = parts.hubs;
-        let wheel_radius = parts.radius;
+        let mut karts = vec![KartGpu::new(&ctx.device, 0, &kart_data)];
+        karts.extend(
+            extra_karts
+                .iter()
+                .map(|(d, m)| KartGpu::new(&ctx.device, *d, m)),
+        );
         let mut ghost_data = kart_data.clone();
         for v in &mut ghost_data.vertices {
             v.color = [0.2, 0.5, 0.6, 0.0];
@@ -409,10 +472,8 @@ impl Game {
             timer,
             track,
             track_meshes,
-            kart_mesh,
-            wheel_meshes,
-            wheel_hubs,
-            wheel_radius,
+            kart_of: kart_assignment(&race, &karts),
+            karts,
             wheel_spin: vec![0.0; n],
             ghost_mesh,
             fx_meshes,
@@ -483,10 +544,7 @@ impl Game {
     fn start(&mut self, session: Session) {
         self.session = session;
         self.race = Self::make_race(&self.track, session, &self.settings, self.bench.is_some());
-        let n = self.race.racers.len();
-        self.effects = (0..n).map(|_| Effects::new()).collect();
-        self.leans = vec![0.0; n];
-        self.wheel_spin = vec![0.0; n];
+        self.fit_race_buffers();
         self.recorder = GhostRecorder::default();
         self.knockout = None;
         self.camera.reset();
@@ -522,6 +580,7 @@ impl Game {
 
     /// Per-kart effect buffers sized to the current race.
     fn fit_race_buffers(&mut self) {
+        self.kart_of = kart_assignment(&self.race, &self.karts);
         let n = self.race.racers.len();
         self.effects = (0..n).map(|_| Effects::new()).collect();
         self.leans = vec![0.0; n];
@@ -1258,8 +1317,9 @@ impl Game {
                 0.0
             };
             self.leans[i] += (target - self.leans[i]) * (1.0 - (-8.0 * frame_dt).exp());
-            self.wheel_spin[i] = (self.wheel_spin[i] + r.state.speed() * fx_dt / self.wheel_radius)
-                % std::f32::consts::TAU;
+            let radius = self.karts[self.kart_of[i]].radius;
+            self.wheel_spin[i] =
+                (self.wheel_spin[i] + r.state.speed() * fx_dt / radius) % std::f32::consts::TAU;
             models.push((
                 pos,
                 rot,
@@ -1321,8 +1381,9 @@ impl Game {
                 continue;
             }
             let tint = self.race.racers[i].tint;
+            let kart = &self.karts[self.kart_of[i]];
             draws.push(Draw {
-                mesh: &self.kart_mesh,
+                mesh: &kart.body,
                 model: *model,
                 casts_shadow: true,
                 tint,
@@ -1330,13 +1391,13 @@ impl Game {
             // Wheels roll with speed; the front pair steers with the turn rate.
             let steer = (self.race.racers[i].state.angular_yaw * 0.3).clamp(-0.45, 0.45);
             let roll = Mat4::from_rotation_x(self.wheel_spin[i]);
-            for (k, mesh) in self.wheel_meshes.iter().enumerate() {
+            for (k, mesh) in kart.wheels.iter().enumerate() {
                 let yaw = if k < 2 {
                     Mat4::from_rotation_y(steer)
                 } else {
                     Mat4::IDENTITY
                 };
-                let m = *model * Mat4::from_translation(self.wheel_hubs[k]) * yaw * roll;
+                let m = *model * Mat4::from_translation(kart.hubs[k]) * yaw * roll;
                 draws.push(Draw {
                     mesh,
                     model: m,

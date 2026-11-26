@@ -11,7 +11,8 @@ use crate::track::Track;
 
 pub const COUNTDOWN: f32 = 3.0;
 const KART_RADIUS: f32 = 1.0;
-const BASE_MASS: f32 = 300.0;
+/// Mass of an average kart (kg); seats vary around it.
+pub const BASE_MASS: f32 = 300.0;
 const START_BOOST: (f32, f32) = (6.0, 0.9);
 const STUCK_SPEED: f32 = 2.0;
 const STUCK_SECONDS: f32 = 3.0;

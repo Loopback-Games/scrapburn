@@ -1,0 +1,29 @@
+── Plan ──────────────────────────
+input: low-poly stylized post-apocalyptic light racing kart, sleek scrap-built speedster: low wedge chassis of hammered sheet metal, exposed supercharger, slim wheels with spoked rims, rear wing made from a road sign, bright red and white paint with rust, no driver, game asset, clean silhouette, facing forward
+model: v3.1-20260211 — explicit --model
+steps:
+  1. text-to-model  POST /v3/generation/text-to-model — generate a 3D model from text
+     model="v3.1-20260211" texture=true pbr=true texture_quality="detailed"
+cost impact:
+  · texture_quality detailed: higher price tier
+  2 candidates in parallel (distinct seeds); pick one before the chain continues
+──────────────────────────────────
+generating 2 candidates in parallel…
+model: v3.1-20260211 (explicit --model)
+model: v3.1-20260211 (explicit --model)
+task created 794377c3-bc8e-471f-b760-5a3da3d3dc0b (@kart-light-c1)
+text_to_model · queued
+task created e9de4332-01bf-4772-9b8c-aa00d69182df (@kart-light-c2)
+text_to_model · queued
+text_to_model · running 6% · 794377c3
+text_to_model · running 6% · e9de4332
+text_to_model · running 18% · e9de4332
+text_to_model · running 18% · 794377c3
+text_to_model · running 28% · e9de4332
+text_to_model · running 28% · 794377c3
+text_to_model · running 44% · e9de4332
+text_to_model · running 44% · 794377c3
+text_to_model · running 68% · e9de4332
+text_to_model · running 68% · 794377c3
+text_to_model · running 99% · e9de4332
+text_to_model · running 99% · 794377c3

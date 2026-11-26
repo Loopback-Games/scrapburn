@@ -70,16 +70,67 @@ pub fn normalize(g: &GlbMesh, length: f32, extra_yaw: f32) -> MeshData {
     m
 }
 
-/// Loads `models/karts/<name>.glb`: the mesh and its base color texture.
-pub fn load(assets: &Path, name: &str) -> Result<(MeshData, Option<Rgba8Image>), GlbError> {
+/// A kart design: model file, the yaw that points its nose down +Z, and its tire size.
+#[derive(Debug, Clone, Copy)]
+pub struct KartModel {
+    pub name: &'static str,
+    pub yaw: f32,
+    /// Wheel radius relative to the kart's length.
+    pub wheel_ratio: f32,
+}
+
+/// The kart designs: the scrapper (all-rounder), the war-rig (heavy) and the speedster (light).
+pub const KARTS: [KartModel; 3] = [
+    KartModel {
+        name: "scrapper",
+        yaw: 0.0,
+        wheel_ratio: WHEEL_RADIUS_RATIO,
+    },
+    KartModel {
+        name: "warrig",
+        yaw: 0.0,
+        wheel_ratio: 0.19,
+    },
+    KartModel {
+        name: "speedster",
+        yaw: 0.0,
+        wheel_ratio: 0.13,
+    },
+];
+
+/// Which design a racer drives: heavy rivals get the war-rig, light ones the speedster; the
+/// player and the middle of the field the scrapper.
+pub fn model_for(mass_ratio: f32, is_player: bool) -> usize {
+    if is_player {
+        0
+    } else if mass_ratio > 1.07 {
+        1
+    } else if mass_ratio < 0.93 {
+        2
+    } else {
+        0
+    }
+}
+
+/// Loads `models/karts/<name>.glb`: the mesh (textured from `layer`) and its base color.
+pub fn load(
+    assets: &Path,
+    kart: &KartModel,
+    layer: u32,
+) -> Result<(MeshData, Option<Rgba8Image>), GlbError> {
     let g = load_glb(
         &assets
             .join("models")
             .join("karts")
-            .join(format!("{name}.glb")),
+            .join(format!("{}.glb", kart.name)),
     )?;
     let tex = g.base_color.clone();
-    Ok((normalize(&g, KART_LENGTH, 0.0), tex))
+    let mut m = normalize(&g, KART_LENGTH, kart.yaw);
+    let mat = material(layer, layer, 0);
+    for v in &mut m.vertices {
+        v.material = mat;
+    }
+    Ok((m, tex))
 }
 
 /// Wheel radius relative to the kart's length (the scrap kart's chunky tires).
@@ -153,6 +204,30 @@ pub fn split_wheels(m: &MeshData, radius: f32) -> KartParts {
         wheels,
         hubs,
         radius,
+    }
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[test]
+    fn heavy_rivals_drive_war_rigs_light_ones_speedsters() {
+        assert_eq!(
+            KARTS[model_for(1.14, true)].name,
+            "scrapper",
+            "the player's kart is the hero"
+        );
+        assert_eq!(KARTS[model_for(1.14, false)].name, "warrig");
+        assert_eq!(KARTS[model_for(0.87, false)].name, "speedster");
+        assert_eq!(KARTS[model_for(1.0, false)].name, "scrapper");
+    }
+
+    #[test]
+    fn every_kart_model_has_sane_proportions() {
+        for k in &KARTS {
+            assert!((0.1..0.25).contains(&k.wheel_ratio), "{}", k.name);
+        }
     }
 }
 
