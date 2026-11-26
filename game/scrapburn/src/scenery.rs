@@ -173,13 +173,16 @@ pub struct Placement {
     pub yaw: f32,
     /// Largest dimension (m).
     pub size: f32,
+    /// The prop's up axis (the road normal for things mounted on a banked road).
+    pub up: Vec3,
 }
 
 impl Placement {
     pub fn model(&self) -> Mat4 {
+        let tilt = glam::Quat::from_rotation_arc(Vec3::Y, self.up.normalize_or(Vec3::Y));
         Mat4::from_scale_rotation_translation(
             Vec3::splat(self.size),
-            glam::Quat::from_rotation_y(self.yaw),
+            tilt * glam::Quat::from_rotation_y(self.yaw),
             self.pos,
         )
     }
@@ -220,6 +223,28 @@ impl Rng {
     }
 }
 
+/// Props that are part of the circuit itself (kept when background scenery is off): Skyway's
+/// neon arches, seated on the banked road.
+pub fn track_features(track: &Track) -> Vec<Placement> {
+    if track.id != TrackId::Skyway {
+        return Vec::new();
+    }
+    let cl = &track.centerline;
+    let n = cl.len() - 1;
+    [0.12, 0.3, 0.45, 0.62, 0.75, 0.9]
+        .into_iter()
+        .map(|at: f32| {
+            let i = (at * n as f32) as usize % n;
+            let up = track.road_up[i];
+            let fwd = (cl[i + 1] - cl[i]).normalize();
+            let right = Vec3::new(fwd.x, 0.0, fwd.z).normalize().cross(Vec3::Y);
+            let mut p = place("neon_arch", cl[i] - up * 0.3, yaw_to(right), 1.0);
+            p.up = up;
+            p
+        })
+        .collect()
+}
+
 /// Every prop on the circuit, deterministic.
 pub fn placements(track: &Track) -> Vec<Placement> {
     match track.id {
@@ -236,6 +261,7 @@ fn place(kind_name: &str, pos: Vec3, yaw: f32, scale: f32) -> Placement {
         pos,
         yaw,
         size: PROPS[k].size * scale,
+        up: Vec3::Y,
     }
 }
 
@@ -276,6 +302,7 @@ fn scatter(track: &Track, out: &mut Vec<Placement>, names: &[&str], count: usize
             pos: Vec3::new(x, y - 0.2, z),
             yaw: rng.next() * std::f32::consts::TAU,
             size,
+            up: Vec3::Y,
         });
         placed += 1;
     }
@@ -354,11 +381,7 @@ fn grindstone(track: &Track) -> Vec<Placement> {
 
 /// Skyway Zero: neon arches over the deck, holo billboards, and pylons rising out of the haze.
 fn skyway(track: &Track) -> Vec<Placement> {
-    let mut out = Vec::new();
-    for at in [0.12, 0.3, 0.45, 0.62, 0.75, 0.9] {
-        let (c, r) = frame(track, at);
-        out.push(place("neon_arch", c - Vec3::Y * 0.3, yaw_to(r), 1.0));
-    }
+    let mut out = track_features(track);
     for (k, at) in [0.06, 0.2, 0.37, 0.52, 0.68, 0.83, 0.95]
         .into_iter()
         .enumerate()
@@ -403,6 +426,7 @@ fn dustbowl(track: &Track) -> Vec<Placement> {
             pos: Vec3::new(p.x, y - 0.2, p.z),
             yaw,
             size: PROPS[k].size * scale,
+            up: Vec3::Y,
         });
     };
     // The landmark: a horned skull of sandstone looming over the infield.
@@ -573,6 +597,55 @@ mod tests {
                 d > need,
                 "{} is {d:.1} m from the road (needs {need:.1})",
                 PROPS[p.kind].name
+            );
+        }
+    }
+
+    #[test]
+    fn scenery_off_keeps_only_track_features() {
+        use crate::track::{TRACKS, build_track};
+        for (i, def) in TRACKS.iter().enumerate() {
+            let t = build_track(def);
+            let kept: Vec<&str> = track_features(&t)
+                .iter()
+                .map(|p| PROPS[p.kind].name)
+                .collect();
+            if i == 2 {
+                assert!(
+                    !kept.is_empty() && kept.iter().all(|n| *n == "neon_arch"),
+                    "{kept:?}"
+                );
+            } else {
+                assert!(kept.is_empty(), "{}: {kept:?}", def.name);
+            }
+        }
+    }
+
+    #[test]
+    fn skyway_arches_follow_the_road_bank() {
+        use crate::track::{TRACKS, build_track};
+        let t = build_track(&TRACKS[2]);
+        for a in track_features(&t) {
+            let i = t
+                .centerline
+                .iter()
+                .enumerate()
+                .min_by(|x, y| x.1.distance(a.pos).total_cmp(&y.1.distance(a.pos)))
+                .unwrap()
+                .0;
+            let arch_up = a.model().transform_vector3(Vec3::Y).normalize();
+            assert!(
+                arch_up.dot(t.road_up[i]) > 0.995,
+                "arch tilted {arch_up} vs road {}",
+                t.road_up[i]
+            );
+            // The span (model +Z) lies across the road, perpendicular to travel.
+            let span = a.model().transform_vector3(Vec3::Z).normalize();
+            let fwd = (t.centerline[(i + 1) % t.centerline.len()] - t.centerline[i]).normalize();
+            assert!(
+                span.dot(fwd).abs() < 0.08,
+                "arch skewed across the road ({:.2})",
+                span.dot(fwd)
             );
         }
     }

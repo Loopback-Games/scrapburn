@@ -435,7 +435,7 @@ impl Game {
             .iter()
             .map(|m| m.as_ref().map(|m| GpuMesh::new(&ctx.device, m)))
             .collect();
-        let placements = scenery::placements(&track);
+        let placements = scenery::track_features(&track);
         let g = |m: MeshData| GpuMesh::new(&ctx.device, &m);
         let fx_meshes = FxMeshes {
             shell: g(fx_meshes::item_shell()),
@@ -583,6 +583,15 @@ impl Game {
             };
             h.start(&mut self.race);
             self.fit_race_buffers();
+        }
+    }
+
+    /// Props around the circuit: everything, or just the track's own features.
+    fn scenery_for(&self, track: &Track) -> Vec<scenery::Placement> {
+        if self.settings.scenery {
+            scenery::placements(track)
+        } else {
+            scenery::track_features(track)
         }
     }
 
@@ -860,7 +869,7 @@ impl Game {
         self.track = build_track(&TRACKS[self.settings.track % TRACKS.len()]);
         self.track_meshes = [&self.track.road, &self.track.terrain, &self.track.props]
             .map(|m| GpuMesh::new(&self.ctx.device, m));
-        self.placements = scenery::placements(&self.track);
+        self.placements = self.scenery_for(&self.track);
         self.flame_points = flame_points(&self.track, &self.placements);
         self.flame_fx = ParticleSystem::new(1500);
         self.scene.lighting = scrapburn::track::lighting(self.track.id);
@@ -979,6 +988,10 @@ impl Game {
                     MenuAction::Quit => return Some(ExitCode::SUCCESS),
                     MenuAction::PresetChanged => self.rebuild_renderer(),
                     MenuAction::TrackChanged => self.load_track(),
+                    MenuAction::SceneryChanged => {
+                        self.placements = self.scenery_for(&self.track);
+                        self.flame_points = flame_points(&self.track, &self.placements);
+                    }
                     MenuAction::HostGame => self.host_game(),
                     MenuAction::JoinGame => {
                         if let Some(addr) = self.menu.join_target() {
@@ -1375,9 +1388,12 @@ impl Game {
             return;
         };
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        // Road, terrain, and (with scenery on) the rocks.
+        let shown = if self.settings.scenery { 3 } else { 2 };
         let mut draws: Vec<Draw> = self
             .track_meshes
             .iter()
+            .take(shown)
             .map(|m| Draw::new(m, Mat4::IDENTITY))
             .collect();
         for (i, (_, _, model)) in models.iter().enumerate() {

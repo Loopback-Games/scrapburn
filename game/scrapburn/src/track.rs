@@ -18,7 +18,6 @@ const SAMPLE_SPACING: f32 = 2.0;
 const CHECKPOINT_SPACING: f32 = 40.0;
 const BANK_DEGREES: f32 = 15.0;
 /// Texture repeat lengths (m).
-const ROAD_TEX: f32 = 7.0;
 const WALL_TEX: f32 = 3.0;
 const CURB_WIDTH: f32 = 1.1;
 const CURB_LIFT: f32 = 0.02;
@@ -90,6 +89,10 @@ pub struct TrackStyle {
     pub road_tint: [f32; 4],
     /// Meters per repeat of the road texture.
     pub road_tex: f32,
+    /// What the road blends into at its edges (sand drifts, mossy stones), if anything.
+    pub road_edge: Option<Layer>,
+    /// Brightness of the worn racing groove down the middle (1 = none).
+    pub groove: f32,
     pub curbs: ([f32; 4], [f32; 4]),
     /// Curbs glow (Skyway neon).
     pub curb_glow: bool,
@@ -160,10 +163,12 @@ pub const TRACKS: [TrackDef; 3] = [
         pads: &[0.09, 0.60],
         box_rows: &[0.2, 0.5, 0.82],
         style: TrackStyle {
-            road: Layer::Asphalt,
-            road_tint: [0.72, 0.72, 0.74, 0.0],
-            road_tex: ROAD_TEX,
-            curbs: ([0.95, 0.18, 0.12, 0.0], [1.0, 0.98, 0.95, 0.0]),
+            road: Layer::Dirt,
+            road_tint: [0.8, 0.68, 0.56, 0.0],
+            road_tex: 9.0,
+            road_edge: Some(Layer::Sand),
+            groove: 0.78,
+            curbs: ([0.72, 0.26, 0.1, 0.0], [0.86, 0.8, 0.68, 0.0]),
             curb_glow: false,
             barrier_low: Layer::Concrete,
             barrier_high: Layer::MetalRust,
@@ -192,6 +197,8 @@ pub const TRACKS: [TrackDef; 3] = [
             road: Layer::Cobblestone,
             road_tint: [0.85, 0.82, 0.78, 0.0],
             road_tex: 3.5,
+            road_edge: Some(Layer::Flagstone),
+            groove: 0.88,
             curbs: ([0.55, 0.08, 0.1, 0.0], [0.82, 0.74, 0.55, 0.0]),
             curb_glow: false,
             barrier_low: Layer::StoneWall,
@@ -221,6 +228,8 @@ pub const TRACKS: [TrackDef; 3] = [
             road: Layer::TechPanel,
             road_tint: [0.8, 0.85, 0.95, 0.0],
             road_tex: 7.0,
+            road_edge: None,
+            groove: 0.9,
             curbs: ([0.1, 0.9, 1.0, 0.0], [1.0, 0.15, 0.75, 0.0]),
             curb_glow: true,
             barrier_low: Layer::MetalRust,
@@ -309,6 +318,8 @@ pub struct Track {
     pub collision: TriMesh,
     /// Road center every ~2 m; the last point repeats the first.
     pub centerline: Vec<Vec3>,
+    /// Road surface normal at each centerline point (banking included).
+    pub road_up: Vec<Vec3>,
     pub checkpoints: Vec<Checkpoint>,
     /// Spawn position (on the road surface) and yaw.
     pub spawn: (Vec3, f32),
@@ -391,6 +402,23 @@ impl Collision {
         self.indices.extend([[b, b + 1, b + 2], [b, b + 2, b + 3]]);
         self.surfaces.extend([surface, surface]);
     }
+}
+
+/// Appends a quad with per-corner UVs and colors.
+fn quad_colors(m: &mut MeshData, v: [Vec3; 4], uv: [[f32; 2]; 4], colors: [[f32; 4]; 4], mat: u32) {
+    let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize_or_zero();
+    let base = m.vertices.len() as u32;
+    for ((p, t), color) in v.iter().zip(uv).zip(colors) {
+        m.vertices.push(Vertex {
+            pos: p.to_array(),
+            normal: n.to_array(),
+            uv: t,
+            color,
+            material: mat,
+        });
+    }
+    m.indices
+        .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 /// Appends a quad (counter-clockwise front face) with per-corner UVs.
@@ -543,29 +571,53 @@ pub fn build_track(def: &TrackDef) -> Track {
     let mut road = MeshData::default();
     let mut col = Collision::default();
     let mut flames = Vec::new();
-    let asphalt = material(st.road as u32, st.road as u32, 0);
+    let road_mat = material(st.road as u32, st.road_edge.unwrap_or(st.road) as u32, 0);
     let road_tex = st.road_tex;
+    let u_total = 2.0 * ROAD_HALF_WIDTH / road_tex;
+    // Lateral strips across the road (-1 = left edge, 1 = right edge): the edge material drifts
+    // in at the sides and a worn groove darkens the middle.
+    const STRIPS: [f32; 6] = [-1.0, -0.62, -0.22, 0.22, 0.62, 1.0];
+    let corner = |side: f32| -> [f32; 4] {
+        let edge_mix = match st.road_edge {
+            Some(_) => ((side.abs() - 0.45) / 0.55).clamp(0.0, 1.0).powf(1.4) * 0.9,
+            None => 0.0,
+        };
+        let dark = if side.abs() < 0.5 { st.groove } else { 1.0 };
+        let t = st.road_tint;
+        [t[0] * dark, t[1] * dark, t[2] * dark, edge_mix]
+    };
 
-    // Road surface first (contiguous, so its UVs can be checked).
+    // Road surface first, strip by strip (each strip contiguous, so its UVs can be checked).
+    for k in 0..STRIPS.len() - 1 {
+        let (a, b) = (STRIPS[k], STRIPS[k + 1]);
+        let (ua, ub) = ((a + 1.0) * 0.5 * u_total, (b + 1.0) * 0.5 * u_total);
+        for i in 0..n {
+            let (v0, v1) = (
+                i as f32 * SAMPLE_SPACING / road_tex,
+                (i + 1) as f32 * SAMPLE_SPACING / road_tex,
+            );
+            let v = [
+                edge(i, a, 0.0),
+                edge(i, b, 0.0),
+                edge(i + 1, b, 0.0),
+                edge(i + 1, a, 0.0),
+            ];
+            quad_colors(
+                &mut road,
+                v,
+                [[ua, v0], [ub, v0], [ub, v1], [ua, v1]],
+                [corner(a), corner(b), corner(b), corner(a)],
+                road_mat,
+            );
+        }
+    }
     for i in 0..n {
-        let (v0, v1) = (
-            i as f32 * SAMPLE_SPACING / road_tex,
-            (i + 1) as f32 * SAMPLE_SPACING / road_tex,
-        );
-        let u = 2.0 * ROAD_HALF_WIDTH / road_tex;
         let v = [
             edge(i, -1.0, 0.0),
             edge(i, 1.0, 0.0),
             edge(i + 1, 1.0, 0.0),
             edge(i + 1, -1.0, 0.0),
         ];
-        quad(
-            &mut road,
-            v,
-            [[0.0, v0], [u, v0], [u, v1], [0.0, v1]],
-            st.road_tint,
-            asphalt,
-        );
         col.quad(v, Surface::Road);
     }
 
@@ -825,6 +877,8 @@ pub fn build_track(def: &TrackDef) -> Track {
     hi += Vec2::splat(terrain::MARGIN);
     let mut centerline: Vec<Vec3> = frames.iter().map(|f| f.0).collect();
     centerline.push(centerline[0]);
+    let mut road_up: Vec<Vec3> = frames.iter().map(|f| f.3).collect();
+    road_up.push(road_up[0]);
     let (terrain_mesh, tpos, ttris) = terrain::build_kind(st.terrain, &centerline, lo, hi);
     let base = col.positions.len() as u32;
     col.positions.extend(tpos);
@@ -979,6 +1033,7 @@ pub fn build_track(def: &TrackDef) -> Track {
         props,
         collision,
         centerline,
+        road_up,
         checkpoints,
         spawn,
         rocks,
