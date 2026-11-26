@@ -230,7 +230,7 @@ impl Game {
         let mut prop_meshes = Vec::new();
         for kind in scenery::PROPS.iter() {
             let layer = layers.len() as u32;
-            match scenery::load_prop(&assets, kind.name, layer) {
+            match scenery::load_prop(&assets, kind, layer) {
                 Ok((mesh, tex)) => {
                     let img = tex.map_or_else(
                         || layers[0][0].clone(),
@@ -1046,6 +1046,11 @@ impl Game {
                 "SETTINGS"
             };
             hud::draw_menu(o, w, h, title, sub, &items, self.menu.selected);
+            if on_title {
+                let n = nailrunners::track::TRACKS.len();
+                let def = &nailrunners::track::TRACKS[self.settings.track % n];
+                hud::draw_track_card(o, w, h, self.settings.track % n, n, def.name, def.tagline);
+            }
         } else {
             let in_race = matches!(self.session, Session::Play(Mode::Race));
             let info = HudInfo {

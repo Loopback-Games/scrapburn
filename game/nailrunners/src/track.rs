@@ -259,10 +259,10 @@ pub fn lighting(id: TrackId) -> rivet_render::Lighting {
         TrackId::Skyway => rivet_render::Lighting {
             sun_dir: Vec3::new(-0.3, -0.55, 0.25).normalize(),
             sun_color: Vec3::new(0.32, 0.4, 0.7),
-            sky_zenith: Vec3::new(0.008, 0.012, 0.04),
-            sky_horizon: Vec3::new(0.16, 0.06, 0.22),
+            sky_zenith: Vec3::new(0.004, 0.006, 0.022),
+            sky_horizon: Vec3::new(0.09, 0.035, 0.14),
             ambient_ground: Vec3::new(0.06, 0.04, 0.1),
-            fog_color: Vec3::new(0.09, 0.05, 0.15),
+            fog_color: Vec3::new(0.06, 0.03, 0.11),
             fog_density: 0.0011,
             fog_height_falloff: 0.0,
             cloud_coverage: 0.3,
@@ -893,6 +893,50 @@ pub fn build_track(def: &TrackDef) -> Track {
                 [0.15, 0.85, 1.0],
             );
         }
+        // The city: lit skyscrapers far below, clear of the road's footprint.
+        let low = centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+        let mut rng = Rng(0x000c_17e5);
+        let (mut towers, mut tries) = (0, 0);
+        while towers < 70 && tries < 4000 {
+            tries += 1;
+            let x = lo.x - 200.0 + rng.next() * (hi.x - lo.x + 400.0);
+            let z = lo.y - 200.0 + rng.next() * (hi.y - lo.y + 400.0);
+            if terrain::distance_to(&centerline, x, z) < 22.0 {
+                continue;
+            }
+            let (hx, hz) = (8.0 + rng.next() * 10.0, 8.0 + rng.next() * 10.0);
+            let top = low - 18.0 - rng.next() * 55.0;
+            let bottom = low - 220.0;
+            let h = (top - bottom) * 0.5;
+            let rot = Quat::from_rotation_y((rng.next() * 4.0).floor() * 0.4);
+            let warmth = rng.next();
+            let tint = [0.3 + 0.12 * warmth, 0.31, 0.4 - 0.1 * warmth];
+            let mut b = box_mesh(Vec3::new(hx, h, hz), [tint[0], tint[1], tint[2], 1.0]);
+            let xf = Mat4::from_rotation_translation(rot, Vec3::new(x, bottom + h, z));
+            for v in &mut b.vertices {
+                v.pos = xf.transform_point3(Vec3::from_array(v.pos)).to_array();
+                v.normal = xf
+                    .transform_vector3(Vec3::from_array(v.normal))
+                    .normalize()
+                    .to_array();
+                v.material = material(
+                    Layer::CityFacade as u32,
+                    Layer::CityFacade as u32,
+                    TRIPLANAR_B | EMISSIVE,
+                );
+            }
+            road.append(&b);
+            // A red aircraft beacon on every third roof.
+            if towers % 3 == 0 {
+                emissive_box(
+                    &mut road,
+                    Vec3::splat(0.6),
+                    Mat4::from_translation(Vec3::new(x, top + 0.6, z)),
+                    [1.0, 0.1, 0.15],
+                );
+            }
+            towers += 1;
+        }
     }
 
     let collision = TriMesh::with_surfaces(col.positions, col.indices, col.surfaces, 8.0);
@@ -1149,6 +1193,34 @@ mod tests {
             );
             assert!(!t.box_rows.is_empty());
         }
+    }
+
+    #[test]
+    fn skyway_has_a_lit_city_far_below() {
+        let t = build_track(&TRACKS[2]);
+        let low = t.centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+        let city = material(
+            Layer::CityFacade as u32,
+            Layer::CityFacade as u32,
+            TRIPLANAR_B | EMISSIVE,
+        );
+        let towers: Vec<_> = t
+            .road
+            .vertices
+            .iter()
+            .filter(|v| v.material == city)
+            .collect();
+        assert!(
+            towers.len() >= 24 * 40,
+            "at least 40 towers ({} verts)",
+            towers.len()
+        );
+        assert!(
+            towers.iter().all(|v| v.pos[1] < low - 12.0),
+            "all below the deck"
+        );
+        let d = build_track(&TRACKS[0]);
+        assert!(!d.road.vertices.iter().any(|v| v.material == city));
     }
 
     #[test]

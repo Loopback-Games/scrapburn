@@ -1,5 +1,5 @@
-//! Set-piece props and scatter around the circuit: the skull rock, the refinery, wrecks,
-//! cacti and dead trees.
+//! Set-piece props and scatter around each circuit: the Dustbowl's skull rock, refinery and
+//! wrecks; Grindstone's towers, gatehouse and banners; Skyway's neon arches and pylons.
 
 use std::path::Path;
 
@@ -7,8 +7,8 @@ use glam::{Mat4, Vec3};
 use rivet_assets::{GlbError, Rgba8Image, load_glb};
 use rivet_render::{MeshData, Vertex, material};
 
-use crate::terrain;
-use crate::track::Track;
+use crate::terrain::{self, TerrainKind};
+use crate::track::{Track, TrackId};
 
 /// A prop model: file stem, typical size (largest dimension, m), how much of its size must stay
 /// clear of the road, and its shading.
@@ -18,68 +18,143 @@ pub struct PropKind {
     /// Fraction of `size` used as the clearance radius from the road.
     pub footprint: f32,
     pub specular: f32,
+    /// Self-lit brightness (neon), 0 = lit by the sun.
+    pub glow: f32,
 }
 
-pub const PROPS: [PropKind; 10] = [
+pub const PROPS: [PropKind; 19] = [
     PropKind {
         name: "skull_rock",
         size: 55.0,
         footprint: 0.5,
         specular: 0.04,
+        glow: 0.0,
     },
     PropKind {
         name: "plane_wreck",
         size: 26.0,
         footprint: 0.5,
         specular: 0.25,
+        glow: 0.0,
     },
     PropKind {
         name: "fuel_tanks",
         size: 22.0,
         footprint: 0.5,
         specular: 0.3,
+        glow: 0.0,
     },
     PropKind {
         name: "pumpjack",
         size: 12.0,
         footprint: 0.5,
         specular: 0.3,
+        glow: 0.0,
     },
     PropKind {
         name: "water_tower",
         size: 18.0,
         footprint: 0.3,
         specular: 0.3,
+        glow: 0.0,
     },
     PropKind {
         name: "bus_wreck",
         size: 11.0,
         footprint: 0.5,
         specular: 0.25,
+        glow: 0.0,
     },
     PropKind {
         name: "wreck_car",
         size: 5.5,
         footprint: 0.5,
         specular: 0.25,
+        glow: 0.0,
     },
     PropKind {
         name: "barrel_stack",
         size: 3.5,
         footprint: 0.5,
         specular: 0.2,
+        glow: 0.0,
     },
     PropKind {
         name: "cactus",
         size: 6.0,
         footprint: 0.3,
         specular: 0.05,
+        glow: 0.0,
     },
     PropKind {
         name: "dead_tree",
         size: 8.0,
         footprint: 0.4,
         specular: 0.03,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "castle_tower",
+        size: 28.0,
+        footprint: 0.4,
+        specular: 0.05,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "gatehouse",
+        size: 36.0,
+        footprint: 0.45,
+        specular: 0.05,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "brazier",
+        size: 2.4,
+        footprint: 0.5,
+        specular: 0.3,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "banner_pole",
+        size: 6.0,
+        footprint: 0.3,
+        specular: 0.1,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "guardian_statue",
+        size: 9.0,
+        footprint: 0.4,
+        specular: 0.15,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "siege_wagon",
+        size: 7.0,
+        footprint: 0.5,
+        specular: 0.1,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "neon_arch",
+        size: 19.0,
+        footprint: 0.0,
+        specular: 0.4,
+        glow: 0.22,
+    },
+    PropKind {
+        name: "antenna_pylon",
+        size: 50.0,
+        footprint: 0.2,
+        specular: 0.3,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "billboard_frame",
+        size: 12.0,
+        footprint: 0.4,
+        specular: 0.3,
+        glow: 0.3,
     },
 ];
 
@@ -120,6 +195,20 @@ fn beside(track: &Track, at: f32, lateral: f32) -> Vec3 {
     Vec3::new(cl[i].x, 0.0, cl[i].z) + right * lateral
 }
 
+/// Centerline point (with height) and the road's right vector at lap fraction `at`.
+fn frame(track: &Track, at: f32) -> (Vec3, Vec3) {
+    let cl = &track.centerline;
+    let n = cl.len() - 1;
+    let i = ((at.rem_euclid(1.0)) * n as f32) as usize % n;
+    let f = (cl[(i + 1) % n] - cl[(i + n - 1) % n]).normalize();
+    (cl[i], f.cross(Vec3::Y).normalize())
+}
+
+/// Yaw that turns a model's +Z axis to `dir`.
+fn yaw_to(dir: Vec3) -> f32 {
+    dir.x.atan2(dir.z)
+}
+
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> f32 {
@@ -133,6 +222,177 @@ impl Rng {
 
 /// Every prop on the circuit, deterministic.
 pub fn placements(track: &Track) -> Vec<Placement> {
+    match track.id {
+        TrackId::Dustbowl => dustbowl(track),
+        TrackId::Grindstone => grindstone(track),
+        TrackId::Skyway => skyway(track),
+    }
+}
+
+fn place(kind_name: &str, pos: Vec3, yaw: f32, scale: f32) -> Placement {
+    let k = kind(kind_name);
+    Placement {
+        kind: k,
+        pos,
+        yaw,
+        size: PROPS[k].size * scale,
+    }
+}
+
+/// Scatter `count` props from `names` over the ground around the track, clear of the road and
+/// of what is already placed.
+fn scatter(track: &Track, out: &mut Vec<Placement>, names: &[&str], count: usize, seed: u64) {
+    let cl = &track.centerline;
+    let set_pieces: Vec<(Vec3, f32)> = out.iter().map(|p| (p.pos, p.size * 0.6)).collect();
+    let mut rng = Rng(seed);
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in cl {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    let (mut tries, mut placed) = (0, 0);
+    while placed < count && tries < 6000 {
+        tries += 1;
+        let x = lo.x - 120.0 + rng.next() * (hi.x - lo.x + 240.0);
+        let z = lo.z - 120.0 + rng.next() * (hi.z - lo.z + 240.0);
+        let d = terrain::distance_to(cl, x, z);
+        let name = names[((rng.next() * names.len() as f32) as usize).min(names.len() - 1)];
+        let k = kind(name);
+        let size = PROPS[k].size * (0.7 + rng.next() * 0.6);
+        let clear = crate::track::ROAD_HALF_WIDTH + 4.0 + size * PROPS[k].footprint;
+        if d < clear || d > 150.0 {
+            continue;
+        }
+        let p = Vec3::new(x, 0.0, z);
+        if set_pieces
+            .iter()
+            .any(|(q, r)| Vec3::new(q.x, 0.0, q.z).distance(p) < r + 4.0)
+        {
+            continue;
+        }
+        let y = terrain::height_for(track.terrain_kind, cl, x, z);
+        out.push(Placement {
+            kind: k,
+            pos: Vec3::new(x, y - 0.2, z),
+            yaw: rng.next() * std::f32::consts::TAU,
+            size,
+        });
+        placed += 1;
+    }
+}
+
+/// Castle Grindstone: towers on the corners, the gatehouse by the drawbridge, statues guarding
+/// the start, banners and braziers lining the ramparts.
+fn grindstone(track: &Track) -> Vec<Placement> {
+    let cl = &track.centerline;
+    let mut out = Vec::new();
+    let ground = |p: Vec3| {
+        Vec3::new(
+            p.x,
+            terrain::height_for(TerrainKind::Hills, cl, p.x, p.z) - 0.2,
+            p.z,
+        )
+    };
+    let put = |out: &mut Vec<Placement>,
+               name: &str,
+               at: f32,
+               lateral: f32,
+               yaw: Option<f32>,
+               scale: f32| {
+        let (c, r) = frame(track, at);
+        let p = ground(c + r * lateral);
+        // Default: face the road.
+        let face = yaw.unwrap_or_else(|| yaw_to(-r * lateral.signum()));
+        out.push(place(name, p, face, scale));
+    };
+    // Towers on the outside of the corners (the loop runs counter-clockwise: left is outside).
+    for (at, lat, sc) in [
+        (0.1, -30.0, 1.0),
+        (0.24, -32.0, 1.15),
+        (0.43, 30.0, 0.9),
+        (0.58, -30.0, 1.1),
+        (0.8, -31.0, 1.0),
+        (0.93, 30.0, 0.85),
+    ] {
+        put(&mut out, "castle_tower", at, lat, Some(at * 9.0), sc);
+    }
+    // The gatehouse, looming over the drawbridge jump.
+    put(&mut out, "gatehouse", 0.7, -36.0, None, 1.0);
+    // Guardians flanking the start line.
+    put(&mut out, "guardian_statue", 0.985, 14.5, None, 1.0);
+    put(&mut out, "guardian_statue", 0.985, -14.5, None, 1.0);
+    put(&mut out, "guardian_statue", 0.68, 14.5, None, 1.1);
+    // Banners and braziers along the walls.
+    let mut k = 0;
+    let mut at = 0.02;
+    while at < 0.99 {
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+        put(&mut out, "banner_pole", at, 11.8 * side, None, 1.0);
+        put(
+            &mut out,
+            "brazier",
+            at + 0.025,
+            -11.2 * side,
+            Some(at * 5.0),
+            1.0,
+        );
+        k += 1;
+        at += 0.06;
+    }
+    // Siege wagons parked in the fields.
+    put(&mut out, "siege_wagon", 0.16, 16.0, None, 1.0);
+    put(&mut out, "siege_wagon", 0.5, -17.0, Some(1.2), 1.1);
+    put(&mut out, "siege_wagon", 0.87, 16.5, Some(4.0), 0.95);
+    // Drop anything that ended up too close to another stretch of the road.
+    out.retain(|p| {
+        terrain::distance_to(cl, p.pos.x, p.pos.z)
+            > crate::track::ROAD_HALF_WIDTH + 2.5 + p.size * PROPS[p.kind].footprint
+    });
+    scatter(track, &mut out, &["dead_tree"], 34, 0x00ca_571e);
+    out
+}
+
+/// Skyway Zero: neon arches over the deck, holo billboards, and pylons rising out of the haze.
+fn skyway(track: &Track) -> Vec<Placement> {
+    let mut out = Vec::new();
+    for at in [0.12, 0.3, 0.45, 0.62, 0.75, 0.9] {
+        let (c, r) = frame(track, at);
+        out.push(place("neon_arch", c - Vec3::Y * 0.3, yaw_to(r), 1.0));
+    }
+    for (k, at) in [0.06, 0.2, 0.37, 0.52, 0.68, 0.83, 0.95]
+        .into_iter()
+        .enumerate()
+    {
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let (c, r) = frame(track, at);
+        out.push(place(
+            "billboard_frame",
+            c + r * side * 16.5 + Vec3::Y * 0.5,
+            yaw_to(-r * side),
+            1.0,
+        ));
+    }
+    let mut rng = Rng(0x05c7_e1e0);
+    for k in 0..18 {
+        let at = k as f32 / 18.0 + rng.next() * 0.03;
+        let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
+        let (c, r) = frame(track, at);
+        let lat = side * (45.0 + rng.next() * 80.0);
+        let scale = 1.0 + rng.next() * 0.6;
+        let top_above_deck = 6.0 + rng.next() * 20.0;
+        let base = c.y + top_above_deck - PROPS[kind("antenna_pylon")].size * scale;
+        out.push(place(
+            "antenna_pylon",
+            Vec3::new(c.x, base, c.z) + r * lat,
+            rng.next() * 6.3,
+            scale,
+        ));
+    }
+    out
+}
+
+/// The Dustbowl Loop: skull rock, refinery, plane and bus wrecks, cacti and dead trees.
+fn dustbowl(track: &Track) -> Vec<Placement> {
     let cl = &track.centerline;
     let mut out = Vec::new();
     let mut put = |name: &str, p: Vec3, yaw: f32, scale: f32| {
@@ -178,47 +438,13 @@ pub fn placements(track: &Track) -> Vec<Placement> {
     put("barrel_stack", beside(track, 0.6, 12.0), 0.2, 1.1);
 
     // Scatter: cacti and dead trees across the dunes, clear of the road and set pieces.
-    let set_pieces: Vec<(Vec3, f32)> = out.iter().map(|p| (p.pos, p.size * 0.6)).collect();
-    let mut rng = Rng(0xdead_7ee5);
-    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-    for p in cl {
-        lo = lo.min(*p);
-        hi = hi.max(*p);
-    }
-    let mut tries = 0;
-    let mut scattered = 0;
-    while scattered < 46 && tries < 6000 {
-        tries += 1;
-        let x = lo.x - 120.0 + rng.next() * (hi.x - lo.x + 240.0);
-        let z = lo.z - 120.0 + rng.next() * (hi.z - lo.z + 240.0);
-        let d = terrain::distance_to(cl, x, z);
-        let name = if rng.next() < 0.6 {
-            "cactus"
-        } else {
-            "dead_tree"
-        };
-        let size = PROPS[kind(name)].size * (0.7 + rng.next() * 0.6);
-        let clear = crate::track::ROAD_HALF_WIDTH + 4.0 + size * PROPS[kind(name)].footprint;
-        if d < clear || d > 150.0 {
-            continue;
-        }
-        let p = Vec3::new(x, 0.0, z);
-        if set_pieces
-            .iter()
-            .any(|(q, r)| Vec3::new(q.x, 0.0, q.z).distance(p) < r + 4.0)
-        {
-            continue;
-        }
-        let k = kind(name);
-        let y = terrain::height_at(cl, x, z);
-        out.push(Placement {
-            kind: k,
-            pos: Vec3::new(x, y - 0.2, z),
-            yaw: rng.next() * std::f32::consts::TAU,
-            size,
-        });
-        scattered += 1;
-    }
+    scatter(
+        track,
+        &mut out,
+        &["cactus", "cactus", "cactus", "dead_tree", "dead_tree"],
+        46,
+        0xdead_7ee5,
+    );
     out
 }
 
@@ -226,9 +452,10 @@ pub fn placements(track: &Track) -> Vec<Placement> {
 /// y = 0) and textured from layer `layer`.
 pub fn load_prop(
     assets: &Path,
-    name: &str,
+    kind: &PropKind,
     layer: u32,
 ) -> Result<(MeshData, Option<Rgba8Image>), GlbError> {
+    let name = kind.name;
     let g = load_glb(
         &assets
             .join("models")
@@ -242,14 +469,18 @@ pub fn load_prop(
     }
     let size = (hi - lo).max_element().max(1e-6);
     let offset = Vec3::new((lo.x + hi.x) * 0.5, lo.y, (lo.z + hi.z) * 0.5);
-    let mat = material(layer, layer, 0);
+    let (mat, tint) = if kind.glow > 0.0 {
+        (material(layer, layer, rivet_render::EMISSIVE), kind.glow)
+    } else {
+        (material(layer, layer, 0), 1.0)
+    };
     let mut m = MeshData::default();
     for i in 0..g.positions.len() {
         m.vertices.push(Vertex {
             pos: ((Vec3::from_array(g.positions[i]) - offset) / size).to_array(),
             normal: g.normals[i],
             uv: g.uvs[i],
-            color: [1.0, 1.0, 1.0, 0.0],
+            color: [tint, tint, tint, 0.0],
             material: mat,
         });
     }
@@ -281,16 +512,96 @@ mod tests {
 
     #[test]
     fn every_kind_is_used_and_landmark_is_big() {
+        let all: Vec<Placement> = crate::track::TRACKS
+            .iter()
+            .flat_map(|d| placements(&crate::track::build_track(d)))
+            .collect();
+        for (k, kind) in PROPS.iter().enumerate() {
+            assert!(
+                all.iter().any(|p| p.kind == k),
+                "{} unused on every track",
+                kind.name
+            );
+        }
         let t = build_graybox_loop();
         let placed = placements(&t);
-        for (k, kind) in PROPS.iter().enumerate() {
-            assert!(placed.iter().any(|p| p.kind == k), "{} unused", kind.name);
-        }
         let skull = placed
             .iter()
             .find(|p| PROPS[p.kind].name == "skull_rock")
             .unwrap();
         assert!(skull.size >= 40.0);
+    }
+
+    #[test]
+    fn each_track_dresses_in_its_own_props() {
+        // (Grindstone drops props that land too near another stretch; keep most of them.)
+        use crate::track::{TRACKS, build_track};
+        let names = |i: usize| {
+            let t = build_track(&TRACKS[i]);
+            placements(&t)
+                .iter()
+                .map(|p| PROPS[p.kind].name)
+                .collect::<Vec<_>>()
+        };
+        let castle = names(1);
+        for n in [
+            "castle_tower",
+            "gatehouse",
+            "guardian_statue",
+            "siege_wagon",
+            "banner_pole",
+            "brazier",
+        ] {
+            assert!(castle.contains(&n), "castle lacks {n}");
+        }
+        assert!(!castle.contains(&"cactus"), "no cacti at the castle");
+        let sky = names(2);
+        for n in ["neon_arch", "antenna_pylon", "billboard_frame"] {
+            assert!(sky.contains(&n), "skyway lacks {n}");
+        }
+        assert!(!sky.contains(&"skull_rock"));
+    }
+
+    #[test]
+    fn castle_props_stay_off_the_road() {
+        use crate::track::{TRACKS, build_track};
+        let t = build_track(&TRACKS[1]);
+        for p in placements(&t) {
+            let d = crate::terrain::distance_to(&t.centerline, p.pos.x, p.pos.z);
+            let need = ROAD_HALF_WIDTH + 2.0 + p.size * PROPS[p.kind].footprint;
+            assert!(
+                d > need,
+                "{} is {d:.1} m from the road (needs {need:.1})",
+                PROPS[p.kind].name
+            );
+        }
+    }
+
+    #[test]
+    fn skyway_arches_span_the_road_at_road_height() {
+        use crate::track::{TRACKS, build_track};
+        let t = build_track(&TRACKS[2]);
+        let arches: Vec<_> = placements(&t)
+            .into_iter()
+            .filter(|p| PROPS[p.kind].name == "neon_arch")
+            .collect();
+        assert!(arches.len() >= 4);
+        for a in arches {
+            let c = t
+                .centerline
+                .iter()
+                .min_by(|x, y| x.distance(a.pos).total_cmp(&y.distance(a.pos)))
+                .unwrap();
+            assert!(
+                Vec3::new(c.x - a.pos.x, 0.0, c.z - a.pos.z).length() < 1.0,
+                "centered on the road"
+            );
+            assert!((a.pos.y - c.y).abs() < 1.5, "sits on the deck");
+            assert!(
+                a.size * 0.5 > ROAD_HALF_WIDTH + 1.5,
+                "wide enough to clear the walls"
+            );
+        }
     }
 
     #[test]

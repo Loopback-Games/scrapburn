@@ -401,6 +401,30 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
 }
 
 /// A centered menu panel with an optional big title (the game logo on the title screen).
+/// The selected circuit on the title screen: number, name and tagline, bottom left.
+pub fn draw_track_card(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    index: usize,
+    count: usize,
+    name: &str,
+    tagline: &str,
+) {
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let (x, y) = (36.0 * ui, h - 200.0 * ui);
+    let ts = 1.5 * ui;
+    let cw = (width(tagline, ts) + 48.0 * ui)
+        .max(width(name, 3.4 * ui) + 48.0 * ui)
+        .min(w - 72.0 * ui);
+    o.rect(x, y, cw, 128.0 * ui, PANEL);
+    o.rect(x, y, 6.0 * ui, 128.0 * ui, ACCENT);
+    let head = format!("CIRCUIT {} / {}", index + 1, count);
+    o.label(x + 24.0 * ui, y + 14.0 * ui, 1.5 * ui, ACCENT, &head);
+    o.label(x + 24.0 * ui, y + 38.0 * ui, 3.4 * ui, WHITE, name);
+    o.label(x + 24.0 * ui, y + 90.0 * ui, ts, DIM, tagline);
+}
+
 pub fn draw_menu(
     o: &mut Overlay,
     w: f32,
@@ -414,12 +438,14 @@ pub fn draw_menu(
     if let Some(t) = title {
         let s = 14.0 * ui;
         let tw = width(t, s);
-        let y = h * 0.16;
+        let y = h * 0.12;
+        // TrueType glyphs: the cap height plus descent is about 10 scale units.
+        let th = s * 10.0;
         o.rect(
             w * 0.5 - tw * 0.5 - 30.0 * ui,
             y - 20.0 * ui,
             tw + 60.0 * ui,
-            s * 7.0 + 40.0 * ui,
+            th + 64.0 * ui,
             [0.03, 0.02, 0.01, 0.55],
         );
         o.rect(
@@ -437,11 +463,11 @@ pub fn draw_menu(
             t,
         );
         o.label(w * 0.5 - tw * 0.5, y, s, ACCENT, t);
-        text(
-            o,
-            w * 0.5 - width(subtitle, 2.2 * ui) * 0.5,
-            y + s * 7.0 + 4.0 * ui,
-            2.2 * ui,
+        let ss = 2.2 * ui;
+        o.label(
+            w * 0.5 - width(subtitle, ss) * 0.5,
+            y + th + 16.0 * ui,
+            ss,
             WHITE,
             subtitle,
         );
@@ -475,7 +501,7 @@ pub fn draw_menu(
         if sel {
             o.rect(
                 w * 0.5 - pw * 0.5 + 10.0 * ui,
-                y - 12.0 * ui,
+                y - 6.0 * ui,
                 pw - 20.0 * ui,
                 row - 8.0 * ui,
                 [1.0, 0.55, 0.12, 0.85],
