@@ -227,6 +227,8 @@ const SPIN_YAW_RATE: f32 = 9.0;
 const KART_RESTITUTION: f32 = 0.3;
 /// Share of the heading error to the wall tangent removed per wall-contact tick.
 const WALL_ALIGN: f32 = 0.35;
+/// Collision spheres along the kart (offsets from the center, toward the nose).
+const BODY_SPHERES: [f32; 3] = [-0.75, 0.0, 0.75];
 
 fn approach(v: f32, target: f32, rate: f32) -> f32 {
     if v < target {
@@ -420,34 +422,46 @@ pub fn step(
         state.velocity += n * (p.hop_speed - state.velocity.dot(n)).max(0.0);
     }
 
-    // --- Integrate ---
-    state.position += state.velocity * dt;
-
-    // --- Walls ---
+    // --- Integrate and collide with walls ---
+    // Substeps of at most 0.3 m so a fast kart can't pass through a wall in one tick; the body
+    // is three spheres along its length so the nose and tail can't poke into walls either.
+    let travel = state.velocity.length() * dt;
+    let substeps = ((travel / 0.3).ceil() as usize).clamp(1, 8);
+    let sub_dt = dt / substeps as f32;
     let mut contacts: Vec<Contact> = Vec::new();
-    world.sphere_contacts(state.position, p.body_radius, &mut contacts);
-    // Only wall-like faces push the body; floors (and their edges) belong to the suspension.
-    for c in contacts
-        .iter()
-        .filter(|c| c.face_normal.y.abs() < GROUND_NORMAL_Y)
-    {
-        state.position += c.normal * c.depth;
-        let into = state.velocity.dot(c.normal);
-        if into < 0.0 {
-            let speed_before = state.velocity.length().max(1e-3);
-            state.velocity -= c.normal * into;
-            // Scrub speed in proportion to how head-on the hit was.
-            state.velocity *= 1.0 - p.wall_scrub * (-into / speed_before).min(1.0);
-            // Glance off: swing the nose toward the new direction of travel along the wall,
-            // instead of grinding into it.
-            let up = state.rotation * Vec3::Y;
-            let along = (state.velocity - up * state.velocity.dot(up)).normalize_or_zero();
-            let fwd = state.rotation * Vec3::Z;
-            // Only for glancing hits: after a head-on hit the residual direction is noise.
-            if along != Vec3::ZERO && fwd.dot(along) > 0.5 {
-                let turn = Quat::from_rotation_arc(fwd, along);
-                state.rotation =
-                    (Quat::IDENTITY.slerp(turn, WALL_ALIGN) * state.rotation).normalize();
+    for _ in 0..substeps {
+        state.position += state.velocity * sub_dt;
+        let fwd_axis = state.rotation * Vec3::Z;
+        for offset in BODY_SPHERES {
+            contacts.clear();
+            world.sphere_contacts(
+                state.position + fwd_axis * offset,
+                p.body_radius,
+                &mut contacts,
+            );
+            for c in contacts
+                .iter()
+                .filter(|c| c.face_normal.y.abs() < GROUND_NORMAL_Y)
+            {
+                state.position += c.normal * c.depth;
+                let into = state.velocity.dot(c.normal);
+                if into < 0.0 {
+                    let speed_before = state.velocity.length().max(1e-3);
+                    state.velocity -= c.normal * into;
+                    // Scrub speed in proportion to how head-on the hit was.
+                    state.velocity *= 1.0 - p.wall_scrub * (-into / speed_before).min(1.0);
+                    // Glance off: swing the nose toward the new direction of travel along the wall,
+                    // instead of grinding into it.
+                    let up = state.rotation * Vec3::Y;
+                    let along = (state.velocity - up * state.velocity.dot(up)).normalize_or_zero();
+                    let fwd = state.rotation * Vec3::Z;
+                    // Only for glancing hits: after a head-on hit the residual direction is noise.
+                    if along != Vec3::ZERO && fwd.dot(along) > 0.5 {
+                        let turn = Quat::from_rotation_arc(fwd, along);
+                        state.rotation =
+                            (Quat::IDENTITY.slerp(turn, WALL_ALIGN) * state.rotation).normalize();
+                    }
+                }
             }
         }
     }
@@ -523,10 +537,10 @@ mod tests {
             Vec3::new(h, 0.0, -h),
             Vec3::new(h, 0.0, h),
             Vec3::new(-h, 0.0, h),
-            Vec3::new(-50.0, -1.0, 50.0),
-            Vec3::new(50.0, -1.0, 50.0),
-            Vec3::new(50.0, 5.0, 50.0),
-            Vec3::new(-50.0, 5.0, 50.0),
+            Vec3::new(-h, -1.0, 50.0),
+            Vec3::new(h, -1.0, 50.0),
+            Vec3::new(h, 5.0, 50.0),
+            Vec3::new(-h, 5.0, 50.0),
         ];
         TriMesh::new(p, vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]], 8.0)
     }
@@ -784,6 +798,42 @@ mod tests {
                 "tick {i}: {} m/s exceeds {cap}",
                 s.velocity.length()
             );
+        }
+    }
+
+    #[test]
+    fn karts_never_pass_through_walls_at_any_angle_or_speed() {
+        let w = walled_world();
+        let p = VehicleParams::default();
+        for deg in [0.0f32, 20.0, 45.0, 70.0, 85.0] {
+            for speed in [20.0f32, 45.0, 70.0] {
+                for drift in [false, true] {
+                    let mut s = settled(&w, &p);
+                    s.rotation = Quat::from_rotation_y(deg.to_radians());
+                    s.position.z = 44.0;
+                    s.velocity = s.rotation * Vec3::Z * speed;
+                    s.boost_speed = 9.0;
+                    s.boost_timer = 2.0;
+                    for tick in 0..90 {
+                        let input = DriveInput {
+                            throttle: 1.0,
+                            steer: if drift { 1.0 } else { 0.0 },
+                            drift: drift && tick > 2,
+                            hop: drift && tick == 1,
+                            ..Default::default()
+                        };
+                        step(&mut s, &p, input, &w, DT);
+                        let nose = s.position + s.rotation * Vec3::Z * 1.3;
+                        let tail = s.position - s.rotation * Vec3::Z * 1.3;
+                        let deepest = nose.z.max(tail.z);
+                        assert!(
+                            deepest < 50.15,
+                            "{deg} deg, {speed} m/s, drift {drift}: kart reached z {deepest:.2} at tick {tick} (x {:.1})",
+                            s.position.x
+                        );
+                    }
+                }
+            }
         }
     }
 

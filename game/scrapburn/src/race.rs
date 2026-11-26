@@ -112,6 +112,14 @@ pub struct Race {
     pub elimination: bool,
 }
 
+/// Brakes on during the countdown: a kart may settle on its suspension but not roll.
+fn hold_on_grid(r: &mut Racer) {
+    r.state.position.x = r.prev.position.x;
+    r.state.position.z = r.prev.position.z;
+    r.state.velocity.x = 0.0;
+    r.state.velocity.z = 0.0;
+}
+
 /// Grid positions behind the start line: two columns, staggered rows, facing forward.
 pub fn grid_spots(track: &Track, n: usize) -> Vec<(Vec3, f32)> {
     let cl = &track.centerline;
@@ -326,6 +334,9 @@ impl Race {
             }
         };
         step(&mut r.state, &r.params, input, &track.collision, dt);
+        if !racing {
+            hold_on_grid(r);
+        }
         let p = r.state.position;
         let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
         r.off_track = if far { r.off_track + dt } else { 0.0 };
@@ -452,6 +463,9 @@ impl Race {
             };
             if let Some(input) = input {
                 step(&mut r.state, &r.params, input, &track.collision, dt);
+                if !racing {
+                    hold_on_grid(r);
+                }
             }
 
             if racing {
@@ -561,6 +575,24 @@ mod tests {
     fn track() -> &'static Track {
         static T: OnceLock<Track> = OnceLock::new();
         T.get_or_init(build_graybox_loop)
+    }
+
+    #[test]
+    fn karts_hold_still_on_a_sloped_grid_during_the_countdown() {
+        let t = crate::track::build_track(&crate::track::TRACKS[2]);
+        let mut race = Race::new(&t, 8, true, 3);
+        // Settle onto the deck first.
+        for _ in 0..30 {
+            race.step(&t, DriveInput::default(), 1.0 / 60.0);
+        }
+        let start: Vec<Vec3> = race.racers.iter().map(|r| r.state.position).collect();
+        while matches!(race.phase, Phase::Countdown(_)) {
+            race.step(&t, DriveInput::default(), 1.0 / 60.0);
+        }
+        for (r, s) in race.racers.iter().zip(&start) {
+            let d = Vec3::new(r.state.position.x - s.x, 0.0, r.state.position.z - s.z).length();
+            assert!(d < 0.05, "rolled {d:.2} m during the countdown");
+        }
     }
 
     #[test]
