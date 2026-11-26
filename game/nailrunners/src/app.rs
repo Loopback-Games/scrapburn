@@ -16,7 +16,7 @@ use nailrunners::fx_meshes;
 use nailrunners::ghost::{BestGhost, GhostRecorder};
 use nailrunners::hud::{self, HudInfo, RaceHud};
 use nailrunners::materials::{find_assets_dir, load_layers, shading};
-use nailrunners::menu::{MenuAction, MenuState, Screen, Settings};
+use nailrunners::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
 use nailrunners::particles::{Blend, Particle, ParticleSystem};
 use nailrunners::race::{Phase, Race, RaceEvent};
 use nailrunners::scenery;
@@ -433,7 +433,7 @@ impl Game {
         let pad = pad.as_ref();
         let act = actions(&self.keys, pad);
         if act.toggle_graph {
-            self.settings.show_fps = !self.settings.show_fps;
+            self.settings.fps = self.settings.fps.next();
         }
 
         // --- Menus ---
@@ -1038,14 +1038,20 @@ impl Game {
                 Screen::Title | Screen::Playing => {}
             }
         }
-        if self.settings.show_fps || self.bench.is_some() {
-            draw_frame_graph(
-                o,
-                &self.stats,
-                &self.ctx.adapter_info.name,
-                w - 270.0,
-                200.0,
-            );
+        match (self.settings.fps, self.bench.is_some()) {
+            (FpsDisplay::Graph, _) | (_, true) => {
+                draw_frame_graph(
+                    o,
+                    &self.stats,
+                    &self.ctx.adapter_info.name,
+                    w - 270.0,
+                    200.0,
+                );
+            }
+            (FpsDisplay::Counter, false) => {
+                hud::draw_fps_counter(o, w, h, self.stats.summary().fps)
+            }
+            (FpsDisplay::Off, false) => {}
         }
     }
 }

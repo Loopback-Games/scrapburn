@@ -579,6 +579,29 @@ pub fn draw_item_slot(
     );
 }
 
+/// A compact frame-rate readout, bottom center (clear of the race HUD).
+pub fn draw_fps_counter(o: &mut Overlay, w: f32, h: f32, fps: f32) {
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let label = format!("{fps:.0} FPS");
+    let color = if fps >= 59.0 {
+        [0.45, 1.0, 0.5, 1.0]
+    } else if fps >= 30.0 {
+        ACCENT
+    } else {
+        [1.0, 0.3, 0.2, 1.0]
+    };
+    let s = 2.0 * ui;
+    let x = w * 0.5 - width(&label, s) * 0.5;
+    o.rect(
+        x - 8.0 * ui,
+        6.0 * ui + 112.0 * ui,
+        width(&label, s) + 16.0 * ui,
+        26.0 * ui,
+        PANEL,
+    );
+    text(o, x, 12.0 * ui + 112.0 * ui, s, color, &label);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

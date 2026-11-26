@@ -41,7 +41,36 @@ pub struct Settings {
     pub preset: Preset,
     pub laps: u32,
     pub rivals: usize,
-    pub show_fps: bool,
+    pub fps: FpsDisplay,
+}
+
+/// How frame rate is shown in game (F3 / Select cycles it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FpsDisplay {
+    #[default]
+    Off,
+    /// A small FPS readout.
+    Counter,
+    /// The full CPU/GPU frame-time graph.
+    Graph,
+}
+
+impl FpsDisplay {
+    pub fn next(self) -> Self {
+        match self {
+            FpsDisplay::Off => FpsDisplay::Counter,
+            FpsDisplay::Counter => FpsDisplay::Graph,
+            FpsDisplay::Graph => FpsDisplay::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FpsDisplay::Off => "OFF",
+            FpsDisplay::Counter => "COUNTER",
+            FpsDisplay::Graph => "GRAPH",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -50,7 +79,7 @@ impl Default for Settings {
             preset: Preset::Medium,
             laps: 3,
             rivals: 7,
-            show_fps: false,
+            fps: FpsDisplay::Off,
         }
     }
 }
@@ -110,7 +139,7 @@ impl MenuState {
                 format!("GRAPHICS  < {preset} >"),
                 format!("LAPS  < {} >", s.laps),
                 format!("RIVALS  < {} >", s.rivals),
-                format!("SHOW FPS  < {} >", if s.show_fps { "ON" } else { "OFF" }),
+                format!("SHOW FPS  < {} >", s.fps.label()),
                 "BACK".into(),
             ],
             Screen::Paused => vec![
@@ -172,7 +201,13 @@ impl MenuState {
                     }
                     SETTING_LAPS => s.laps = cycle(&LAP_CHOICES, s.laps, step),
                     SETTING_RIVALS => s.rivals = cycle(&RIVAL_CHOICES, s.rivals, step),
-                    SETTING_FPS => s.show_fps = !s.show_fps,
+                    SETTING_FPS => {
+                        s.fps = if step > 0 {
+                            s.fps.next()
+                        } else {
+                            s.fps.next().next()
+                        };
+                    }
                     _ => {}
                 }
                 MenuAction::None
@@ -263,6 +298,19 @@ mod tests {
             MenuAction::PresetChanged
         );
         assert_ne!(s.preset, before);
+    }
+
+    #[test]
+    fn fps_display_cycles() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Settings);
+        m.selected = SETTING_FPS;
+        m.handle(press(|i| i.right = true), &mut s);
+        assert_eq!(s.fps, FpsDisplay::Counter);
+        m.handle(press(|i| i.right = true), &mut s);
+        assert_eq!(s.fps, FpsDisplay::Graph);
+        m.handle(press(|i| i.left = true), &mut s);
+        assert_eq!(s.fps, FpsDisplay::Counter);
     }
 
     #[test]
