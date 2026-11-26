@@ -142,7 +142,92 @@ pub struct KartParts {
     pub body: MeshData,
     pub wheels: [MeshData; 4],
     pub hubs: [Vec3; 4],
+    /// Each wheel's measured radius.
+    pub radii: [f32; 4],
+    /// Mean wheel radius.
     pub radius: f32,
+}
+
+/// Heights above the ground (m) at which a tire's width is measured. Only tires reach this low
+/// (the speedster's front fairings already come down to 0.12 m), so the chords are clean of
+/// fenders and bodywork.
+const CHORD_HEIGHTS: [f32; 9] = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12];
+/// Half-thickness (m) of the horizontal slice a chord is measured in.
+const CHORD_BAND: f32 = 0.012;
+/// A connected piece of the model lying wholly inside a tire (this far out radially, as a share
+/// of the measured radius, and within `TIRE_SLAB` m of the hub sideways) turns with it whole.
+/// Tripo tires come in many such pieces; taking each whole keeps a sidewall or tread chunk from
+/// being cut in two, half turning and half standing still.
+const PIECE_REACH: f32 = 1.12;
+const TIRE_SLAB: f32 = 0.32;
+
+/// Labels each triangle with its connected piece: triangles sharing a vertex position (the GLB
+/// splits vertices at UV seams, so positions are welded) belong to the same piece.
+fn pieces(m: &MeshData) -> Vec<u32> {
+    fn root(parent: &mut [u32], mut a: u32) -> u32 {
+        while parent[a as usize] != a {
+            let up = parent[parent[a as usize] as usize];
+            parent[a as usize] = up;
+            a = up;
+        }
+        a
+    }
+    let mut welded = std::collections::HashMap::with_capacity(m.vertices.len());
+    let ids: Vec<u32> = m
+        .vertices
+        .iter()
+        .map(|v| {
+            let key = v.pos.map(|c| (c * 1e4).round() as i32);
+            let next = welded.len() as u32;
+            *welded.entry(key).or_insert(next)
+        })
+        .collect();
+    let mut parent: Vec<u32> = (0..welded.len() as u32).collect();
+    for tri in m.indices.chunks(3) {
+        let a = root(&mut parent, ids[tri[0] as usize]);
+        for &i in &tri[1..] {
+            let b = root(&mut parent, ids[i as usize]);
+            parent[b as usize] = a;
+        }
+    }
+    m.indices
+        .chunks(3)
+        .map(|tri| root(&mut parent, ids[tri[0] as usize]))
+        .collect()
+}
+
+/// Measures one tire from the vertices near its corner: at each height `h` above the ground the
+/// tire's front-to-back chord has half-width `w = sqrt(2Rh - h²)`, so `R = (w² + h²) / 2h`. The
+/// median over several heights shrugs off a slice that caught something else. Returns the hub's
+/// z and the radius.
+fn fit_tire(verts: &[Vec3], min_y: f32, hub: Vec3, half_width: f32) -> Option<(f32, f32)> {
+    let mut radii = Vec::with_capacity(CHORD_HEIGHTS.len());
+    let mut mids = Vec::with_capacity(CHORD_HEIGHTS.len());
+    for h in CHORD_HEIGHTS {
+        let y = min_y + h;
+        let (lo, hi) = verts
+            .iter()
+            .filter(|p| {
+                (p.x - hub.x).abs() < half_width
+                    && (p.z - hub.z).abs() < 0.9
+                    && (p.y - y).abs() < CHORD_BAND
+            })
+            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.z), b.max(p.z)));
+        if hi <= lo {
+            continue;
+        }
+        let w = (hi - lo) * 0.5;
+        radii.push((w * w + h * h) / (2.0 * h));
+        mids.push((hi + lo) * 0.5);
+    }
+    if radii.len() < CHORD_HEIGHTS.len() / 2 {
+        return None;
+    }
+    let median = |v: &mut Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
+    };
+    Some((median(&mut mids), median(&mut radii)))
 }
 
 /// Splits wheels out of a single kart mesh by geometry: the lowest vertices mark the four
@@ -195,27 +280,66 @@ pub fn split_wheels_textured(m: &MeshData, radius: f32, tex: Option<&Rgba8Image>
         hubs[k] = Vec3::new(mean.x, min_y + radius, mean.z);
         half_width[k] = ((xmax - xmin) * 0.5 + 0.04).clamp(0.08, 0.35);
     }
+    // The design's radius is only a first guess: measure each tire, so it turns about its own
+    // axle and all of its rubber turns with it.
+    let positions: Vec<Vec3> = m.vertices.iter().map(|v| Vec3::from_array(v.pos)).collect();
+    let mut radii = [radius; 4];
+    for k in 0..4 {
+        if let Some((z, r)) = fit_tire(&positions, min_y, hubs[k], half_width[k])
+            && (0.4 * radius..1.6 * radius).contains(&r)
+        {
+            hubs[k] = Vec3::new(hubs[k].x, min_y + r, z);
+            radii[k] = r;
+        }
+    }
+
+    // Whole pieces first: for each piece, the one tire that contains every vertex of it.
+    let piece_of = pieces(m);
+    let inside = |k: usize, p: Vec3| {
+        let h = hubs[k];
+        (p.x - h.x).abs() < TIRE_SLAB
+            && ((p.y - h.y).powi(2) + (p.z - h.z).powi(2)).sqrt() < radii[k] * PIECE_REACH
+    };
+    let mut piece_wheel: std::collections::HashMap<u32, Option<usize>> =
+        std::collections::HashMap::new();
+    for (tri, &piece) in m.indices.chunks(3).zip(&piece_of) {
+        let entry = piece_wheel.entry(piece).or_insert_with(|| {
+            (0..4).find(|&k| inside(k, Vec3::from_array(m.vertices[tri[0] as usize].pos)))
+        });
+        if let Some(k) = *entry
+            && !tri
+                .iter()
+                .all(|&i| inside(k, Vec3::from_array(m.vertices[i as usize].pos)))
+        {
+            *entry = None;
+        }
+    }
 
     let mut body = MeshData::default();
     let mut wheels: [MeshData; 4] = Default::default();
-    for tri in m.indices.chunks(3) {
+    for (tri, piece) in m.indices.chunks(3).zip(&piece_of) {
         let c = tri.iter().fold(Vec3::ZERO, |a, &i| {
             a + Vec3::from_array(m.vertices[i as usize].pos)
         }) / 3.0;
-        let wheel = (0..4).find(|&k| {
-            let h = hubs[k];
-            let d = ((c.y - h.y).powi(2) + (c.z - h.z).powi(2)).sqrt();
-            if (c.x - h.x).abs() >= half_width[k] || d >= radius * 1.08 {
-                return false;
-            }
-            // Rims and hubs always turn; out at the tread, only rubber does.
-            match tex {
-                Some(t) if d > radius * 0.7 => {
-                    let uvs = [0, 1, 2].map(|j| m.vertices[tri[j] as usize].uv);
-                    texel_luma(t, uvs) < 0.22
+        let whole = piece_wheel.get(piece).copied().flatten();
+        let wheel = whole.or_else(|| {
+            (0..4).find(|&k| {
+                let h = hubs[k];
+                let r = radii[k];
+                let d = ((c.y - h.y).powi(2) + (c.z - h.z).powi(2)).sqrt();
+                if (c.x - h.x).abs() >= half_width[k] || d >= r * 1.05 {
+                    return false;
                 }
-                _ => true,
-            }
+                // Everything inside the tire turns; just past its edge, only rubber does (fenders
+                // hugging the tread stay on the body).
+                match tex {
+                    Some(t) if d > r * 0.98 => {
+                        let uvs = [0, 1, 2].map(|j| m.vertices[tri[j] as usize].uv);
+                        texel_luma(t, uvs) < 0.22
+                    }
+                    _ => true,
+                }
+            })
         });
         let (target, offset) = match wheel {
             Some(k) => (&mut wheels[k], hubs[k]),
@@ -232,7 +356,8 @@ pub fn split_wheels_textured(m: &MeshData, radius: f32, tex: Option<&Rgba8Image>
         body,
         wheels,
         hubs,
-        radius,
+        radii,
+        radius: radii.iter().sum::<f32>() / 4.0,
     }
 }
 
@@ -270,6 +395,41 @@ mod model_tests {
                 assert!(
                     h.x.abs() > 0.25 * hi[0].max(-lo[0]),
                     "{} wheel {w} near the edge",
+                    k.name
+                );
+            }
+            for (w, &r) in parts.radii.iter().enumerate() {
+                // Each tire is measured, sits on the ground, and is smaller than half the kart.
+                assert!((0.2..0.55).contains(&r), "{} wheel {w} radius {r}", k.name);
+                let bottom = parts.hubs[w].y - r;
+                assert!(
+                    (bottom - lo[1].min(-GROUND_OFFSET)).abs() < 0.05,
+                    "{} wheel {w} floats: bottom {bottom}",
+                    k.name
+                );
+            }
+            // Almost all of each tire turns: no tread or sidewall left standing on the body.
+            for w in 0..4 {
+                let (h, r) = (parts.hubs[w], parts.radii[w]);
+                let in_disc = |p: Vec3| {
+                    (p.x - h.x).abs() < 0.3
+                        && ((p.y - h.y).powi(2) + (p.z - h.z).powi(2)).sqrt() < 0.95 * r
+                };
+                let on_wheel = parts.wheels[w]
+                    .vertices
+                    .iter()
+                    .filter(|v| in_disc(Vec3::from_array(v.pos) + h))
+                    .count();
+                let on_body = parts
+                    .body
+                    .vertices
+                    .iter()
+                    .filter(|v| in_disc(Vec3::from_array(v.pos)))
+                    .count();
+                let share = on_wheel as f32 / (on_wheel + on_body).max(1) as f32;
+                assert!(
+                    share > 0.75,
+                    "{} wheel {w}: only {share:.2} of the tire turns",
                     k.name
                 );
             }

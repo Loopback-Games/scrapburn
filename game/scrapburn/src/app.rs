@@ -81,7 +81,7 @@ struct KartGpu {
     body: GpuMesh,
     wheels: [GpuMesh; 4],
     hubs: [Vec3; 4],
-    radius: f32,
+    radii: [f32; 4],
 }
 
 impl KartGpu {
@@ -102,7 +102,7 @@ impl KartGpu {
             body: GpuMesh::new(device, &parts.body),
             wheels: parts.wheels.each_ref().map(|w| GpuMesh::new(device, w)),
             hubs: parts.hubs,
-            radius: parts.radius,
+            radii: parts.radii,
         }
     }
 }
@@ -195,7 +195,7 @@ struct Game {
     karts: Vec<KartGpu>,
     /// Design each racer drives (index into `karts`).
     kart_of: Vec<usize>,
-    wheel_spin: Vec<f32>,
+    wheel_spin: Vec<[f32; 4]>,
     ghost_mesh: GpuMesh,
     fx_meshes: FxMeshes,
     combat_fx: ParticleSystem,
@@ -492,7 +492,7 @@ impl Game {
             track_meshes,
             kart_of: kart_assignment(&race, &karts),
             karts,
-            wheel_spin: vec![0.0; n],
+            wheel_spin: vec![[0.0; 4]; n],
             ghost_mesh,
             fx_meshes,
             combat_fx: ParticleSystem::new(2500),
@@ -619,7 +619,7 @@ impl Game {
         let n = self.race.racers.len();
         self.effects = (0..n).map(|_| Effects::new()).collect();
         self.leans = vec![0.0; n];
-        self.wheel_spin = vec![0.0; n];
+        self.wheel_spin = vec![[0.0; 4]; n];
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
@@ -1374,9 +1374,11 @@ impl Game {
                 0.0
             };
             self.leans[i] += (target - self.leans[i]) * (1.0 - (-8.0 * frame_dt).exp());
-            let radius = self.karts[self.kart_of[i]].radius;
-            self.wheel_spin[i] =
-                (self.wheel_spin[i] + r.state.speed() * fx_dt / radius) % std::f32::consts::TAU;
+            // Each tire rolls at its own rate, so big and small ones both keep pace with the road.
+            let radii = self.karts[self.kart_of[i]].radii;
+            for (spin, radius) in self.wheel_spin[i].iter_mut().zip(radii) {
+                *spin = (*spin + r.state.speed() * fx_dt / radius) % std::f32::consts::TAU;
+            }
             models.push((
                 pos,
                 rot,
@@ -1450,8 +1452,8 @@ impl Game {
             });
             // Wheels roll with speed; the front pair steers with the turn rate.
             let steer = (self.race.racers[i].state.angular_yaw * 0.3).clamp(-0.45, 0.45);
-            let roll = Mat4::from_rotation_x(self.wheel_spin[i]);
             for (k, mesh) in kart.wheels.iter().enumerate() {
+                let roll = Mat4::from_rotation_x(self.wheel_spin[i][k]);
                 let yaw = if k < 2 {
                     Mat4::from_rotation_y(steer)
                 } else {
