@@ -299,6 +299,8 @@ pub struct Track {
     pub terrain_kind: TerrainKind,
     /// Below this height a kart has fallen off and respawns.
     pub fall_y: f32,
+    /// Where live fire burns (torch tops), for flame particles.
+    pub flames: Vec<Vec3>,
     /// Road, curbs, barriers, pads, start line, gantry.
     pub road: MeshData,
     pub terrain: MeshData,
@@ -540,6 +542,7 @@ pub fn build_track(def: &TrackDef) -> Track {
 
     let mut road = MeshData::default();
     let mut col = Collision::default();
+    let mut flames = Vec::new();
     let asphalt = material(st.road as u32, st.road as u32, 0);
     let road_tex = st.road_tex;
 
@@ -683,12 +686,14 @@ pub fn build_track(def: &TrackDef) -> Track {
             // Torches: a glowing flame bowl on the wall every 30 m.
             if st.torches && i % 15 == 7 {
                 let at = t0 + r0 * side * 0.1 + u0 * 0.35;
+                // Glowing embers in the bowl; the flame itself is particles.
                 emissive_box(
                     &mut road,
-                    Vec3::new(0.22, 0.28, 0.22),
+                    Vec3::new(0.14, 0.1, 0.14),
                     Mat4::from_translation(at),
-                    [1.0, 0.5, 0.12],
+                    [0.9, 0.32, 0.06],
                 );
+                flames.push(at + u0 * 0.15);
                 textured_box(
                     &mut road,
                     Vec3::new(0.12, 0.35, 0.12),
@@ -968,6 +973,7 @@ pub fn build_track(def: &TrackDef) -> Track {
         box_rows: def.box_rows.to_vec(),
         terrain_kind: st.terrain,
         fall_y: centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min) - 12.0,
+        flames,
         road,
         terrain: terrain_mesh,
         props,
@@ -1202,6 +1208,13 @@ mod tests {
             );
             assert!(!t.box_rows.is_empty());
         }
+    }
+
+    #[test]
+    fn castle_torches_burn() {
+        let c = build_track(&TRACKS[1]);
+        assert!(c.flames.len() >= 20, "{} torches", c.flames.len());
+        assert!(build_track(&TRACKS[0]).flames.is_empty());
     }
 
     #[test]

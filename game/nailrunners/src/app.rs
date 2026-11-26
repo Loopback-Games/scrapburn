@@ -199,6 +199,22 @@ struct Game {
     /// Tailnet peers being looked up for the Online screen.
     peers_rx: Option<std::sync::mpsc::Receiver<Vec<netplay::TailnetPeer>>>,
     net_ticks: u32,
+    /// Live fire: torch and brazier flames.
+    flame_fx: ParticleSystem,
+    flame_points: Vec<Vec3>,
+    flame_acc: f32,
+}
+
+/// Where flames burn: the track's torches and the top of every brazier.
+fn flame_points(track: &Track, placements: &[scenery::Placement]) -> Vec<Vec3> {
+    let mut v = track.flames.clone();
+    v.extend(
+        placements
+            .iter()
+            .filter(|p| scenery::PROPS[p.kind].name == "brazier")
+            .map(|p| p.pos + Vec3::Y * p.size * 0.9),
+    );
+    v
 }
 
 fn placeholder_kart() -> MeshData {
@@ -378,6 +394,7 @@ impl Game {
             layers,
             shading_table,
             prop_gpu,
+            flame_points: flame_points(&track, &placements),
             placements,
             overlay,
             timer,
@@ -437,6 +454,8 @@ impl Game {
             toast: None,
             peers_rx: None,
             net_ticks: 0,
+            flame_fx: ParticleSystem::new(1500),
+            flame_acc: 0.0,
         })
     }
 
@@ -710,6 +729,8 @@ impl Game {
         self.track_meshes = [&self.track.road, &self.track.terrain, &self.track.props]
             .map(|m| GpuMesh::new(&self.ctx.device, m));
         self.placements = scenery::placements(&self.track);
+        self.flame_points = flame_points(&self.track, &self.placements);
+        self.flame_fx = ParticleSystem::new(1500);
         self.scene.lighting = nailrunners::track::lighting(self.track.id);
         self.ghost_file = nailrunners::ghost::data_dir()
             .map(|d| nailrunners::ghost::ghost_path(&d, self.track.id.key()));
@@ -1186,9 +1207,18 @@ impl Game {
             let a = self.attract_t * 0.22;
             let mut eye =
                 fpos + Vec3::new(a.cos() * 11.0, 3.2 + (a * 0.7).sin() * 1.5, a.sin() * 11.0);
-            // Never orbit into a dune.
-            let ground = nailrunners::terrain::height_at(&self.track.centerline, eye.x, eye.z);
-            eye.y = eye.y.max(ground + 2.5);
+            // Never orbit into a dune or a wall: stay above the ground and the barrier tops.
+            let ground = nailrunners::terrain::height_for(
+                self.track.terrain_kind,
+                &self.track.centerline,
+                eye.x,
+                eye.z,
+            );
+            let wall = TRACKS
+                .iter()
+                .find(|d| d.id == self.track.id)
+                .map_or(1.5, |d| d.style.barrier_height);
+            eye.y = eye.y.max(ground + 2.5).max(fpos.y + wall + 1.8);
             (
                 glam::camera::rh::view::look_at_mat4(eye, fpos + Vec3::Y * 0.8, Vec3::Y),
                 eye,
@@ -1367,10 +1397,41 @@ impl Game {
             }
         }
         self.combat_fx.update(fx_dt);
+        // Live fire on torches and braziers near the camera.
+        self.flame_acc += fx_dt * 28.0;
+        let per = self.flame_acc.floor() as u32;
+        self.flame_acc -= per as f32;
+        if per > 0 {
+            let mut rng = Lcg((self.attract_t * 977.0) as u32 | 1);
+            for &f in &self.flame_points {
+                if f.distance_squared(eye) > 90.0 * 90.0 {
+                    continue;
+                }
+                for _ in 0..per {
+                    let jitter = Vec3::new(rng.next() - 0.5, 0.0, rng.next() - 0.5) * 0.22;
+                    self.flame_fx.spawn(Particle {
+                        pos: f + jitter,
+                        vel: Vec3::new(
+                            (rng.next() - 0.5) * 0.5,
+                            1.3 + rng.next() * 1.1,
+                            (rng.next() - 0.5) * 0.5,
+                        ),
+                        age: 0.0,
+                        life: 0.3 + rng.next() * 0.3,
+                        size: (0.45, 0.05),
+                        color: ([5.0, 1.8, 0.4, 1.0], [1.2, 0.2, 0.04, 0.0]),
+                        gravity: -1.0,
+                        drag: 0.6,
+                        blend: Blend::Additive,
+                    });
+                }
+            }
+        }
+        self.flame_fx.update(fx_dt);
         let mut additive: Vec<ParticleInstance> = Vec::new();
         let mut alpha_p: Vec<ParticleInstance> = Vec::new();
-        {
-            let (a, b) = self.combat_fx.instances();
+        for sys in [&mut self.combat_fx, &mut self.flame_fx] {
+            let (a, b) = sys.instances();
             additive.extend_from_slice(a);
             alpha_p.extend_from_slice(b);
         }
