@@ -64,7 +64,8 @@ fn shadow_factor(lp: vec4<f32>, n: vec3<f32>) -> f32 {
     }
     let texel = g.sun_dir.w;
     let ndl = max(dot(n, -g.sun_dir.xyz), 0.0);
-    let bias = 0.0008 + 0.0025 * (1.0 - ndl);
+    // A few centimeters (more at grazing light), so karts don't float above detached shadows.
+    let bias = (0.03 + 0.12 * (1.0 - ndl)) * g.fog_params.y;
     var sum = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {

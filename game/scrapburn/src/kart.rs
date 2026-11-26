@@ -149,6 +149,25 @@ pub struct KartParts {
 /// contact patches, and triangles inside a wheel-sized cylinder around each axle go to that
 /// wheel.
 pub fn split_wheels(m: &MeshData, radius: f32) -> KartParts {
+    split_wheels_textured(m, radius, None)
+}
+
+/// Luminance of `tex` at a triangle's mean UV (0..1).
+fn texel_luma(tex: &Rgba8Image, uvs: [[f32; 2]; 3]) -> f32 {
+    let u = (uvs.iter().map(|t| t[0]).sum::<f32>() / 3.0).rem_euclid(1.0);
+    let v = (uvs.iter().map(|t| t[1]).sum::<f32>() / 3.0).rem_euclid(1.0);
+    let x = ((u * tex.width as f32) as u32).min(tex.width.saturating_sub(1));
+    let y = ((v * tex.height as f32) as u32).min(tex.height.saturating_sub(1));
+    let i = ((y * tex.width + x) * 4) as usize;
+    match tex.pixels.get(i..i + 3) {
+        Some(p) => (0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0,
+        None => 0.0,
+    }
+}
+
+/// Like [`split_wheels`], but with the base color texture: near the tread, only dark (rubber)
+/// triangles turn with the wheel, so painted fenders hugging the tire stay on the body.
+pub fn split_wheels_textured(m: &MeshData, radius: f32, tex: Option<&Rgba8Image>) -> KartParts {
     let (lo, hi) = bounds(&m.vertices);
     let min_y = lo[1];
     let mut groups: [Vec<Vec3>; 4] = Default::default();
@@ -185,8 +204,18 @@ pub fn split_wheels(m: &MeshData, radius: f32) -> KartParts {
         }) / 3.0;
         let wheel = (0..4).find(|&k| {
             let h = hubs[k];
-            (c.x - h.x).abs() < half_width[k]
-                && ((c.y - h.y).powi(2) + (c.z - h.z).powi(2)).sqrt() < radius * 1.08
+            let d = ((c.y - h.y).powi(2) + (c.z - h.z).powi(2)).sqrt();
+            if (c.x - h.x).abs() >= half_width[k] || d >= radius * 1.08 {
+                return false;
+            }
+            // Rims and hubs always turn; out at the tread, only rubber does.
+            match tex {
+                Some(t) if d > radius * 0.7 => {
+                    let uvs = [0, 1, 2].map(|j| m.vertices[tri[j] as usize].uv);
+                    texel_luma(t, uvs) < 0.22
+                }
+                _ => true,
+            }
         });
         let (target, offset) = match wheel {
             Some(k) => (&mut wheels[k], hubs[k]),
@@ -229,7 +258,7 @@ mod model_tests {
         for (d, k) in KARTS.iter().enumerate() {
             let (mesh, tex) = load(&assets, k, 20 + d as u32).expect(k.name);
             assert!(tex.is_some(), "{} has a texture", k.name);
-            let parts = split_wheels(&mesh, KART_LENGTH * k.wheel_ratio);
+            let parts = split_wheels_textured(&mesh, KART_LENGTH * k.wheel_ratio, tex.as_ref());
             let (lo, hi) = bounds(&parts.body.vertices);
             for (w, wheel) in parts.wheels.iter().enumerate() {
                 let tris = wheel.indices.len() / 3;
@@ -323,6 +352,41 @@ mod tests {
             parts.body.indices.len() + wheel_tris,
             synthetic_kart().indices.len(),
             "every triangle lands somewhere"
+        );
+    }
+
+    #[test]
+    fn painted_fenders_stay_on_the_body() {
+        // Tires sample the black texel, fenders (hugging the tire top) the red one.
+        let mut m = synthetic_kart();
+        for v in &mut m.vertices {
+            v.uv = [0.25, 0.5];
+        }
+        let tire_tris = m.indices.len() / 3;
+        let mut fender = MeshData::default();
+        for (x, z) in [(0.8, 0.9), (-0.8, 0.9), (0.8, -0.9), (-0.8, -0.9)] {
+            let mut b = box_mesh(Vec3::new(0.14, 0.02, 0.2), [1.0; 4]);
+            for v in &mut b.vertices {
+                v.pos = (Vec3::from_array(v.pos) + Vec3::new(x, -0.05 + 0.4, z)).to_array();
+                v.uv = [0.75, 0.5];
+            }
+            fender.append(&b);
+        }
+        m.append(&fender);
+        let tex = Rgba8Image {
+            width: 2,
+            height: 1,
+            pixels: vec![10, 10, 10, 255, 200, 30, 20, 255],
+        };
+        let parts = split_wheels_textured(&m, 0.4, Some(&tex));
+        let wheel_tris: usize = parts.wheels.iter().map(|w| w.indices.len() / 3).sum();
+        let body_tris = parts.body.indices.len() / 3;
+        assert!(wheel_tris > 0);
+        assert_eq!(body_tris + wheel_tris, tire_tris + fender.indices.len() / 3);
+        // Every fender triangle is in the body.
+        assert!(
+            body_tris >= 12 + fender.indices.len() / 3,
+            "fenders roll with the wheels ({body_tris} body triangles)"
         );
     }
 

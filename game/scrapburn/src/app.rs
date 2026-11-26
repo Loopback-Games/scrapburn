@@ -85,10 +85,18 @@ struct KartGpu {
 }
 
 impl KartGpu {
-    fn new(device: &wgpu::Device, design: usize, data: &MeshData) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        design: usize,
+        data: &MeshData,
+        tex: Option<&Rgba8Image>,
+    ) -> Self {
         let k = &scrapburn::kart::KARTS[design];
-        let parts =
-            scrapburn::kart::split_wheels(data, scrapburn::kart::KART_LENGTH * k.wheel_ratio);
+        let parts = scrapburn::kart::split_wheels_textured(
+            data,
+            scrapburn::kart::KART_LENGTH * k.wheel_ratio,
+            tex,
+        );
         Self {
             design,
             body: GpuMesh::new(device, &parts.body),
@@ -320,9 +328,9 @@ impl Game {
             }
         };
         let size = (layers[0][0].width, layers[0][0].height);
-        let kart_layer = kart_tex.map_or_else(
+        let kart_layer = kart_tex.as_ref().map_or_else(
             || layers[0][0].clone(),
-            |t| rivet_assets::resized(&t, size.0, size.1),
+            |t| rivet_assets::resized(t, size.0, size.1),
         );
         layers.push(rivet_assets::mip_chain(&kart_layer));
         // Props: one texture layer each, after the kart.
@@ -351,14 +359,14 @@ impl Game {
             }
         }
         // The other kart designs, each with its own texture layer after the props.
-        let mut extra_karts: Vec<(usize, MeshData)> = Vec::new();
+        let mut extra_karts: Vec<(usize, MeshData, Option<Rgba8Image>)> = Vec::new();
         for (d, design) in kart_designs.iter().enumerate().skip(1) {
             let layer = layers.len() as u32;
             match scrapburn::kart::load(&assets, design, layer) {
                 Ok((mesh, tex)) => {
-                    let img = tex.map_or_else(
+                    let img = tex.as_ref().map_or_else(
                         || layers[0][0].clone(),
-                        |t| rivet_assets::resized(&t, size.0, size.1),
+                        |t| rivet_assets::resized(t, size.0, size.1),
                     );
                     layers.push(rivet_assets::mip_chain(&img));
                     shading_table.push(rivet_render::MaterialShading {
@@ -366,7 +374,7 @@ impl Game {
                         gloss: 32.0,
                         triplanar_scale: 0.25,
                     });
-                    extra_karts.push((d, mesh));
+                    extra_karts.push((d, mesh, tex));
                 }
                 Err(e) => log::info!("kart {} not available ({e})", design.name),
             }
@@ -407,11 +415,11 @@ impl Game {
                 .map(|w| w.indices.len() / 3)
                 .sum::<usize>()
         );
-        let mut karts = vec![KartGpu::new(&ctx.device, 0, &kart_data)];
+        let mut karts = vec![KartGpu::new(&ctx.device, 0, &kart_data, kart_tex.as_ref())];
         karts.extend(
             extra_karts
                 .iter()
-                .map(|(d, m)| KartGpu::new(&ctx.device, *d, m)),
+                .map(|(d, m, t)| KartGpu::new(&ctx.device, *d, m, t.as_ref())),
         );
         let mut ghost_data = kart_data.clone();
         for v in &mut ghost_data.vertices {

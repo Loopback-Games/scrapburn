@@ -10,7 +10,7 @@ struct Globals {
     sky_horizon: vec4<f32>,    // w = cloud coverage 0..1
     ambient_ground: vec4<f32>,
     fog: vec4<f32>,            // rgb, a = density
-    fog_params: vec4<f32>,     // x = height falloff
+    fog_params: vec4<f32>,     // x = height falloff, y = shadow depth per meter
     cam_right: vec4<f32>,
     cam_up: vec4<f32>,
 };

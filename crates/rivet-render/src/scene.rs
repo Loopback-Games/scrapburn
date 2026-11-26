@@ -1061,7 +1061,8 @@ impl SceneRenderer {
             sky_horizon: l.sky_horizon.extend(l.cloud_coverage),
             ambient_ground: l.ambient_ground.extend(0.0),
             fog: l.fog_color.extend(l.fog_density),
-            fog_params: Vec4::new(l.fog_height_falloff, 0.0, 0.0, 0.0),
+            // y: shadow depth units per meter (the light frustum is 5 radii deep).
+            fog_params: Vec4::new(l.fog_height_falloff, 1.0 / (radius * 5.0), 0.0, 0.0),
             cam_right: view.view.row(0).truncate().normalize().extend(0.0),
             cam_up: view.view.row(1).truncate().normalize().extend(0.0),
         };
