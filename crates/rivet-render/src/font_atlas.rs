@@ -116,6 +116,15 @@ impl FontAtlas {
         }
     }
 
+    /// Distance from a layout's `y` to the vertical middle of its capital letters, at `px`.
+    pub fn cap_middle(&self, px: f32) -> f32 {
+        let k = px / RASTER_PX;
+        match self.glyph('H') {
+            Some(h) => (self.ascent + h.offset[1] + h.size[1] * 0.5) * k,
+            None => self.ascent * 0.65 * k,
+        }
+    }
+
     pub fn glyph(&self, c: char) -> Option<Glyph> {
         self.glyphs.get(c as usize).copied().flatten()
     }
@@ -185,6 +194,20 @@ mod tests {
         let w1 = a.text_width("LAP 1/3", 20.0);
         let w2 = a.text_width("LAP 1/3", 40.0);
         assert!((w2 / w1 - 2.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn cap_middle_centers_capitals_on_a_line() {
+        let a = atlas();
+        let px = 40.0;
+        let y = 100.0;
+        let h = a.layout("H", 0.0, y, px)[0].rect;
+        let mid = h[1] + h[3] * 0.5;
+        assert!(
+            (y + a.cap_middle(px) - mid).abs() < 0.5,
+            "cap middle {} vs glyph {mid}",
+            y + a.cap_middle(px)
+        );
     }
 
     #[test]

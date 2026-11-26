@@ -578,11 +578,12 @@ pub fn draw_track_card(
     tagline: &str,
 ) {
     let ui = (h / 900.0).clamp(0.6, 2.0);
-    let (x, y) = (36.0 * ui, h - 200.0 * ui);
     let ts = 1.5 * ui;
     let cw = (width(tagline, ts) + 48.0 * ui)
         .max(width(name, 3.4 * ui) + 48.0 * ui)
         .min(w - 72.0 * ui);
+    // Bottom-right, clear of the title screen's menu column.
+    let (x, y) = (w - cw - 36.0 * ui, h - 200.0 * ui);
     o.rect(x, y, cw, 128.0 * ui, PANEL);
     o.rect(x, y, 6.0 * ui, 128.0 * ui, ACCENT);
     let head = format!("CIRCUIT {} / {}", index + 1, count);
@@ -591,6 +592,23 @@ pub fn draw_track_card(
     o.label(x + 24.0 * ui, y + 90.0 * ui, ts, DIM, tagline);
 }
 
+/// Splits a menu row like `"TRACK  < CASTLE GRINDSTONE >"` into its label, value, and
+/// whether the value is a cycling option (shown between arrows).
+fn split_row(item: &str) -> (&str, Option<&str>, bool) {
+    match item.split_once("  ") {
+        Some((label, value)) => {
+            let value = value.trim();
+            let option = value.starts_with('<') && value.ends_with('>');
+            let v = value.trim_start_matches('<').trim_end_matches('>').trim();
+            (label.trim(), Some(v), option)
+        }
+        None => (item.trim(), None, false),
+    }
+}
+
+/// Menus. The title screen has the logo top-left with the menu column beneath it; every other
+/// screen is a centered panel under a heading. Rows are a left-aligned label and, for options,
+/// a right-aligned value between arrows, all centered on their cap height.
 pub fn draw_menu(
     o: &mut Overlay,
     w: f32,
@@ -601,93 +619,99 @@ pub fn draw_menu(
     selected: usize,
 ) {
     let ui = (h / 900.0).clamp(0.6, 2.0);
-    if let Some(t) = title {
-        let s = 14.0 * ui;
-        let tw = width(t, s);
-        let y = h * 0.12;
-        // TrueType glyphs: the cap height plus descent is about 10 scale units.
-        let th = s * 10.0;
-        o.rect(
-            w * 0.5 - tw * 0.5 - 30.0 * ui,
-            y - 20.0 * ui,
-            tw + 60.0 * ui,
-            th + 64.0 * ui,
-            [0.03, 0.02, 0.01, 0.55],
-        );
-        o.rect(
-            w * 0.5 - tw * 0.5 - 30.0 * ui,
-            y - 20.0 * ui,
-            tw + 60.0 * ui,
-            5.0 * ui,
-            ACCENT,
-        );
-        o.label(
-            w * 0.5 - tw * 0.5 + s * 0.8,
-            y + s * 0.8,
-            s,
-            [0.0, 0.0, 0.0, 0.7],
-            t,
-        );
-        o.label(w * 0.5 - tw * 0.5, y, s, ACCENT, t);
-        let ss = 2.2 * ui;
-        o.label(
-            w * 0.5 - width(subtitle, ss) * 0.5,
-            y + th + 16.0 * ui,
-            ss,
-            WHITE,
-            subtitle,
-        );
-    } else if !subtitle.is_empty() {
-        let s = 6.0 * ui;
-        text(
-            o,
-            w * 0.5 - width(subtitle, s) * 0.5,
-            h * 0.24,
-            s,
-            ACCENT,
-            subtitle,
-        );
-    }
-    let row = 52.0 * ui;
-    let s = 3.6 * ui;
-    let pw = items.iter().map(|i| width(i, s)).fold(320.0 * ui, f32::max) + 80.0 * ui;
-    // On the title screen the menu sits low so the featured kart stays visible.
-    let center = if title.is_some() { h * 0.66 } else { h * 0.5 };
-    let top = center - (items.len() as f32 * row) * 0.5 + 40.0 * ui;
-    o.rect(
-        w * 0.5 - pw * 0.5,
-        top - 24.0 * ui,
-        pw,
-        items.len() as f32 * row + 36.0 * ui,
-        PANEL,
-    );
-    for (k, item) in items.iter().enumerate() {
-        let y = top + k as f32 * row;
+    let row = 54.0 * ui;
+    let pad = 28.0 * ui;
+    let s = 2.7 * ui;
+    let arrow = width("<", s) + 12.0 * ui;
+    let rows: Vec<(&str, Option<&str>, bool)> = items.iter().map(|i| split_row(i)).collect();
+    let label_w = rows.iter().map(|r| width(r.0, s)).fold(0.0, f32::max);
+    let value_w = rows
+        .iter()
+        .filter_map(|r| r.1.map(|v| width(v, s)))
+        .fold(0.0, f32::max);
+    let values = if value_w > 0.0 {
+        value_w + 2.0 * arrow + 48.0 * ui
+    } else {
+        0.0
+    };
+    let pw = (label_w + values + 2.0 * pad).max(420.0 * ui);
+    let ph = rows.len() as f32 * row + 24.0 * ui;
+
+    let (x, top) = if let Some(t) = title {
+        // Logo, top-left: shadow, accent text, underline, tagline.
+        let x0 = 64.0 * ui;
+        let ls = 10.0 * ui;
+        let ly = 48.0 * ui;
+        o.label(x0 + 5.0 * ui, ly + 5.0 * ui, ls, [0.0, 0.0, 0.0, 0.55], t);
+        o.label(x0, ly, ls, ACCENT, t);
+        let lw = width(t, ls);
+        let under = ly + ls * 12.0 * 0.92;
+        o.rect(x0, under, lw, 5.0 * ui, ACCENT);
+        o.label(x0 + 2.0 * ui, under + 16.0 * ui, 1.9 * ui, WHITE, subtitle);
+        (x0, h * 0.4)
+    } else {
+        let top = (h * 0.5 - ph * 0.5).max(150.0 * ui);
+        if !subtitle.is_empty() {
+            let hs = 5.0 * ui;
+            o.label_centered(
+                w * 0.5 - width(subtitle, hs) * 0.5,
+                top - 52.0 * ui,
+                hs,
+                ACCENT,
+                subtitle,
+            );
+        }
+        (w * 0.5 - pw * 0.5, top)
+    };
+
+    o.rect(x, top, pw, ph, PANEL);
+    o.rect(x, top, pw, 3.0 * ui, [ACCENT[0], ACCENT[1], ACCENT[2], 0.8]);
+    for (k, &(label, value, option)) in rows.iter().enumerate() {
+        let y0 = top + 12.0 * ui + k as f32 * row;
+        let cy = y0 + row * 0.5;
         let sel = k == selected;
         if sel {
             o.rect(
-                w * 0.5 - pw * 0.5 + 10.0 * ui,
-                y - 6.0 * ui,
-                pw - 20.0 * ui,
-                row - 8.0 * ui,
-                [1.0, 0.55, 0.12, 0.85],
+                x + 8.0 * ui,
+                y0 + 5.0 * ui,
+                pw - 16.0 * ui,
+                row - 10.0 * ui,
+                [1.0, 0.55, 0.12, 0.9],
+            );
+            o.rect(
+                x + 8.0 * ui,
+                y0 + 5.0 * ui,
+                6.0 * ui,
+                row - 10.0 * ui,
+                [1.0, 0.92, 0.75, 1.0],
             );
         }
         let c = if sel { [0.08, 0.05, 0.02, 1.0] } else { WHITE };
-        o.label(w * 0.5 - width(item, s) * 0.5, y, s, c, item);
+        let dim = if sel { [0.15, 0.08, 0.02, 0.8] } else { DIM };
+        o.label_centered(x + pad, cy, s, c, label);
+        if let Some(v) = value {
+            let right = x + pw - pad;
+            if option {
+                o.label_centered(right - width(">", s), cy, s, dim, ">");
+                let vx = right - arrow - width(v, s);
+                o.label_centered(vx, cy, s, c, v);
+                o.label_centered(vx - arrow, cy, s, dim, "<");
+            } else {
+                o.label_centered(right - width(v, s), cy, s, c, v);
+            }
+        }
     }
     let hint = "ARROWS/D-PAD  MOVE    ENTER/A  SELECT    ESC/B  BACK";
-    text(
-        o,
-        w * 0.5 - width(hint, 1.6 * ui) * 0.5,
-        h - 40.0 * ui,
-        1.6 * ui,
+    let hs = 1.4 * ui;
+    o.label_centered(
+        w * 0.5 - width(hint, hs) * 0.5,
+        h - 34.0 * ui,
+        hs,
         DIM,
         hint,
     );
 }
 
-/// Darkens the whole screen (pause, results).
 pub fn dim(o: &mut Overlay, w: f32, h: f32) {
     o.rect(0.0, 0.0, w, h, [0.0, 0.0, 0.0, 0.45]);
 }
@@ -792,6 +816,24 @@ pub fn draw_fps_counter(o: &mut Overlay, w: f32, h: f32, fps: f32) {
         PANEL,
     );
     text(o, x, 12.0 * ui + 112.0 * ui, s, color, &label);
+}
+
+#[cfg(test)]
+mod menu_row_tests {
+    use super::split_row;
+
+    #[test]
+    fn rows_split_into_label_value_and_option() {
+        assert_eq!(
+            split_row("TRACK  < CASTLE GRINDSTONE >"),
+            ("TRACK", Some("CASTLE GRINDSTONE"), true)
+        );
+        assert_eq!(
+            split_row("JOIN  100.64.0.2_"),
+            ("JOIN", Some("100.64.0.2_"), false)
+        );
+        assert_eq!(split_row("RACE"), ("RACE", None, false));
+    }
 }
 
 #[cfg(test)]

@@ -218,6 +218,16 @@ impl Overlay {
         }
     }
 
+    /// Label text whose capitals are vertically centered on `cy`.
+    pub fn label_centered(&mut self, x: f32, cy: f32, scale: f32, color: [f32; 4], s: &str) {
+        let y = match &self.atlas {
+            Some(atlas) => cy - atlas.cap_middle(scale * LABEL_PX_PER_SCALE),
+            // The bitmap font is 7 units tall from its top.
+            None => cy - 3.5 * scale,
+        };
+        self.label(x, y, scale, color, s);
+    }
+
     /// HUD text in the TrueType font (falls back to the bitmap font). `scale` matches `text`.
     pub fn label(&mut self, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
         let Some(atlas) = &self.atlas else {
