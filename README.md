@@ -103,6 +103,7 @@ Linux builds need libudev and ALSA headers (`libudev-dev` and `libasound2-dev`, 
 also type-checks for Windows (`cargo check --target x86_64-pc-windows-gnu`).
 
 ```sh
+just package # release build + assets as target/dist/scrapburn-<version>-linux-x86_64.tar.gz
 just ci      # fmt check, clippy, tests, cargo-audit and cargo-deny, release build
 ```
 
