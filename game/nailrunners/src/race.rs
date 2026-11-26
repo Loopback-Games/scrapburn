@@ -79,6 +79,14 @@ pub struct Racer {
     pub best_lap: Option<f64>,
     /// Knocked out of an elimination race: parked, untouchable, ranked by `finish`.
     pub out: bool,
+    /// Driven by a player on another machine: the host takes this kart's state from the
+    /// network instead of simulating it.
+    pub remote: bool,
+    /// Weapon hits the host has applied to this (remote) kart, and the latest hit's spin
+    /// seconds and kept speed share, so the owner's machine can apply it.
+    pub hits: u32,
+    pub last_hit: (f32, f32),
+    incoming: Option<VehicleState>,
     stuck: f32,
     /// Seconds spent far off the track.
     off_track: f32,
@@ -158,6 +166,10 @@ impl Race {
                     last_lap: None,
                     best_lap: None,
                     out: false,
+                    remote: false,
+                    hits: 0,
+                    last_hit: (0.0, 1.0),
+                    incoming: None,
                     stuck: 0.0,
                     off_track: 0.0,
                     hop: HopLatch::default(),
@@ -231,6 +243,85 @@ impl Race {
             if self.racers[survivor].bot.is_none() {
                 self.racers[survivor].bot = Some(BotDriver::new(0.85, 0.0));
             }
+        }
+    }
+
+    /// Seat `i` belongs to a player on another machine.
+    pub fn set_remote(&mut self, i: usize) {
+        let r = &mut self.racers[i];
+        r.remote = true;
+        r.bot = None;
+    }
+
+    /// The latest kart state reported by a remote player; applied on the next tick.
+    pub fn push_remote_state(&mut self, i: usize, state: VehicleState) {
+        if let Some(r) = self.racers.get_mut(i)
+            && r.remote
+        {
+            r.incoming = Some(state);
+        }
+    }
+
+    /// Every kart's spin-out timer (to detect hits made during a tick).
+    pub fn spins(&self) -> Vec<f32> {
+        self.racers.iter().map(|r| r.state.spin).collect()
+    }
+
+    /// Records hits that started a fresh spin on remote karts during this tick.
+    pub fn note_remote_hits(&mut self, spins_before: &[f32], vel_before: &[Vec3]) {
+        for (i, r) in self.racers.iter_mut().enumerate() {
+            if !r.remote || r.state.spin <= spins_before[i] + 0.05 {
+                continue;
+            }
+            let (v0, v1) = (vel_before[i].length(), r.state.velocity.length());
+            let keep = if v0 > 0.5 {
+                (v1 / v0).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            r.hits = r.hits.wrapping_add(1);
+            r.last_hit = (r.state.spin, keep);
+        }
+    }
+
+    /// Client side: one tick for this machine's own kart only (everything else arrives in
+    /// snapshots). Handles respawns locally; pushes off other karts without moving them.
+    pub fn step_own(&mut self, track: &Track, i: usize, input: DriveInput, dt: f32) {
+        let racing = self.phase == Phase::Racing;
+        let others: Vec<(Vec3, VehicleState, f32)> = self
+            .racers
+            .iter()
+            .enumerate()
+            .filter(|&(j, o)| j != i && !o.out)
+            .map(|(_, o)| (o.state.position, o.state.clone(), o.mass))
+            .collect();
+        let line = &self.line;
+        let r = &mut self.racers[i];
+        r.prev = r.state.clone();
+        if r.out {
+            return;
+        }
+        let input = if !racing {
+            DriveInput::default()
+        } else if let Some(bot) = r.bot.as_mut() {
+            let near: Vec<Vec3> = others.iter().map(|o| o.0).collect();
+            bot.drive(&r.state, &r.params, line, &near, 1.0)
+        } else {
+            r.hop.press(input.hop);
+            DriveInput {
+                hop: r.hop.take(),
+                ..input
+            }
+        };
+        step(&mut r.state, &r.params, input, &track.collision, dt);
+        let p = r.state.position;
+        let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
+        r.off_track = if far { r.off_track + dt } else { 0.0 };
+        if p.y < track.fall_y || r.off_track > OFF_TRACK_SECONDS {
+            Self::respawn(r, track);
+        }
+        for (_, mut other, mass) in others {
+            collide_karts(&mut r.state, r.mass, &mut other, mass, KART_RADIUS);
         }
     }
 
@@ -317,8 +408,13 @@ impl Race {
             if r.out {
                 continue;
             }
-            let input = if !racing {
-                DriveInput::default()
+            let input = if r.remote {
+                if let Some(s) = r.incoming.take() {
+                    r.state = s;
+                }
+                None
+            } else if !racing {
+                Some(DriveInput::default())
             } else if let Some(bot) = r.bot.as_mut() {
                 let scale = player_progress.map_or(1.0, |pp| {
                     let gap = ((pp - progress) / CATCH_UP_DISTANCE).clamp(-1.0, 1.0);
@@ -334,15 +430,17 @@ impl Race {
                     .filter(|(j, _)| *j != i)
                     .map(|(_, p)| *p)
                     .collect();
-                bot.drive(&r.state, &r.params, &self.line, &others, scale)
+                Some(bot.drive(&r.state, &r.params, &self.line, &others, scale))
             } else {
                 r.hop.press(player_input.hop);
-                DriveInput {
+                Some(DriveInput {
                     hop: r.hop.take(),
                     ..player_input
-                }
+                })
             };
-            step(&mut r.state, &r.params, input, &track.collision, dt);
+            if let Some(input) = input {
+                step(&mut r.state, &r.params, input, &track.collision, dt);
+            }
 
             if racing {
                 if let Some(LapEvent::Lap { number, time }) = r.laps.update(
@@ -365,8 +463,9 @@ impl Race {
                             racer: i,
                             place: self.finished,
                         });
-                        // A finished player hands the wheel to the autopilot for the cool-down lap.
-                        if r.bot.is_none() {
+                        // A finished player hands the wheel to the autopilot for the cool-down lap
+                        // (a remote player's own machine does that for its kart).
+                        if r.bot.is_none() && !r.remote {
                             r.bot = Some(BotDriver::new(0.85, 0.0));
                         }
                     }
@@ -377,7 +476,10 @@ impl Race {
             let p = r.state.position;
             let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
             r.off_track = if far { r.off_track + dt } else { 0.0 };
-            if p.y < track.fall_y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS {
+            let lost =
+                p.y < track.fall_y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS;
+            // Remote karts respawn on their own machine.
+            if lost && !r.remote {
                 Self::respawn(r, track);
                 self.respawned.push(i);
             }
@@ -407,6 +509,11 @@ impl Race {
                 .into_iter()
                 .filter(|&i| self.racers[i].finish.is_none())
                 .collect();
+            let (spins, vels): (Vec<f32>, Vec<Vec3>) = self
+                .racers
+                .iter()
+                .map(|r| (r.state.spin, r.state.velocity))
+                .unzip();
             let ce = self.combat.step(
                 &mut self.racers,
                 &standings,
@@ -414,6 +521,7 @@ impl Race {
                 &track.collision,
                 dt,
             );
+            self.note_remote_hits(&spins, &vels);
             events.extend(ce.into_iter().map(RaceEvent::Combat));
         }
         events
@@ -441,6 +549,64 @@ mod tests {
     fn track() -> &'static Track {
         static T: OnceLock<Track> = OnceLock::new();
         T.get_or_init(build_graybox_loop)
+    }
+
+    #[test]
+    fn remote_karts_take_their_state_from_the_network() {
+        let t = track();
+        let mut race = Race::new(t, 2, false, 3);
+        race.set_remote(1);
+        let mut moved = race.racers[1].state.clone();
+        moved.position += Vec3::new(0.0, 0.0, 3.0);
+        moved.velocity = Vec3::new(0.0, 0.0, 20.0);
+        race.push_remote_state(1, moved.clone());
+        race.step(t, DriveInput::default(), 1.0 / 60.0);
+        assert_eq!(
+            race.racers[1].state.position, moved.position,
+            "not simulated by the host"
+        );
+        // Without a fresh state the kart holds its last known one.
+        race.step(t, DriveInput::default(), 1.0 / 60.0);
+        assert_eq!(race.racers[1].state.position, moved.position);
+        assert!(race.racers[1].bot.is_none());
+    }
+
+    #[test]
+    fn host_counts_weapon_hits_on_remote_karts() {
+        let t = track();
+        let mut race = Race::new(t, 2, false, 3);
+        race.set_remote(1);
+        let before = race.spins();
+        race.racers[1].state.velocity = Vec3::new(0.0, 0.0, 20.0);
+        race.racers[1].state.spin_out(1.2, 0.5);
+        race.note_remote_hits(&before, &[Vec3::new(0.0, 0.0, 20.0); 2]);
+        assert_eq!(race.racers[1].hits, 1);
+        let (secs, keep) = race.racers[1].last_hit;
+        assert!((secs - 1.2).abs() < 1e-4 && (keep - 0.5).abs() < 0.01);
+        assert_eq!(race.racers[0].hits, 0, "local karts are not counted");
+    }
+
+    #[test]
+    fn a_client_steps_only_its_own_kart() {
+        let t = track();
+        let mut race = Race::new(t, 3, true, 3);
+        race.phase = Phase::Racing;
+        let others: Vec<Vec3> = race.racers[1..].iter().map(|r| r.state.position).collect();
+        let start = race.racers[0].state.position;
+        for _ in 0..60 {
+            race.step_own(
+                t,
+                0,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        assert!(race.racers[0].state.position.distance(start) > 5.0);
+        let now: Vec<Vec3> = race.racers[1..].iter().map(|r| r.state.position).collect();
+        assert_eq!(now, others, "rivals move only by snapshot");
     }
 
     #[test]

@@ -23,6 +23,34 @@ const RETRY: Duration = Duration::from_millis(250);
 const GIVE_UP: Duration = Duration::from_secs(10);
 /// Idle keepalive interval.
 const KEEPALIVE: Duration = Duration::from_millis(500);
+/// Connect requests are padded to at least this size, so no reply to an unverified address is
+/// ever larger than the request (no reflection amplification).
+const MIN_CONNECT: usize = 64;
+/// Datagrams handled per poll, so a flood can't stall the frame.
+const MAX_PER_POLL: usize = 256;
+/// Longest player name kept, in characters.
+const MAX_NAME: usize = 16;
+
+/// A printable, trimmed, length-limited player name.
+pub fn clean_name(name: &str) -> String {
+    let s: String = name.chars().filter(|c| !c.is_control()).collect();
+    let s: String = s.trim().chars().take(MAX_NAME).collect();
+    if s.is_empty() {
+        "PLAYER".to_string()
+    } else {
+        s
+    }
+}
+
+/// A hard-to-guess session token (std's per-process random hasher keys, mixed with the address
+/// and time).
+fn session_token(addr: SocketAddr, now: Instant) -> u64 {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    addr.hash(&mut h);
+    now.hash(&mut h);
+    h.finish()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -89,6 +117,7 @@ pub enum HostEvent {
 #[derive(Debug)]
 struct Peer {
     addr: SocketAddr,
+    token: u64,
     name: String,
     last_heard: Instant,
 }
@@ -136,67 +165,86 @@ impl Host {
         let _ = self.sock.send_to(&w.finish(), addr);
     }
 
-    /// Drains the socket and expires silent peers.
+    /// Drains the socket (up to a per-call cap) and expires silent peers.
     pub fn poll(&mut self, now: Instant) -> Vec<HostEvent> {
         let mut events = Vec::new();
         let mut buf = [0u8; 2048];
-        loop {
+        let mut errors = 0;
+        for _ in 0..MAX_PER_POLL {
             let (n, from) = match self.sock.recv_from(&mut buf) {
                 Ok(v) => v,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 // ICMP "port unreachable" from a vanished peer surfaces here on some systems.
-                Err(_) => continue,
+                Err(_) => {
+                    errors += 1;
+                    if errors > 8 {
+                        break;
+                    }
+                    continue;
+                }
             };
             let Some((kind, mut body)) = parse(&buf[..n]) else {
                 continue;
             };
             let known = self.slot_of(from);
-            if let Some(i) = known
-                && let Some(p) = self.peers[i].as_mut()
-            {
-                p.last_heard = now;
+            if kind == Kind::Connect {
+                if n < MIN_CONNECT {
+                    continue;
+                }
+                if let Some(i) = known {
+                    let token = self.peers[i].as_ref().map_or(0, |p| p.token);
+                    let mut w = packet(Kind::Accept);
+                    w.u8(i as u8).u64(token);
+                    self.reply(from, w);
+                    continue;
+                }
+                let (Ok(game), Ok(name)) = (body.u32(), body.str()) else {
+                    continue;
+                };
+                if game != self.game {
+                    let mut w = packet(Kind::Reject);
+                    w.str("different game or version");
+                    self.reply(from, w);
+                    continue;
+                }
+                let Some(i) = self.peers.iter().position(Option::is_none) else {
+                    let mut w = packet(Kind::Reject);
+                    w.str("server full");
+                    self.reply(from, w);
+                    continue;
+                };
+                let name = clean_name(name);
+                let token = session_token(from, now);
+                self.peers[i] = Some(Peer {
+                    addr: from,
+                    token,
+                    name: name.clone(),
+                    last_heard: now,
+                });
+                let mut w = packet(Kind::Accept);
+                w.u8(i as u8).u64(token);
+                self.reply(from, w);
+                events.push(HostEvent::Joined {
+                    peer: PeerId(i as u8),
+                    name,
+                });
+                continue;
             }
-            match (kind, known) {
-                (Kind::Connect, Some(i)) => {
-                    let mut w = packet(Kind::Accept);
-                    w.u8(i as u8);
-                    self.reply(from, w);
-                }
-                (Kind::Connect, None) => {
-                    let (Ok(game), Ok(name)) = (body.u32(), body.str()) else {
-                        continue;
-                    };
-                    if game != self.game {
-                        let mut w = packet(Kind::Reject);
-                        w.str("different game or version");
-                        self.reply(from, w);
-                        continue;
-                    }
-                    let Some(i) = self.peers.iter().position(Option::is_none) else {
-                        let mut w = packet(Kind::Reject);
-                        w.str("server full");
-                        self.reply(from, w);
-                        continue;
-                    };
-                    let name = name.trim().to_string();
-                    self.peers[i] = Some(Peer {
-                        addr: from,
-                        name: name.clone(),
-                        last_heard: now,
-                    });
-                    let mut w = packet(Kind::Accept);
-                    w.u8(i as u8);
-                    self.reply(from, w);
-                    events.push(HostEvent::Joined {
-                        peer: PeerId(i as u8),
-                        name,
-                    });
-                }
-                (Kind::Data, Some(i)) => events.push(HostEvent::Message {
+            // Everything after the handshake carries the session token.
+            let Some(i) = known else { continue };
+            let Some(p) = self.peers[i].as_mut() else {
+                continue;
+            };
+            if body.u64().ok() != Some(p.token) {
+                continue;
+            }
+            p.last_heard = now;
+            match kind {
+                Kind::Data if body.rest().len() <= MAX_PAYLOAD => events.push(HostEvent::Message {
                     peer: PeerId(i as u8),
                     data: body.rest().to_vec(),
                 }),
-                (Kind::Disconnect, Some(i)) => {
+                Kind::Disconnect => {
                     self.peers[i] = None;
                     events.push(HostEvent::Left {
                         peer: PeerId(i as u8),
@@ -226,6 +274,7 @@ impl Host {
         }
         if let Some(Some(p)) = self.peers.get(peer.0 as usize) {
             let mut w = packet(Kind::Data);
+            w.u64(p.token);
             for &b in data {
                 w.u8(b);
             }
@@ -237,7 +286,9 @@ impl Host {
     /// Removes a peer and tells it so.
     pub fn kick(&mut self, peer: PeerId) {
         if let Some(Some(p)) = self.peers.get(peer.0 as usize) {
-            self.reply(p.addr, packet(Kind::Disconnect));
+            let mut w = packet(Kind::Disconnect);
+            w.u64(p.token);
+            self.reply(p.addr, w);
         }
         if let Some(slot) = self.peers.get_mut(peer.0 as usize) {
             *slot = None;
@@ -248,9 +299,9 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         for p in self.peers.iter().flatten() {
-            let _ = self
-                .sock
-                .send_to(&packet(Kind::Disconnect).finish(), p.addr);
+            let mut w = packet(Kind::Disconnect);
+            w.u64(p.token);
+            let _ = self.sock.send_to(&w.finish(), p.addr);
         }
     }
 }
@@ -278,6 +329,7 @@ enum ClientState {
     },
     Connected {
         slot: u8,
+        token: u64,
     },
     Closed,
 }
@@ -320,7 +372,7 @@ impl Client {
 
     pub fn slot(&self) -> Option<u8> {
         match self.state {
-            ClientState::Connected { slot } => Some(slot),
+            ClientState::Connected { slot, .. } => Some(slot),
             _ => None,
         }
     }
@@ -344,6 +396,9 @@ impl Client {
             if last_try.is_none_or(|t| now.saturating_duration_since(t) >= RETRY) {
                 let mut w = packet(Kind::Connect);
                 w.u32(self.game).str(&self.name);
+                while w.len() < MIN_CONNECT {
+                    w.u8(0);
+                }
                 self.raw(w, now);
                 self.state = ClientState::Connecting {
                     started,
@@ -352,11 +407,18 @@ impl Client {
             }
         }
         let mut buf = [0u8; 2048];
-        loop {
+        let mut errors = 0;
+        for _ in 0..MAX_PER_POLL {
             let (n, from) = match self.sock.recv_from(&mut buf) {
                 Ok(v) => v,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(_) => continue,
+                Err(_) => {
+                    errors += 1;
+                    if errors > 8 {
+                        break;
+                    }
+                    continue;
+                }
             };
             if from != self.server || self.state == ClientState::Closed {
                 continue;
@@ -364,11 +426,20 @@ impl Client {
             let Some((kind, mut body)) = parse(&buf[..n]) else {
                 continue;
             };
+            // After the handshake, only packets with our session token count.
+            if let ClientState::Connected { token, .. } = self.state
+                && matches!(kind, Kind::Data | Kind::Disconnect)
+                && body.u64().ok() != Some(token)
+            {
+                continue;
+            }
             self.last_heard = now;
             match kind {
                 Kind::Accept => {
-                    if let (ClientState::Connecting { .. }, Ok(slot)) = (self.state, body.u8()) {
-                        self.state = ClientState::Connected { slot };
+                    if let (ClientState::Connecting { .. }, Ok(slot), Ok(token)) =
+                        (self.state, body.u8(), body.u64())
+                    {
+                        self.state = ClientState::Connected { slot, token };
                         events.push(ClientEvent::Connected { slot });
                     }
                 }
@@ -392,7 +463,8 @@ impl Client {
                 self.state = ClientState::Closed;
                 events.push(ClientEvent::Lost);
             } else if now.saturating_duration_since(self.last_sent) > KEEPALIVE {
-                self.raw(packet(Kind::Ping), now);
+                let w = self.tokened(Kind::Ping);
+                self.raw(w, now);
             }
         }
         events
@@ -404,13 +476,21 @@ impl Client {
             return Err(too_big());
         }
         if self.slot().is_some() {
-            let mut w = packet(Kind::Data);
+            let mut w = self.tokened(Kind::Data);
             for &b in data {
                 w.u8(b);
             }
             self.raw(w, now);
         }
         Ok(())
+    }
+
+    fn tokened(&self, kind: Kind) -> Writer {
+        let mut w = packet(kind);
+        if let ClientState::Connected { token, .. } = self.state {
+            w.u64(token);
+        }
+        w
     }
 }
 
@@ -419,7 +499,7 @@ impl Drop for Client {
         if self.slot().is_some() {
             let _ = self
                 .sock
-                .send_to(&packet(Kind::Disconnect).finish(), self.server);
+                .send_to(&self.tokened(Kind::Disconnect).finish(), self.server);
         }
     }
 }
@@ -535,7 +615,7 @@ mod tests {
             .send_to(&[b'R', b'V', b'N', b'T', 1, 0, 9], addr)
             .unwrap();
         let mut data = packet(Kind::Data);
-        data.u8(1);
+        data.u64(1).u8(1);
         stranger.send_to(&data.finish(), addr).unwrap();
         let mut bad_connect = packet(Kind::Connect);
         bad_connect.u8(1);
@@ -543,6 +623,48 @@ mod tests {
         sleep(Duration::from_millis(50));
         assert!(h.poll(Instant::now()).is_empty());
         assert_eq!(h.peers().count(), 0);
+    }
+
+    #[test]
+    fn spoofed_packets_without_the_session_token_are_ignored() {
+        let (mut h, addr) = host(2);
+        let mut c = Client::connect(addr, "A", GAME, Instant::now()).unwrap();
+        pump(&mut h, &mut [&mut c], |_, ce| !ce[0].is_empty());
+        // Same address as the client, wrong token: a forged Data and a forged Disconnect.
+        for kind in [Kind::Data, Kind::Disconnect] {
+            let mut w = packet(kind);
+            w.u64(0xdead_beef);
+            w.u8(9);
+            c.sock.send_to(&w.finish(), addr).unwrap();
+        }
+        sleep(Duration::from_millis(50));
+        assert!(h.poll(Instant::now()).is_empty());
+        assert_eq!(h.peers().count(), 1, "still connected");
+    }
+
+    #[test]
+    fn short_connect_requests_get_no_reply() {
+        let (mut h, addr) = host(2);
+        let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut w = packet(Kind::Connect);
+        w.u32(GAME + 1).str("x");
+        s.send_to(&w.finish(), addr).unwrap();
+        sleep(Duration::from_millis(30));
+        h.poll(Instant::now());
+        let mut buf = [0u8; 64];
+        assert!(
+            s.recv_from(&mut buf).is_err(),
+            "no reply to an unpadded request"
+        );
+    }
+
+    #[test]
+    fn player_names_are_sanitized() {
+        assert_eq!(clean_name("  Rusty\n\u{7}  "), "Rusty");
+        assert_eq!(clean_name("\t"), "PLAYER");
+        assert_eq!(clean_name(&"x".repeat(40)).len(), 16);
     }
 
     #[test]

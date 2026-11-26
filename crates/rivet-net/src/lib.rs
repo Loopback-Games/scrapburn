@@ -7,5 +7,5 @@
 pub mod link;
 pub mod wire;
 
-pub use link::{Client, ClientEvent, Host, HostEvent, MAX_PAYLOAD, PeerId};
+pub use link::{Client, ClientEvent, Host, HostEvent, MAX_PAYLOAD, PeerId, clean_name};
 pub use wire::{Reader, WireError, Writer};
