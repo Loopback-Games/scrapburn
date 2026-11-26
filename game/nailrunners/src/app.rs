@@ -440,7 +440,12 @@ impl Game {
         if let Some(p) = self.pads.as_mut() {
             p.poll();
         }
-        let pad = self.pads.as_ref().and_then(Gamepads::active).copied();
+        // Benchmarks ignore gamepads (stray events from macro pads would drive the menus).
+        let pad = if self.bench.is_some() {
+            None
+        } else {
+            self.pads.as_ref().and_then(Gamepads::active).copied()
+        };
         let pad = pad.as_ref();
         let act = actions(&self.keys, pad);
         if act.toggle_graph {
@@ -757,7 +762,11 @@ impl Game {
         let (view_m, eye) = if matches!(self.session, Session::Attract) {
             // Cinematic orbit around the featured kart.
             let a = self.attract_t * 0.22;
-            let eye = fpos + Vec3::new(a.cos() * 11.0, 3.2 + (a * 0.7).sin() * 1.5, a.sin() * 11.0);
+            let mut eye =
+                fpos + Vec3::new(a.cos() * 11.0, 3.2 + (a * 0.7).sin() * 1.5, a.sin() * 11.0);
+            // Never orbit into a dune.
+            let ground = nailrunners::terrain::height_at(&self.track.centerline, eye.x, eye.z);
+            eye.y = eye.y.max(ground + 2.5);
             (
                 glam::camera::rh::view::look_at_mat4(eye, fpos + Vec3::Y * 0.8, Vec3::Y),
                 eye,
