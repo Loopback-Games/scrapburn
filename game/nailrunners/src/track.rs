@@ -10,6 +10,9 @@ use crate::terrain;
 
 pub const ROAD_HALF_WIDTH: f32 = 7.0;
 pub const WALL_HEIGHT: f32 = 1.5;
+/// Barrier collision reaches far above the visible wall so jumps and blasts can't launch a
+/// kart out of the circuit.
+const COLLISION_WALL_HEIGHT: f32 = 8.0;
 pub const JUMP_HEIGHT: f32 = 6.0;
 const SAMPLE_SPACING: f32 = 2.0;
 const CHECKPOINT_SPACING: f32 = 40.0;
@@ -351,7 +354,15 @@ pub fn build_graybox_loop() -> Track {
                     BARRIER,
                     metal,
                 );
-                col.quad([e0, e1, t1, t0], Surface::Wall);
+                col.quad(
+                    [
+                        e0,
+                        e1,
+                        e1 + u1 * COLLISION_WALL_HEIGHT,
+                        e0 + u0 * COLLISION_WALL_HEIGHT,
+                    ],
+                    Surface::Wall,
+                );
             } else {
                 quad(
                     &mut road,
@@ -367,7 +378,15 @@ pub fn build_graybox_loop() -> Track {
                     BARRIER,
                     metal,
                 );
-                col.quad([e0, t0, t1, e1], Surface::Wall);
+                col.quad(
+                    [
+                        e0,
+                        e0 + u0 * COLLISION_WALL_HEIGHT,
+                        e1 + u1 * COLLISION_WALL_HEIGHT,
+                        e1,
+                    ],
+                    Surface::Wall,
+                );
             }
             // Cap on top of the barrier, a little outward.
             let (_, _, r0, _) = frames[i];
@@ -744,6 +763,19 @@ mod tests {
                 .unwrap();
             assert_eq!(hit.surface, Surface::BoostPad, "pad at {p}");
         }
+    }
+
+    #[test]
+    fn barrier_collision_reaches_well_above_the_visible_wall() {
+        let t = build_graybox_loop();
+        let c = t.centerline[20];
+        let fwd = (t.centerline[21] - t.centerline[19]).normalize();
+        let right = fwd.cross(Vec3::Y).normalize();
+        let hit = t
+            .collision
+            .raycast(c + Vec3::Y * 5.0, right, 20.0)
+            .expect("invisible wall above the barrier");
+        assert!((hit.t - ROAD_HALF_WIDTH).abs() < 0.5);
     }
 
     #[test]

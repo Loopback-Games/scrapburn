@@ -694,6 +694,23 @@ mod tests {
     }
 
     #[test]
+    fn fast_karts_do_not_tunnel_through_walls() {
+        let w = walled_world();
+        let p = VehicleParams::default();
+        let mut s = settled(&w, &p);
+        s.position.z = 46.0;
+        s.velocity = Vec3::new(0.0, 0.0, 80.0); // 1.33 m per tick, more than the body radius
+        for _ in 0..30 {
+            step(&mut s, &p, DriveInput::default(), &w, DT);
+            assert!(
+                s.position.z < 50.0,
+                "tunneled through the wall to z = {}",
+                s.position.z
+            );
+        }
+    }
+
+    #[test]
     fn glancing_wall_hit_keeps_most_speed() {
         let w = walled_world();
         let p = VehicleParams::default();

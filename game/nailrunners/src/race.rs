@@ -16,6 +16,9 @@ const START_BOOST: (f32, f32) = (6.0, 0.9);
 const FALL_LIMIT_Y: f32 = -30.0;
 const STUCK_SPEED: f32 = 2.0;
 const STUCK_SECONDS: f32 = 3.0;
+/// Farther than this from the centerline (beyond the barriers) for this long = put back.
+const OFF_TRACK_DISTANCE: f32 = crate::track::ROAD_HALF_WIDTH + 18.0;
+const OFF_TRACK_SECONDS: f32 = 1.5;
 const SPAWN_LIFT: f32 = 0.6;
 /// Catch-up range: bots far behind the player speed up, far ahead slow down.
 const CATCH_UP: (f32, f32) = (0.95, 1.06);
@@ -71,6 +74,8 @@ pub struct Racer {
     pub last_lap: Option<f64>,
     pub best_lap: Option<f64>,
     stuck: f32,
+    /// Seconds spent far off the track.
+    off_track: f32,
     hop: HopLatch,
 }
 
@@ -143,6 +148,7 @@ impl Race {
                     last_lap: None,
                     best_lap: None,
                     stuck: 0.0,
+                    off_track: 0.0,
                     hop: HopLatch::default(),
                 }
             })
@@ -196,6 +202,7 @@ impl Race {
         );
         r.prev = r.state.clone();
         r.stuck = 0.0;
+        r.off_track = 0.0;
     }
 
     /// One fixed tick. `player_input.hop` is latched until a tick consumes it.
@@ -293,7 +300,10 @@ impl Race {
                 let slow = r.state.speed().abs() < STUCK_SPEED && r.bot.is_some();
                 r.stuck = if slow { r.stuck + dt } else { 0.0 };
             }
-            if r.state.position.y < FALL_LIMIT_Y || r.stuck > STUCK_SECONDS {
+            let p = r.state.position;
+            let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
+            r.off_track = if far { r.off_track + dt } else { 0.0 };
+            if p.y < FALL_LIMIT_Y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS {
                 Self::respawn(r, track);
             }
         }
@@ -394,6 +404,25 @@ mod tests {
         let t = track();
         let r = Race::new(t, 8, true, 3);
         assert_eq!(r.position_of(0, t), 8, "player on the back row");
+    }
+
+    #[test]
+    fn out_of_bounds_karts_are_put_back() {
+        let t = track();
+        let mut r = Race::new(t, 2, true, 3);
+        r.phase = Phase::Racing;
+        let lost = t.centerline[100] + glam::Vec3::new(0.0, 5.0, 60.0);
+        r.racers[0].state = rivet_physics::VehicleState::spawn(lost, 0.0);
+        r.racers[0].prev = r.racers[0].state.clone();
+        for _ in 0..120 {
+            r.step(t, DriveInput::default(), 1.0 / 60.0);
+        }
+        let p = r.racers[0].state.position;
+        let d = crate::terrain::distance_to(&t.centerline, p.x, p.z);
+        assert!(
+            d < crate::track::ROAD_HALF_WIDTH,
+            "still {d:.1} m off the track"
+        );
     }
 
     #[test]
