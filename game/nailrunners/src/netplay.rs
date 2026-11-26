@@ -1323,6 +1323,166 @@ mod tests {
         );
     }
 
+    /// A UDP relay that delays every packet and drops some, between one client and the host.
+    struct BadNetwork {
+        sock: std::net::UdpSocket,
+        host: SocketAddr,
+        client: Option<SocketAddr>,
+        queue: Vec<(Instant, SocketAddr, Vec<u8>)>,
+        n: u32,
+    }
+
+    impl BadNetwork {
+        fn new(host: SocketAddr) -> Self {
+            let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            sock.set_nonblocking(true).unwrap();
+            Self {
+                sock,
+                host,
+                client: None,
+                queue: Vec::new(),
+                n: 0,
+            }
+        }
+
+        fn addr(&self) -> SocketAddr {
+            self.sock.local_addr().unwrap()
+        }
+
+        /// 80 ms each way, every 7th packet lost.
+        fn pump(&mut self) {
+            let mut buf = [0u8; 2048];
+            while let Ok((len, from)) = self.sock.recv_from(&mut buf) {
+                let to = if from == self.host {
+                    match self.client {
+                        Some(c) => c,
+                        None => continue,
+                    }
+                } else {
+                    self.client = Some(from);
+                    self.host
+                };
+                self.n += 1;
+                if self.n.is_multiple_of(7) {
+                    continue;
+                }
+                let at = Instant::now() + std::time::Duration::from_millis(80);
+                self.queue.push((at, to, buf[..len].to_vec()));
+            }
+            let now = Instant::now();
+            let (due, later): (Vec<_>, Vec<_>) = self.queue.drain(..).partition(|q| q.0 <= now);
+            self.queue = later;
+            for (_, to, data) in due {
+                let _ = self.sock.send_to(&data, to);
+            }
+        }
+    }
+
+    #[test]
+    fn a_race_survives_latency_and_packet_loss() {
+        let t = build_graybox_loop();
+        let mut host = NetHost::bind(0, setup(), "Host").unwrap();
+        let mut net = BadNetwork::new(SocketAddr::from(([127, 0, 0, 1], host.port())));
+        let mut client = NetClient::connect(net.addr(), "Guest").unwrap();
+        let mut race = Race::new(&t, 4, true, 3);
+        let mut started = false;
+        let mut client_race: Option<(Race, ClientView)> = None;
+        let mut delivered: Vec<RaceEvent> = Vec::new();
+        let mut sent: Vec<RaceEvent> = Vec::new();
+        let mut moved_seen = false;
+        let dt = 1.0 / 60.0;
+        // Ten seconds of play in real time (the network delays are real).
+        let t0 = Instant::now();
+        let mut tick = 0u32;
+        while t0.elapsed().as_secs_f32() < 10.0 {
+            let now = Instant::now();
+            net.pump();
+            host.poll(now, started.then_some(&mut race));
+            if !started && host.player_count() == 2 {
+                race = Race::new(&t, host.racer_count(), true, 3);
+                host.start(&mut race);
+                started = true;
+            }
+            if started {
+                let events = race.step(
+                    &t,
+                    DriveInput {
+                        throttle: 1.0,
+                        ..Default::default()
+                    },
+                    dt,
+                );
+                // Every other tick, a synthetic event so delivery is measurable.
+                let mut events = events;
+                if tick.is_multiple_of(2) {
+                    events.push(RaceEvent::Lap {
+                        racer: 0,
+                        number: tick,
+                        time: 0.0,
+                    });
+                }
+                sent.extend(
+                    events
+                        .iter()
+                        .copied()
+                        .filter(|e| matches!(e, RaceEvent::Lap { racer: 0, .. })),
+                );
+                host.record(&events);
+                if tick.is_multiple_of(2) {
+                    host.send(Some(&race));
+                }
+            } else {
+                host.send(None);
+            }
+            for note in client.poll(now) {
+                if let ClientNote::Snapshot(snap) = note {
+                    if client_race.is_none() {
+                        let r = Race::new(&t, snap.racers.len(), true, 3);
+                        client_race = Some((
+                            r,
+                            ClientView::new(snap.you as usize, snap.race_id, snap.racers.len()),
+                        ));
+                    }
+                    if let Some((r, v)) = client_race.as_mut() {
+                        delivered.extend(
+                            v.apply(r, &snap)
+                                .into_iter()
+                                .filter(|e| matches!(e, RaceEvent::Lap { racer: 0, .. })),
+                        );
+                    }
+                }
+            }
+            if let Some((r, v)) = client_race.as_mut() {
+                let you = v.you;
+                let mut s = r.racers[you].state.clone();
+                s.position.z += 0.05 * tick as f32 / 60.0;
+                r.racers[you].state = s.clone();
+                client.send_kart(&s, v, now);
+                if started && race.racers[you].state.position.distance(s.position) < 1.0 {
+                    moved_seen = true;
+                }
+            }
+            tick += 1;
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert!(started, "the guest joined through the bad network");
+        assert!(moved_seen, "the host saw the guest's kart");
+        // Every event except the last few still in flight arrived exactly once, in order.
+        assert!(sent.len() > 100, "{} events sent", sent.len());
+        let in_flight = 20;
+        assert!(
+            delivered.len() + in_flight >= sent.len(),
+            "delivered {} of {}",
+            delivered.len(),
+            sent.len()
+        );
+        assert_eq!(
+            &sent[..delivered.len()],
+            &delivered[..],
+            "no losses, repeats or reordering"
+        );
+    }
+
     #[test]
     fn tailscale_status_lists_online_peers() {
         let json = r#"{"Self":{"HostName":"me"},"Peer":{
