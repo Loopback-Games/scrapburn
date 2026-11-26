@@ -109,6 +109,13 @@ pub struct Orb {
     life: f32,
 }
 
+impl Orb {
+    /// The racer this orb hunts.
+    pub fn target(&self) -> usize {
+        self.target
+    }
+}
+
 /// Where item boxes sit: rows of four across the road at three places on the lap.
 pub fn item_box_spots(track: &Track) -> Vec<Vec3> {
     let cl = &track.centerline;
@@ -192,6 +199,11 @@ impl Combat {
         if !self.fire_queue.contains(&i) {
             self.fire_queue.push(i);
         }
+    }
+
+    /// Drops hooks that involve racer `r` (after a respawn teleports it).
+    pub fn cancel_for(&mut self, r: usize) {
+        self.hooks.retain(|h| h.owner != r && h.target != Some(r));
     }
 
     /// Nearest kart ahead of `i` inside the harpoon cone and range.
@@ -302,7 +314,10 @@ impl Combat {
                     });
                 }
                 ItemKind::DoomOrb => {
-                    let leader = standings.iter().copied().find(|&r| r != i).unwrap_or(i);
+                    // Nobody else still racing: the orb has no one to hunt.
+                    let Some(leader) = standings.iter().copied().find(|&r| r != i) else {
+                        continue;
+                    };
                     self.orbs.push(Orb {
                         pos: me.position + Vec3::Y * 1.8,
                         owner: i,
@@ -629,6 +644,39 @@ mod tests {
             }
         }
         assert!(boom, "the orb detonated on the leader");
+    }
+
+    #[test]
+    fn doom_orb_ignores_finished_racers() {
+        let t = track();
+        let mut r = Race::new(t, 3, true, 3);
+        r.phase = crate::race::Phase::Racing;
+        r.racers[1].finish = Some((1, 50.0)); // already done, on the cool-down lap
+        r.combat.held[0] = Some(ItemKind::DoomOrb);
+        r.fire(0);
+        r.step(t, DriveInput::default(), 1.0 / 60.0);
+        assert_eq!(
+            r.combat.orbs[0].target(),
+            2,
+            "targets the leader of those still racing"
+        );
+    }
+
+    #[test]
+    fn harpoon_cancels_when_the_target_respawns() {
+        let t = track();
+        let mut r = duel(30.0);
+        r.combat.held[0] = Some(ItemKind::Harpoon);
+        r.fire(0);
+        for _ in 0..10 {
+            r.step(t, DriveInput::default(), 1.0 / 60.0);
+        }
+        assert!(!r.combat.hooks.is_empty(), "hook out");
+        r.respawn_racer(1, t);
+        assert!(
+            r.combat.hooks.is_empty(),
+            "respawn cancels hooks involving that racer"
+        );
     }
 
     #[test]

@@ -119,6 +119,20 @@ impl Mixer {
     }
 
     pub fn apply(&mut self, cmd: Command) {
+        // A NaN would stick in the filters and silence the mix for good: drop such commands.
+        let finite = match cmd {
+            Command::Engine { rpm, gain, pan, .. } => {
+                rpm.is_finite() && gain.is_finite() && pan.is_finite()
+            }
+            Command::Skid { gain, pan, .. } | Command::Play { gain, pan, .. } => {
+                gain.is_finite() && pan.is_finite()
+            }
+            Command::OrbHum { gain } => gain.is_finite(),
+            Command::StopLoops => true,
+        };
+        if !finite {
+            return;
+        }
         match cmd {
             Command::Engine { id, rpm, gain, pan } => {
                 let e = &mut self.engines[id as usize % VOICES];
@@ -386,6 +400,29 @@ mod tests {
             });
         }
         assert!(render(&mut m, 0.5).iter().all(|s| s.abs() <= 1.0));
+    }
+
+    #[test]
+    fn non_finite_commands_cannot_poison_the_mix() {
+        let mut m = Mixer::new(RATE);
+        m.apply(Command::Engine {
+            id: 0,
+            rpm: f32::NAN,
+            gain: 0.8,
+            pan: f32::INFINITY,
+        });
+        m.apply(Command::Play {
+            sfx: Sfx::Hit,
+            gain: f32::NAN,
+            pan: 0.0,
+        });
+        m.apply(Command::Engine {
+            id: 1,
+            rpm: 0.5,
+            gain: 0.5,
+            pan: 0.0,
+        });
+        assert!(render(&mut m, 0.2).iter().all(|s| s.is_finite()));
     }
 
     #[test]

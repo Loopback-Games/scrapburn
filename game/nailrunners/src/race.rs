@@ -89,6 +89,8 @@ pub struct Race {
     line: RacingLine,
     finished: u32,
     pub combat: Combat,
+    /// Racers respawned this tick (their hooks are cancelled).
+    respawned: Vec<usize>,
     /// Items and weapons are on (any race with rivals).
     pub combat_on: bool,
 }
@@ -162,6 +164,7 @@ impl Race {
             line,
             finished: 0,
             combat: Combat::new(track, count),
+            respawned: Vec::new(),
             combat_on: count > 1,
         }
     }
@@ -305,6 +308,7 @@ impl Race {
             r.off_track = if far { r.off_track + dt } else { 0.0 };
             if p.y < FALL_LIMIT_Y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS {
                 Self::respawn(r, track);
+                self.respawned.push(i);
             }
         }
 
@@ -316,8 +320,16 @@ impl Race {
                 collide_karts(&mut ra.state, ra.mass, &mut rb.state, rb.mass, KART_RADIUS);
             }
         }
+        for i in std::mem::take(&mut self.respawned) {
+            self.combat.cancel_for(i);
+        }
         if racing && self.combat_on {
-            let standings = self.standings(track);
+            // Weapons only see racers still racing (finishers are on their cool-down lap).
+            let standings: Vec<usize> = self
+                .standings(track)
+                .into_iter()
+                .filter(|&i| self.racers[i].finish.is_none())
+                .collect();
             let ce = self
                 .combat
                 .step(&mut self.racers, &standings, &self.line, dt);
@@ -334,6 +346,7 @@ impl Race {
     /// Teleports racer `i` to its last checkpoint (player respawn button).
     pub fn respawn_racer(&mut self, i: usize, track: &Track) {
         Self::respawn(&mut self.racers[i], track);
+        self.combat.cancel_for(i);
     }
 }
 

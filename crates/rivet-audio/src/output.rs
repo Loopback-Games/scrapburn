@@ -1,14 +1,17 @@
 //! Audio device output via cpal. The mixer runs on the audio thread; the game sends commands.
 
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::mixer::{Command, Mixer};
 
+/// Commands buffered between game frames and the audio callback.
+const QUEUE: usize = 1024;
+
 /// A running output stream. Dropping it stops the sound.
 pub struct Audio {
-    tx: Sender<Command>,
+    tx: SyncSender<Command>,
     _stream: cpal::Stream,
 }
 
@@ -37,7 +40,8 @@ impl Audio {
         let config: cpal::StreamConfig = supported.into();
         let channels = config.channels as usize;
         let rate = config.sample_rate as f32;
-        let (tx, rx) = channel::<Command>();
+        // Bounded: if the device stops pulling (unplugged), commands are dropped, not hoarded.
+        let (tx, rx) = sync_channel::<Command>(QUEUE);
         let mut mixer = Mixer::new(rate);
         let on_err = |e| log::warn!("audio stream error: {e}");
         let stream = match format {
@@ -51,7 +55,7 @@ impl Audio {
                 None,
             ),
             cpal::SampleFormat::I16 => {
-                let mut scratch = Vec::new();
+                let mut scratch = vec![0.0f32; 16_384];
                 device.build_output_stream(
                     config,
                     move |data: &mut [i16], _| {
@@ -89,7 +93,10 @@ impl Audio {
         })
     }
 
+    /// Queues a command; dropped when the queue is full (device stalled or gone).
     pub fn send(&self, cmd: Command) {
-        let _ = self.tx.send(cmd);
+        match self.tx.try_send(cmd) {
+            Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+        }
     }
 }

@@ -501,7 +501,12 @@ impl Game {
         };
 
         // --- Simulation ---
-        let steps = self.clock.advance(frame_dt);
+        // Paused: don't advance the clock, or interpolation keeps cycling and karts jitter.
+        let steps = if simulate {
+            self.clock.advance(frame_dt)
+        } else {
+            0
+        };
         self.frame_events.clear();
         if simulate {
             for _ in 0..steps {
@@ -925,18 +930,20 @@ impl Game {
                 casts_shadow: false,
                 tint: [1.0; 3],
             });
-            // A trail of green motes behind the orb.
-            self.combat_fx.spawn(Particle {
-                pos: orb.pos,
-                vel: Vec3::Y * 1.5,
-                age: 0.0,
-                life: 0.6,
-                size: (0.9, 0.1),
-                color: ([1.5, 5.0, 2.0, 1.0], [0.2, 1.0, 0.4, 0.0]),
-                gravity: 0.0,
-                drag: 1.0,
-                blend: Blend::Additive,
-            });
+            // A trail of green motes behind the orb (only while the race runs).
+            if fx_dt > 0.0 {
+                self.combat_fx.spawn(Particle {
+                    pos: orb.pos,
+                    vel: Vec3::Y * 1.5,
+                    age: 0.0,
+                    life: 0.6,
+                    size: (0.9, 0.1),
+                    color: ([1.5, 5.0, 2.0, 1.0], [0.2, 1.0, 0.4, 0.0]),
+                    gravity: 0.0,
+                    drag: 1.0,
+                    blend: Blend::Additive,
+                });
+            }
         }
         self.combat_fx.update(fx_dt);
         let mut additive: Vec<ParticleInstance> = Vec::new();
