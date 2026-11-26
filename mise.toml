@@ -7,4 +7,4 @@ just = "1.59.0"
 [env]
 # gilrs needs libudev headers on Linux. On Bluefin they come from the keg-only
 # Homebrew systemd formula; on other systems the extra path is simply absent.
-PKG_CONFIG_PATH = "/home/linuxbrew/.linuxbrew/opt/systemd/lib/pkgconfig:{{ get_env(name='PKG_CONFIG_PATH', default='') }}"
+PKG_CONFIG_PATH = "/home/linuxbrew/.linuxbrew/opt/systemd/lib/pkgconfig:/home/linuxbrew/.linuxbrew/opt/alsa-lib/lib/pkgconfig:{{ get_env(name='PKG_CONFIG_PATH', default='') }}"

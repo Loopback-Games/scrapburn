@@ -14,6 +14,7 @@ rivet-render.workspace = true
 rivet-physics.workspace = true
 rivet-assets.workspace = true
 rivet-ai.workspace = true
+rivet-audio.workspace = true
 glam.workspace = true
 winit.workspace = true
 wgpu.workspace = true

@@ -16,6 +16,7 @@ within 6 months, not archived or deprecated, license compatible with MIT OR Apac
 | cargo-deny (tool) | License/ban/source checks in `just security` | EmbarkStudios, MIT/Apache |
 | image | PNG/JPEG decoding (png + jpeg features only) | image-rs, 5.9k stars, MIT/Apache |
 | serde_json | glTF (GLB) JSON chunk parsing | serde-rs, MIT/Apache |
+| cpal | Audio output | RustAudio, ~3k stars, Apache-2.0; Linux needs ALSA headers (Homebrew alsa-lib locally, libasound2-dev in CI) |
 | cargo-audit (tool) | `just security` | RustSec (Rust working group), first-party carve-out |
 
 ## Exceptions

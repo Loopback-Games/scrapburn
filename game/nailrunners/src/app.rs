@@ -20,6 +20,7 @@ use nailrunners::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
 use nailrunners::particles::{Blend, Particle, ParticleSystem};
 use nailrunners::race::{Phase, Race, RaceEvent};
 use nailrunners::scenery;
+use nailrunners::sound::SoundDirector;
 use nailrunners::track::{Track, build_graybox_loop};
 use nailrunners::{MAX_STEPS, TICK_DT};
 use rivet_assets::Rgba8Image;
@@ -165,6 +166,9 @@ struct Game {
     recorder: GhostRecorder,
     /// Wall time for the attract camera.
     attract_t: f32,
+    audio: Option<rivet_audio::Audio>,
+    sound: SoundDirector,
+    frame_events: Vec<RaceEvent>,
 }
 
 fn placeholder_kart() -> MeshData {
@@ -371,6 +375,13 @@ impl Game {
             best_ghost,
             recorder: GhostRecorder::default(),
             attract_t: 0.0,
+            audio: if args.bench.is_some() {
+                None
+            } else {
+                rivet_audio::Audio::new()
+            },
+            sound: SoundDirector::default(),
+            frame_events: Vec::new(),
         })
     }
 
@@ -486,11 +497,13 @@ impl Game {
 
         // --- Simulation ---
         let steps = self.clock.advance(frame_dt);
+        self.frame_events.clear();
         if simulate {
             for _ in 0..steps {
                 let events = self.race.step(&self.track, input, TICK_DT as f32);
                 self.after_step(&events);
                 self.combat_effects(&events);
+                self.frame_events.extend(events);
             }
         }
         self.attract_t += frame_dt as f32;
@@ -538,6 +551,24 @@ impl Game {
                 Err(e) => eprintln!("writing bench CSV failed: {e}"),
             }
             return Some(ExitCode::SUCCESS);
+        }
+        if let Some(audio) = &self.audio {
+            let active = matches!(self.session, Session::Play(_))
+                && matches!(self.menu.screen, Screen::Playing | Screen::Results);
+            let view = self.camera.view();
+            let right = view.row(0).truncate().normalize_or(Vec3::X);
+            let listener = nailrunners::sound::Listener {
+                ear: self.camera.eye(),
+                right,
+            };
+            self.sound.update(
+                audio,
+                &self.race,
+                &self.frame_events,
+                listener,
+                self.focus(),
+                active,
+            );
         }
         if !self.minimized {
             self.render(frame_dt as f32, simulate);

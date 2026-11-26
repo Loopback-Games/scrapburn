@@ -17,6 +17,7 @@ rivet-render = { path = "crates/rivet-render" }
 rivet-physics = { path = "crates/rivet-physics" }
 rivet-assets = { path = "crates/rivet-assets" }
 rivet-ai = { path = "crates/rivet-ai" }
+rivet-audio = { path = "crates/rivet-audio" }
 wgpu = "30.0.2"
 winit = "0.30.13"
 glam = { version = "0.34.3", features = ["bytemuck"] }
@@ -29,6 +30,7 @@ anyhow = "1.0.105"
 thiserror = "2.0.21"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1.0.154"
+cpal = "0.18.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
