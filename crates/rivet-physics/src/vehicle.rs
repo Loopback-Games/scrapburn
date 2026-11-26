@@ -52,8 +52,8 @@ pub struct VehicleParams {
     /// Yaw rate (rad/s) at low speed and at max speed.
     pub steer_rate_low: f32,
     pub steer_rate_high: f32,
-    /// Drift yaw rate as a multiple of the normal steer rate: counter-steering gives `min`
-    /// (wide arc), steering into the drift gives `max` (tight arc).
+    /// Drift yaw rate as a multiple of the normal steer rate: full counter-steer gives `min`
+    /// (negative: the kart rotates back against the drift), steering into it gives `max`.
     pub drift_arc_min: f32,
     pub drift_arc_max: f32,
     /// Extra charge rate at full tightness (1.0 + this).
@@ -104,7 +104,7 @@ impl Default for VehicleParams {
             drift_grip: 2.5,
             steer_rate_low: 2.2,
             steer_rate_high: 1.1,
-            drift_arc_min: 0.30,
+            drift_arc_min: -0.35,
             drift_arc_max: 1.45,
             drift_tight_charge_bonus: 0.6,
             drift_min_speed: 10.0,
@@ -654,8 +654,8 @@ mod tests {
             "tight {tight_turn} vs wide {wide_turn}"
         );
         assert!(
-            wide_turn > 0.0,
-            "counter-steer widens the drift but it still turns into it"
+            wide_turn < 0.0,
+            "full counter-steer turns against the drift (tight {tight_turn}, counter {wide_turn})"
         );
     }
 
