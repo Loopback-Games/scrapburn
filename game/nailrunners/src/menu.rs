@@ -228,6 +228,7 @@ impl MenuState {
                     _ => MenuAction::None,
                 }
             }
+            Screen::Results if input.back => MenuAction::ToTitle,
             Screen::Results => match (input.select, self.selected) {
                 (true, 0) => MenuAction::ToTitle,
                 (true, _) => MenuAction::Restart,
@@ -311,6 +312,16 @@ mod tests {
         assert_eq!(s.fps, FpsDisplay::Graph);
         m.handle(press(|i| i.left = true), &mut s);
         assert_eq!(s.fps, FpsDisplay::Counter);
+    }
+
+    #[test]
+    fn results_back_returns_to_title() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Results);
+        assert_eq!(
+            m.handle(press(|i| i.back = true), &mut s),
+            MenuAction::ToTitle
+        );
     }
 
     #[test]

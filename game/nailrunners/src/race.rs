@@ -330,9 +330,13 @@ impl Race {
                 .into_iter()
                 .filter(|&i| self.racers[i].finish.is_none())
                 .collect();
-            let ce = self
-                .combat
-                .step(&mut self.racers, &standings, &self.line, dt);
+            let ce = self.combat.step(
+                &mut self.racers,
+                &standings,
+                &self.line,
+                &track.collision,
+                dt,
+            );
             events.extend(ce.into_iter().map(RaceEvent::Combat));
         }
         events

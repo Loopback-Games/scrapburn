@@ -2,6 +2,7 @@
 
 use glam::Vec3;
 use rivet_ai::RacingLine;
+use rivet_physics::{TriMesh, VehicleState};
 
 use crate::race::Racer;
 use crate::track::Track;
@@ -113,6 +114,16 @@ impl Orb {
     /// The racer this orb hunts.
     pub fn target(&self) -> usize {
         self.target
+    }
+}
+
+/// Applies one nail hit: a spin-out, but a kart already spinning just spins longer (a burst
+/// can't grind it to a halt).
+pub fn nail_hit(state: &mut VehicleState) {
+    if state.spin > 0.0 {
+        state.spin = state.spin.max(NAIL_SPIN.0);
+    } else {
+        state.spin_out(NAIL_SPIN.0, NAIL_SPIN.1);
     }
 }
 
@@ -252,6 +263,7 @@ impl Combat {
         racers: &mut [Racer],
         standings: &[usize],
         line: &RacingLine,
+        world: &TriMesh,
         dt: f32,
     ) -> Vec<CombatEvent> {
         let mut events = Vec::new();
@@ -355,6 +367,11 @@ impl Combat {
             nail.pos += nail.vel * dt;
             nail.life -= dt;
             let seg = nail.pos - from;
+            // Barriers and terrain stop nails.
+            let len = seg.length();
+            if len > 1e-4 && world.raycast(from, seg / len, len).is_some() {
+                return false;
+            }
             for (j, r) in racers.iter().enumerate() {
                 if j == nail.owner {
                     continue;
@@ -369,7 +386,7 @@ impl Combat {
             nail.life > 0.0
         });
         for j in hits {
-            racers[j].state.spin_out(NAIL_SPIN.0, NAIL_SPIN.1);
+            nail_hit(&mut racers[j].state);
             events.push(CombatEvent::Hit {
                 victim: j,
                 item: ItemKind::Nailer,
@@ -676,6 +693,45 @@ mod tests {
         assert!(
             r.combat.hooks.is_empty(),
             "respawn cancels hooks involving that racer"
+        );
+    }
+
+    #[test]
+    fn stacked_nail_hits_do_not_crush_speed() {
+        let t = track();
+        let mut r = duel(16.0);
+        let v0 = 25.0;
+        r.racers[1].state.velocity = r.racers[1].state.velocity.normalize() * v0;
+        for _ in 0..12 {
+            crate::combat::nail_hit(&mut r.racers[1].state);
+        }
+        let v = r.racers[1].state.velocity.length();
+        assert!(v > v0 * 0.6, "12 nails left {v} of {v0}");
+        let _ = t;
+    }
+
+    #[test]
+    fn nails_stop_at_barriers() {
+        let t = track();
+        let mut r = duel(16.0);
+        // Aim racer 0 straight at the left barrier, racer 1 just beyond it (other side).
+        let c = t.centerline[40];
+        let f = (t.centerline[41] - t.centerline[39]).normalize();
+        let left = -f.cross(Vec3::Y).normalize();
+        r.racers[0].state =
+            rivet_physics::VehicleState::spawn(c + Vec3::Y * 0.5, left.x.atan2(left.z));
+        r.racers[0].prev = r.racers[0].state.clone();
+        r.racers[1].state =
+            rivet_physics::VehicleState::spawn(c + left * 12.0 + Vec3::Y * 0.5, 0.0);
+        r.racers[1].prev = r.racers[1].state.clone();
+        r.combat.held[0] = Some(ItemKind::Nailer);
+        r.fire(0);
+        for _ in 0..40 {
+            r.step(t, DriveInput::default(), 1.0 / 60.0);
+        }
+        assert_eq!(
+            r.racers[1].state.spin, 0.0,
+            "nails went through the barrier"
         );
     }
 
