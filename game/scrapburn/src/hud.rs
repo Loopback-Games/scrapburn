@@ -698,7 +698,7 @@ pub fn draw_item_slot(
     let (color, glyph) = match item {
         ItemKind::Nailer => ([1.0, 0.82, 0.35, 1.0], "///"),
         ItemKind::Harpoon => ([0.75, 0.8, 0.85, 1.0], "-->"),
-        ItemKind::DoomOrb => ([0.4, 1.0, 0.45, 1.0], "( )"),
+        ItemKind::PlasmaOrb => ([0.4, 1.0, 0.45, 1.0], "( )"),
     };
     let pulse = 0.85 + 0.15 * (time * 6.0).sin();
     o.rect(

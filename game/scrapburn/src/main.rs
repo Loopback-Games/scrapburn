@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Nailrunners: drive the gray-box loop.
+//! Scrapburn: drive the gray-box loop.
 
 mod app;
 
@@ -10,7 +10,7 @@ fn main() -> ExitCode {
         env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"),
     )
     .init();
-    let args = match nailrunners::args::parse(
+    let args = match scrapburn::args::parse(
         std::env::args().skip(1),
         std::env::var("RIVET_ADAPTER").ok(),
     ) {

@@ -24,10 +24,10 @@ build:
     cargo build --workspace --release
 
 run *ARGS:
-    cargo run -p nailrunners --release -- {{ARGS}}
+    cargo run -p scrapburn --release -- {{ARGS}}
 
 bench *ARGS:
-    cargo run -p nailrunners --release -- --bench 30 {{ARGS}}
+    cargo run -p scrapburn --release -- --bench 30 {{ARGS}}
 
 clean:
     cargo clean

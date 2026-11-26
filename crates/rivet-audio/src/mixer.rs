@@ -53,7 +53,7 @@ pub enum Command {
         gain: f32,
         pan: f32,
     },
-    /// The Doom Orb's hum (gain 0 when none is flying).
+    /// The Plasma Orb's hum (gain 0 when none is flying).
     OrbHum {
         gain: f32,
     },
@@ -221,7 +221,7 @@ impl Mixer {
                 r += s * gr;
             }
 
-            // Doom Orb hum: a low throb.
+            // Plasma Orb hum: a low throb.
             {
                 let o = &mut self.orb;
                 o.gain += (o.target_gain - o.gain) * smooth;

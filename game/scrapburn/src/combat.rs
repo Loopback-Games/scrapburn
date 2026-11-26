@@ -1,4 +1,4 @@
-//! Item boxes and weapons: Nailer, Harpoon, Doom Orb.
+//! Item boxes and weapons: Nailer, Harpoon, Plasma Orb.
 
 use glam::Vec3;
 use rivet_ai::RacingLine;
@@ -41,7 +41,7 @@ const ORB_LIFE: f32 = 15.0;
 pub enum ItemKind {
     Nailer,
     Harpoon,
-    DoomOrb,
+    PlasmaOrb,
 }
 
 impl ItemKind {
@@ -49,7 +49,7 @@ impl ItemKind {
         match self {
             ItemKind::Nailer => "NAILER",
             ItemKind::Harpoon => "HARPOON",
-            ItemKind::DoomOrb => "DOOM ORB",
+            ItemKind::PlasmaOrb => "PLASMA ORB",
         }
     }
 }
@@ -162,7 +162,7 @@ fn hash(seed: u32) -> f32 {
 }
 
 /// Position-weighted item roll (`pos` 1-based of `racers`): leaders get Nailers, the middle
-/// Harpoons, the back of the pack the Doom Orb. The leader never gets the orb.
+/// Harpoons, the back of the pack the Plasma Orb. The leader never gets the orb.
 pub fn roll_item(pos: usize, racers: usize, seed: u32) -> ItemKind {
     let f = if racers > 1 {
         (pos - 1) as f32 / (racers - 1) as f32
@@ -178,7 +178,7 @@ pub fn roll_item(pos: usize, racers: usize, seed: u32) -> ItemKind {
     } else if u < nail + hook {
         ItemKind::Harpoon
     } else {
-        ItemKind::DoomOrb
+        ItemKind::PlasmaOrb
     }
 }
 
@@ -326,7 +326,7 @@ impl Combat {
             ItemKind::Harpoon => Self::harpoon_target(racers, i).is_some_and(|j| {
                 horizontal(racers[j].state.position - me.position).length() > 12.0
             }),
-            ItemKind::DoomOrb => held_for > 1.5,
+            ItemKind::PlasmaOrb => held_for > 1.5,
         }
     }
 
@@ -398,7 +398,7 @@ impl Combat {
                         state: HookState::Flying(0.0),
                     });
                 }
-                ItemKind::DoomOrb => {
+                ItemKind::PlasmaOrb => {
                     // Nobody else still racing: the orb has no one to hunt.
                     let Some(leader) = standings.iter().copied().find(|&r| r != i) else {
                         continue;
@@ -519,7 +519,7 @@ impl Combat {
             self.hooks.remove(k);
         }
 
-        // Doom orbs.
+        // Plasma orbs.
         let mut gone = Vec::new();
         for (k, orb) in self.orbs.iter_mut().enumerate() {
             orb.life -= dt;
@@ -637,7 +637,7 @@ mod tests {
     fn odds_favor_the_back() {
         let count = |pos: usize| {
             (0..1000u32)
-                .filter(|&s| roll_item(pos, 8, s) == ItemKind::DoomOrb)
+                .filter(|&s| roll_item(pos, 8, s) == ItemKind::PlasmaOrb)
                 .count()
         };
         assert_eq!(count(1), 0, "the leader never gets the orb");
@@ -721,10 +721,10 @@ mod tests {
     }
 
     #[test]
-    fn doom_orb_hunts_the_leader() {
+    fn plasma_orb_hunts_the_leader() {
         let t = track();
         let mut r = duel(60.0);
-        r.combat.held[0] = Some(ItemKind::DoomOrb);
+        r.combat.held[0] = Some(ItemKind::PlasmaOrb);
         r.fire(0);
         let mut boom = false;
         for _ in 0..(6.0 * 60.0) as usize {
@@ -739,12 +739,12 @@ mod tests {
     }
 
     #[test]
-    fn doom_orb_ignores_finished_racers() {
+    fn plasma_orb_ignores_finished_racers() {
         let t = track();
         let mut r = Race::new(t, 3, true, 3);
         r.phase = crate::race::Phase::Racing;
         r.racers[1].finish = Some((1, 50.0)); // already done, on the cool-down lap
-        r.combat.held[0] = Some(ItemKind::DoomOrb);
+        r.combat.held[0] = Some(ItemKind::PlasmaOrb);
         r.fire(0);
         r.step(t, DriveInput::default(), 1.0 / 60.0);
         assert_eq!(

@@ -16,7 +16,7 @@ use rivet_physics::{DriftState, VehicleState};
 use crate::combat::{CombatEvent, CombatNet, ItemKind};
 use crate::race::{Phase, Race, RaceEvent};
 
-/// Identifies Nailrunners and its network protocol version ("NAI" + 1).
+/// Identifies Scrapburn and its network protocol version ("NAI" + 1).
 pub const GAME_ID: u32 = 0x4e41_4901;
 /// Default UDP port (a nod to the arena shooters of old).
 pub const DEFAULT_PORT: u16 = 27960;
@@ -117,7 +117,7 @@ fn item_code(i: Option<ItemKind>) -> u8 {
         None => 0,
         Some(ItemKind::Nailer) => 1,
         Some(ItemKind::Harpoon) => 2,
-        Some(ItemKind::DoomOrb) => 3,
+        Some(ItemKind::PlasmaOrb) => 3,
     }
 }
 
@@ -126,7 +126,7 @@ fn item_from(c: u8) -> Result<Option<ItemKind>, WireError> {
         0 => None,
         1 => Some(ItemKind::Nailer),
         2 => Some(ItemKind::Harpoon),
-        3 => Some(ItemKind::DoomOrb),
+        3 => Some(ItemKind::PlasmaOrb),
         _ => return Err(WireError::Invalid("item")),
     })
 }

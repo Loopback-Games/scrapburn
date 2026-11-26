@@ -56,7 +56,7 @@ impl std::str::FromStr for Mode {
     }
 }
 
-pub const USAGE: &str = "usage: nailrunners [--adapter auto|integrated|discrete|<name>] [--size WxH] \
+pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<name>] [--size WxH] \
 [--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.

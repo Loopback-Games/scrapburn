@@ -1,6 +1,6 @@
-# Rivet + Nailrunners
+# Rivet + Scrapburn
 
-**Nailrunners** is a combat kart racer: Mario Kart meets Mad Max meets Quake. It's built on
+**Scrapburn** is a combat kart racer: Mario Kart meets Mad Max meets Quake. It's built on
 **Rivet**, an original Rust engine inspired by the designs of Quake 3, Doom, Source and
 Trackmania. Rivet contains no id Software code.
 
@@ -35,7 +35,7 @@ Drive through an item box to get one of these. The odds are weighted by your pos
 
 - **Nailer**: a burst of nails that spins out whoever it hits.
 - **Harpoon**: hooks the kart ahead and slingshots you past.
-- **Doom Orb**: a slow plasma orb that hunts the leader and zaps everyone it passes.
+- **Plasma Orb**: a slow plasma orb that hunts the leader and zaps everyone it passes.
 
 ### Controls
 

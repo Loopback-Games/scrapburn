@@ -6,26 +6,6 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use glam::{Mat4, Vec3};
-use nailrunners::args::{Args, Mode};
-use nailrunners::bench::{Bench, BenchPhase};
-use nailrunners::camera::ChaseCamera;
-use nailrunners::combat::CombatEvent;
-use nailrunners::controls::{SteerRamp, actions, drive_input, menu_input, menu_input_typing};
-use nailrunners::effects::Effects;
-use nailrunners::fx_meshes;
-use nailrunners::ghost::{BestGhost, GhostRecorder};
-use nailrunners::hud::{self, HudInfo, RaceHud};
-use nailrunners::materials::{find_assets_dir, load_layers, shading};
-use nailrunners::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
-use nailrunners::netplay::{
-    self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
-};
-use nailrunners::particles::{Blend, Particle, ParticleSystem};
-use nailrunners::race::{Phase, Race, RaceEvent};
-use nailrunners::scenery;
-use nailrunners::sound::SoundDirector;
-use nailrunners::track::{TRACKS, Track, build_track};
-use nailrunners::{MAX_STEPS, TICK_DT};
 use rivet_assets::Rgba8Image;
 use rivet_core::{FixedTimestep, FrameStats};
 use rivet_physics::{DriveInput, VehicleState};
@@ -34,6 +14,26 @@ use rivet_render::{
     Draw, FrameContent, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay, ParticleInstance,
     SceneRenderer, View, box_mesh, draw_frame_graph,
 };
+use scrapburn::args::{Args, Mode};
+use scrapburn::bench::{Bench, BenchPhase};
+use scrapburn::camera::ChaseCamera;
+use scrapburn::combat::CombatEvent;
+use scrapburn::controls::{SteerRamp, actions, drive_input, menu_input, menu_input_typing};
+use scrapburn::effects::Effects;
+use scrapburn::fx_meshes;
+use scrapburn::ghost::{BestGhost, GhostRecorder};
+use scrapburn::hud::{self, HudInfo, RaceHud};
+use scrapburn::materials::{find_assets_dir, load_layers, shading};
+use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
+use scrapburn::netplay::{
+    self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
+};
+use scrapburn::particles::{Blend, Particle, ParticleSystem};
+use scrapburn::race::{Phase, Race, RaceEvent};
+use scrapburn::scenery;
+use scrapburn::sound::SoundDirector;
+use scrapburn::track::{TRACKS, Track, build_track};
+use scrapburn::{MAX_STEPS, TICK_DT};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -86,9 +86,9 @@ struct KartGpu {
 
 impl KartGpu {
     fn new(device: &wgpu::Device, design: usize, data: &MeshData) -> Self {
-        let k = &nailrunners::kart::KARTS[design];
+        let k = &scrapburn::kart::KARTS[design];
         let parts =
-            nailrunners::kart::split_wheels(data, nailrunners::kart::KART_LENGTH * k.wheel_ratio);
+            scrapburn::kart::split_wheels(data, scrapburn::kart::KART_LENGTH * k.wheel_ratio);
         Self {
             design,
             body: GpuMesh::new(device, &parts.body),
@@ -246,7 +246,7 @@ fn kart_assignment(race: &Race, karts: &[KartGpu]) -> Vec<usize> {
         .enumerate()
         .map(|(i, r)| {
             let human = race.player == Some(i) || r.remote;
-            let want = nailrunners::kart::model_for(r.mass / nailrunners::race::BASE_MASS, human);
+            let want = scrapburn::kart::model_for(r.mass / scrapburn::race::BASE_MASS, human);
             karts.iter().position(|k| k.design == want).unwrap_or(0)
         })
         .collect()
@@ -296,7 +296,7 @@ fn placeholder_kart() -> MeshData {
 impl Game {
     fn new(event_loop: &ActiveEventLoop, args: &Args) -> anyhow::Result<Self> {
         let attrs = Window::default_attributes()
-            .with_title("Nailrunners")
+            .with_title("Scrapburn")
             .with_inner_size(PhysicalSize::new(args.size.0, args.size.1));
         let window = Arc::new(
             event_loop
@@ -307,11 +307,11 @@ impl Game {
         let assets =
             find_assets_dir().context("could not find the assets directory (set RIVET_ASSETS)")?;
         let mut layers = load_layers(&assets).context("loading material textures")?;
-        let kart_designs = &nailrunners::kart::KARTS;
-        let (kart_data, kart_tex) = match nailrunners::kart::load(
+        let kart_designs = &scrapburn::kart::KARTS;
+        let (kart_data, kart_tex) = match scrapburn::kart::load(
             &assets,
             &kart_designs[0],
-            nailrunners::materials::KART_LAYER,
+            scrapburn::materials::KART_LAYER,
         ) {
             Ok((mesh, tex)) => (mesh, tex),
             Err(e) => {
@@ -354,7 +354,7 @@ impl Game {
         let mut extra_karts: Vec<(usize, MeshData)> = Vec::new();
         for (d, design) in kart_designs.iter().enumerate().skip(1) {
             let layer = layers.len() as u32;
-            match nailrunners::kart::load(&assets, design, layer) {
+            match scrapburn::kart::load(&assets, design, layer) {
                 Ok((mesh, tex)) => {
                     let img = tex.map_or_else(
                         || layers[0][0].clone(),
@@ -389,15 +389,15 @@ impl Game {
             .map_err(|e| log::warn!("HUD font missing ({e}); using the bitmap font"))
             .ok();
         let mut scene = scene;
-        scene.lighting = nailrunners::track::lighting(TRACKS[settings.track].id);
+        scene.lighting = scrapburn::track::lighting(TRACKS[settings.track].id);
         let overlay = Overlay::new(&ctx.device, &ctx.queue, ctx.format(), None, font.as_deref());
         let timer = GpuTimer::new(&ctx.device, &ctx.queue);
         let track = build_track(&TRACKS[settings.track]);
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
-        let parts = nailrunners::kart::split_wheels(
+        let parts = scrapburn::kart::split_wheels(
             &kart_data,
-            nailrunners::kart::KART_LENGTH * nailrunners::kart::WHEEL_RADIUS_RATIO,
+            scrapburn::kart::KART_LENGTH * scrapburn::kart::WHEEL_RADIUS_RATIO,
         );
         log::info!(
             "kart wheels: {} triangles split off the body",
@@ -446,10 +446,10 @@ impl Game {
                 rivet_render::EMISSIVE | rivet_render::DITHER,
             )),
         };
-        let ghost_file = nailrunners::ghost::data_dir()
-            .map(|d| nailrunners::ghost::ghost_path(&d, track.id.key()));
+        let ghost_file =
+            scrapburn::ghost::data_dir().map(|d| scrapburn::ghost::ghost_path(&d, track.id.key()));
         let best_ghost =
-            BestGhost::from_ghost(ghost_file.as_deref().and_then(nailrunners::ghost::load));
+            BestGhost::from_ghost(ghost_file.as_deref().and_then(scrapburn::ghost::load));
 
         // Benchmarks skip the menus and race bots; otherwise start on the title screen.
         let (session, screen) = if args.bench.is_some() && !args.attract {
@@ -855,14 +855,11 @@ impl Game {
         self.placements = scenery::placements(&self.track);
         self.flame_points = flame_points(&self.track, &self.placements);
         self.flame_fx = ParticleSystem::new(1500);
-        self.scene.lighting = nailrunners::track::lighting(self.track.id);
-        self.ghost_file = nailrunners::ghost::data_dir()
-            .map(|d| nailrunners::ghost::ghost_path(&d, self.track.id.key()));
-        self.best_ghost = BestGhost::from_ghost(
-            self.ghost_file
-                .as_deref()
-                .and_then(nailrunners::ghost::load),
-        );
+        self.scene.lighting = scrapburn::track::lighting(self.track.id);
+        self.ghost_file = scrapburn::ghost::data_dir()
+            .map(|d| scrapburn::ghost::ghost_path(&d, self.track.id.key()));
+        self.best_ghost =
+            BestGhost::from_ghost(self.ghost_file.as_deref().and_then(scrapburn::ghost::load));
         let screen = self.menu.screen;
         let selected = self.menu.selected;
         self.start(self.session);
@@ -949,7 +946,7 @@ impl Game {
                     && !online;
                 simulate = !paused_game;
                 let typing = self.menu.screen == Screen::Online
-                    && self.menu.selected == nailrunners::menu::ONLINE_ADDRESS;
+                    && self.menu.selected == scrapburn::menu::ONLINE_ADDRESS;
                 let input = if typing {
                     menu_input_typing(&self.keys, pad)
                 } else {
@@ -1027,7 +1024,7 @@ impl Game {
                     let you = view.you;
                     // Benchmarks drive the client's kart with the autopilot.
                     let input = if self.bench.is_some() {
-                        nailrunners::autopilot::autopilot(
+                        scrapburn::autopilot::autopilot(
                             &self.race.racers[you].state,
                             &self.track.centerline,
                         )
@@ -1086,7 +1083,7 @@ impl Game {
             if let Some(path) = &self.screenshot {
                 match self.ctx.capture_offscreen() {
                     Some((w, h, rgba)) => {
-                        match std::fs::write(path, nailrunners::png::encode_rgba(w, h, &rgba)) {
+                        match std::fs::write(path, scrapburn::png::encode_rgba(w, h, &rgba)) {
                             Ok(()) => println!("BENCH screenshot={}", path.display()),
                             Err(e) => eprintln!("writing screenshot failed: {e}"),
                         }
@@ -1105,7 +1102,7 @@ impl Game {
                 && matches!(self.menu.screen, Screen::Playing | Screen::Results);
             let view = self.camera.view();
             let right = view.row(0).truncate().normalize_or(Vec3::X);
-            let listener = nailrunners::sound::Listener {
+            let listener = scrapburn::sound::Listener {
                 ear: self.camera.eye(),
                 right,
             };
@@ -1143,7 +1140,7 @@ impl Game {
                 if self.best_ghost.offer(lap)
                     && let (Some(path), Some(g)) = (&self.ghost_file, self.best_ghost.ghost())
                 {
-                    match nailrunners::ghost::save(path, g) {
+                    match scrapburn::ghost::save(path, g) {
                         Ok(()) => {
                             log::info!("new best lap {time:.3} s saved to {}", path.display())
                         }
@@ -1337,7 +1334,7 @@ impl Game {
             let mut eye =
                 fpos + Vec3::new(a.cos() * 11.0, 3.2 + (a * 0.7).sin() * 1.5, a.sin() * 11.0);
             // Never orbit into a dune or a wall: stay above the ground and the barrier tops.
-            let ground = nailrunners::terrain::height_for(
+            let ground = scrapburn::terrain::height_for(
                 self.track.terrain_kind,
                 &self.track.centerline,
                 eye.x,
@@ -1620,7 +1617,7 @@ impl Game {
         if matches!(self.session, Session::Attract) {
             let items = self.menu.items(&self.settings);
             let on_title = self.menu.screen == Screen::Title;
-            let title = on_title.then_some("NAILRUNNERS");
+            let title = on_title.then_some("SCRAPBURN");
             let sub = match self.menu.screen {
                 Screen::Title => "COMBAT KART RACING IN THE WASTES",
                 Screen::Online => "PLAY ONLINE",
@@ -1628,7 +1625,7 @@ impl Game {
                 _ => "SETTINGS",
             };
             hud::draw_menu(o, w, h, title, sub, &items, self.menu.selected);
-            let n_tracks = nailrunners::track::TRACKS.len();
+            let n_tracks = scrapburn::track::TRACKS.len();
             match (&self.net, self.menu.screen) {
                 (_, Screen::Online) => {
                     let lines = [
@@ -1644,7 +1641,7 @@ impl Game {
                     hud::draw_lobby(o, w, h, "ONLINE", &lines, &[]);
                 }
                 (Net::Host(host), Screen::Lobby) => {
-                    let def = &nailrunners::track::TRACKS[self.settings.track % n_tracks];
+                    let def = &scrapburn::track::TRACKS[self.settings.track % n_tracks];
                     let lines = [
                         format!("HOSTING ON PORT {}", host.port()),
                         def.name.to_string(),
@@ -1661,7 +1658,7 @@ impl Game {
                         Some(l) => (
                             vec![
                                 format!("JOINED {}", link.server()),
-                                nailrunners::track::TRACKS[l.setup.track as usize % n_tracks]
+                                scrapburn::track::TRACKS[l.setup.track as usize % n_tracks]
                                     .name
                                     .to_string(),
                                 if l.setup.elimination {
@@ -1680,8 +1677,8 @@ impl Game {
                 _ => {}
             }
             if on_title {
-                let n = nailrunners::track::TRACKS.len();
-                let def = &nailrunners::track::TRACKS[self.settings.track % n];
+                let n = scrapburn::track::TRACKS.len();
+                let def = &scrapburn::track::TRACKS[self.settings.track % n];
                 hud::draw_track_card(o, w, h, self.settings.track % n, n, def.name, def.tagline);
             }
         } else {

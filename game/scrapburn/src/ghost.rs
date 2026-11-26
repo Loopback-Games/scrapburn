@@ -143,7 +143,7 @@ impl BestGhost {
     }
 }
 
-/// `$XDG_DATA_HOME/nailrunners`, `$HOME/.local/share/nailrunners`, or `%APPDATA%/nailrunners`.
+/// `$XDG_DATA_HOME/scrapburn`, `$HOME/.local/share/scrapburn`, or `%APPDATA%/scrapburn`.
 pub fn data_dir_from(
     xdg: Option<PathBuf>,
     home: Option<PathBuf>,
@@ -153,7 +153,7 @@ pub fn data_dir_from(
         .or_else(|| appdata.clone().filter(|_| cfg!(windows)))
         .or_else(|| home.map(|h| h.join(".local").join("share")))
         .or(appdata)
-        .map(|d| d.join("nailrunners"))
+        .map(|d| d.join("scrapburn"))
 }
 
 pub fn data_dir() -> Option<PathBuf> {
@@ -256,16 +256,16 @@ mod tests {
     #[test]
     fn data_dir_prefers_xdg() {
         let d = data_dir_from(Some("/x/data".into()), Some("/home/u".into()), None).unwrap();
-        assert_eq!(d, std::path::PathBuf::from("/x/data/nailrunners"));
+        assert_eq!(d, std::path::PathBuf::from("/x/data/scrapburn"));
         let d = data_dir_from(None, Some("/home/u".into()), None).unwrap();
         assert_eq!(
             d,
-            std::path::PathBuf::from("/home/u/.local/share/nailrunners")
+            std::path::PathBuf::from("/home/u/.local/share/scrapburn")
         );
         let d = data_dir_from(None, None, Some("C:/Users/u/AppData/Roaming".into())).unwrap();
         assert_eq!(
             d,
-            std::path::PathBuf::from("C:/Users/u/AppData/Roaming/nailrunners")
+            std::path::PathBuf::from("C:/Users/u/AppData/Roaming/scrapburn")
         );
     }
 }
