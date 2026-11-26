@@ -12,6 +12,38 @@ pub fn autopilot(state: &VehicleState, centerline: &[Vec3]) -> DriveInput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn autopilot_laps_every_track() {
+        use crate::laps::{LapEvent, LapTracker};
+        use crate::track::{TRACKS, build_track};
+        use rivet_physics::{VehicleParams, VehicleState, step};
+        for def in TRACKS.iter().skip(1) {
+            let t = build_track(def);
+            let p = VehicleParams::default();
+            let mut s = VehicleState::spawn(t.spawn.0 + glam::Vec3::Y * 0.6, t.spawn.1);
+            let mut laps = LapTracker::new(t.checkpoints.len());
+            let mut done = false;
+            for i in 0..(120 * 60) {
+                let prev = s.position;
+                let input = super::autopilot(&s, &t.centerline);
+                step(&mut s, &p, input, &t.collision, 1.0 / 60.0);
+                assert!(
+                    s.position.y > t.centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min) - 25.0,
+                    "{}: fell off at tick {i} ({})",
+                    def.name,
+                    s.position
+                );
+                if let Some(LapEvent::Lap { .. }) =
+                    laps.update(prev, s.position, &t.checkpoints, i as f64 / 60.0)
+                {
+                    done = true;
+                    break;
+                }
+            }
+            assert!(done, "{}: no lap in 120 s", def.name);
+        }
+    }
+
     use super::*;
     use crate::laps::{LapEvent, LapTracker};
     use crate::track::build_graybox_loop;

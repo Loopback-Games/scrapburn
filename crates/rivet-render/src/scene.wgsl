@@ -7,7 +7,7 @@ struct Model {
 
 struct MaterialParams {
     // x = specular strength, y = gloss exponent, z = triplanar scale (1/m)
-    m: array<vec4<f32>, 32>,
+    m: array<vec4<f32>, 48>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

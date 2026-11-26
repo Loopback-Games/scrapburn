@@ -225,6 +225,8 @@ const GRIP_REDIRECT: f32 = 0.9;
 const SPIN_YAW_RATE: f32 = 9.0;
 /// Bounciness of kart-to-kart hits.
 const KART_RESTITUTION: f32 = 0.3;
+/// Share of the heading error to the wall tangent removed per wall-contact tick.
+const WALL_ALIGN: f32 = 0.35;
 
 fn approach(v: f32, target: f32, rate: f32) -> f32 {
     if v < target {
@@ -368,8 +370,11 @@ pub fn step(
             p.grip
         };
         let damped = lateral * (-grip * dt).exp();
-        // Arcade grip redirects most of the sideways slide into forward motion.
-        speed += speed.signum() * (lateral.abs() - damped.abs()) * GRIP_REDIRECT;
+        // Arcade grip redirects most of the sideways slide into forward motion. Transfer energy,
+        // not speed: adding the removed lateral speed linearly would pump energy into the kart
+        // on every corner (it ran away to 160 m/s on tight tracks).
+        let shed = lateral * lateral - damped * damped;
+        speed = speed.signum() * (speed * speed + shed * GRIP_REDIRECT).sqrt();
         let lateral = damped;
         let normal_v = state.velocity.dot(ground_n);
         state.velocity = fwd_g * speed + right_g * lateral + ground_n * normal_v;
@@ -432,6 +437,16 @@ pub fn step(
             state.velocity -= c.normal * into;
             // Scrub speed in proportion to how head-on the hit was.
             state.velocity *= 1.0 - p.wall_scrub * (-into / speed_before).min(1.0);
+            // Glance off: swing the nose toward the new direction of travel along the wall,
+            // instead of grinding into it.
+            let up = state.rotation * Vec3::Y;
+            let along = (state.velocity - up * state.velocity.dot(up)).normalize_or_zero();
+            let fwd = state.rotation * Vec3::Z;
+            if along != Vec3::ZERO && fwd.dot(along) > 0.0 {
+                let turn = Quat::from_rotation_arc(fwd, along);
+                state.rotation =
+                    (Quat::IDENTITY.slerp(turn, WALL_ALIGN) * state.rotation).normalize();
+            }
         }
     }
 
@@ -711,6 +726,35 @@ mod tests {
     }
 
     #[test]
+    fn cornering_never_adds_energy() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        let mut s = with_speed(&w, &p, 38.0);
+        let cap = p.max_speed + p.boost_tiers[2].speed + 0.5;
+        for i in 0..240 {
+            s.boost_speed = 9.0;
+            s.boost_timer = 1.0;
+            let steer = if (i / 40) % 2 == 0 { 1.0 } else { -1.0 };
+            step(
+                &mut s,
+                &p,
+                DriveInput {
+                    throttle: 1.0,
+                    steer,
+                    ..Default::default()
+                },
+                &w,
+                DT,
+            );
+            assert!(
+                s.velocity.length() <= cap,
+                "tick {i}: {} m/s exceeds {cap}",
+                s.velocity.length()
+            );
+        }
+    }
+
+    #[test]
     fn glancing_wall_hit_keeps_most_speed() {
         let w = walled_world();
         let p = VehicleParams::default();
@@ -719,7 +763,8 @@ mod tests {
         s.rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_3);
         s.position.z = 45.0;
         s.velocity = s.rotation * Vec3::Z * 30.0;
-        for _ in 0..60 {
+        // Right after the hit (contact comes at about tick 20), not after grinding the wall.
+        for _ in 0..28 {
             step(
                 &mut s,
                 &p,

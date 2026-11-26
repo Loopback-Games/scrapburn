@@ -15,11 +15,17 @@ pub enum Layer {
     Concrete = 4,
     MetalRust = 5,
     Grass = 6,
+    StoneWall = 7,
+    Cobblestone = 8,
+    Flagstone = 9,
+    TechPanel = 10,
+    CityFacade = 11,
+    WoodPlanks = 12,
 }
 
 impl Layer {
     /// Layers loaded from `LAYER_FILES`.
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 13;
 }
 
 /// The kart's own texture, appended after the file layers.
@@ -33,6 +39,12 @@ pub const LAYER_FILES: [&str; Layer::COUNT] = [
     "concrete.png",
     "metal_rust.png",
     "grass.png",
+    "stone_wall.png",
+    "cobblestone.png",
+    "flagstone.png",
+    "tech_panel.png",
+    "city_facade.png",
+    "wood_planks.png",
 ];
 
 /// Specular, gloss and triplanar scale per layer.
@@ -50,6 +62,12 @@ pub fn shading() -> [MaterialShading; Layer::COUNT + 1] {
         m(0.06, 14.0, 0.20), // concrete
         m(0.35, 40.0, 0.25), // rusty metal
         m(0.02, 8.0, 0.12),  // grass
+        m(0.05, 14.0, 0.25), // castle stone wall
+        m(0.10, 20.0, 0.25), // cobblestone
+        m(0.04, 12.0, 0.20), // flagstone
+        m(0.45, 60.0, 0.20), // tech deck
+        m(0.50, 48.0, 0.03), // skyscraper facades
+        m(0.06, 12.0, 0.30), // planks
         m(0.30, 32.0, 0.25), // kart paint and metal
     ]
 }

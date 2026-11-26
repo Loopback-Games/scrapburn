@@ -10,7 +10,6 @@ use crate::track::Track;
 pub const BOX_RESPAWN: f32 = 3.0;
 const PICKUP_RADIUS: f32 = 2.8;
 const BOX_LANES: [f32; 4] = [-4.5, -1.5, 1.5, 4.5];
-const BOX_ROWS: [f32; 3] = [0.2, 0.5, 0.82];
 const BOX_HEIGHT: f32 = 1.0;
 
 const NAILS_PER_BURST: u32 = 12;
@@ -132,7 +131,7 @@ pub fn item_box_spots(track: &Track) -> Vec<Vec3> {
     let cl = &track.centerline;
     let n = cl.len() - 1;
     let mut out = Vec::new();
-    for row in BOX_ROWS {
+    for &row in &track.box_rows {
         let i = (n as f32 * row) as usize;
         let f = (cl[(i + 1) % n] - cl[(i + n - 1) % n]).normalize();
         let right = f.cross(Vec3::Y).normalize();

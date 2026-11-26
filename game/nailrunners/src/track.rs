@@ -6,7 +6,7 @@ use rivet_physics::{Surface, TriMesh};
 use rivet_render::{EMISSIVE, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material};
 
 use crate::materials::Layer;
-use crate::terrain;
+use crate::terrain::{self, TerrainKind};
 
 pub const ROAD_HALF_WIDTH: f32 = 7.0;
 pub const WALL_HEIGHT: f32 = 1.5;
@@ -27,7 +27,7 @@ const PAD_LIFT: f32 = 0.04;
 const PAD_HALF_WIDTH: f32 = 2.6;
 const PAD_SEGMENTS: usize = 5;
 
-const CONTROL_POINTS: [Vec2; 8] = [
+const DUSTBOWL_POINTS: [Vec2; 8] = [
     Vec2::new(0.0, 0.0),
     Vec2::new(220.0, 0.0),
     Vec2::new(300.0, 80.0),
@@ -38,10 +38,204 @@ const CONTROL_POINTS: [Vec2; 8] = [
     Vec2::new(-60.0, 100.0),
 ];
 
-const WHITE: [f32; 4] = [0.72, 0.72, 0.74, 0.0];
-const CURB_RED: [f32; 4] = [0.95, 0.18, 0.12, 0.0];
-const CURB_WHITE: [f32; 4] = [1.0, 0.98, 0.95, 0.0];
-const BARRIER: [f32; 4] = [1.0, 0.95, 0.9, 0.0];
+const GRINDSTONE_POINTS: [Vec2; 10] = [
+    Vec2::new(0.0, 0.0),
+    Vec2::new(160.0, 0.0),
+    Vec2::new(230.0, 50.0),
+    Vec2::new(215.0, 135.0),
+    Vec2::new(140.0, 160.0),
+    Vec2::new(125.0, 235.0),
+    Vec2::new(40.0, 265.0),
+    Vec2::new(-45.0, 215.0),
+    Vec2::new(-70.0, 120.0),
+    Vec2::new(-40.0, 40.0),
+];
+
+const SKYWAY_POINTS: [Vec2; 10] = [
+    Vec2::new(0.0, 0.0),
+    Vec2::new(330.0, 0.0),
+    Vec2::new(440.0, 90.0),
+    Vec2::new(420.0, 240.0),
+    Vec2::new(270.0, 310.0),
+    Vec2::new(130.0, 260.0),
+    Vec2::new(60.0, 350.0),
+    Vec2::new(-90.0, 330.0),
+    Vec2::new(-130.0, 190.0),
+    Vec2::new(-90.0, 60.0),
+];
+
+/// Which circuit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackId {
+    Dustbowl,
+    Grindstone,
+    Skyway,
+}
+
+impl TrackId {
+    /// Stable key for saved data (ghosts).
+    pub fn key(self) -> &'static str {
+        match self {
+            TrackId::Dustbowl => "dustbowl-loop",
+            TrackId::Grindstone => "castle-grindstone",
+            TrackId::Skyway => "skyway-zero",
+        }
+    }
+}
+
+/// How a circuit looks.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackStyle {
+    pub road: Layer,
+    pub road_tint: [f32; 4],
+    pub curbs: ([f32; 4], [f32; 4]),
+    /// Curbs glow (Skyway neon).
+    pub curb_glow: bool,
+    pub barrier_low: Layer,
+    pub barrier_high: Layer,
+    pub barrier_tint: [f32; 4],
+    /// Visible barrier height (collision is always tall).
+    pub barrier_height: f32,
+    /// Castle merlons along the barrier tops.
+    pub crenellations: bool,
+    /// Emissive strip along the barrier tops, and its color.
+    pub rail_glow: Option<[f32; 3]>,
+    /// Flaming torches every so often along the walls.
+    pub torches: bool,
+    pub gantry: Layer,
+    pub gantry_glow: [f32; 3],
+    pub pad_glow: ([f32; 4], [f32; 4]),
+    pub terrain: TerrainKind,
+}
+
+/// A circuit: layout, features and look.
+pub struct TrackDef {
+    pub id: TrackId,
+    pub name: &'static str,
+    pub tagline: &'static str,
+    points: &'static [Vec2],
+    /// Height of the road at a point (flat position, lap fraction).
+    height: fn(Vec2, f32) -> f32,
+    /// Bank weight 0..1 at a point; `None` = bank by curvature everywhere.
+    bank: Option<fn(Vec2) -> f32>,
+    bank_degrees: f32,
+    /// Boost pads (lap fractions).
+    pads: &'static [f32],
+    /// Item box rows (lap fractions).
+    pub box_rows: &'static [f32],
+    pub style: TrackStyle,
+}
+
+fn desert_height(p: Vec2, _t: f32) -> f32 {
+    jump_height(p)
+}
+
+fn grindstone_height(_p: Vec2, t: f32) -> f32 {
+    // A gentle rise to the keep, and the drawbridge jump on the back stretch.
+    let rise = 3.0 * (1.0 - (std::f32::consts::TAU * (t - 0.3)).cos()) * 0.5;
+    let bump = |c: f32, w: f32, h: f32| {
+        let x = ((t - c) / w).clamp(-1.0, 1.0);
+        h * 0.5 * (1.0 + (std::f32::consts::PI * x).cos())
+    };
+    rise + bump(0.72, 0.035, 4.5)
+}
+
+fn skyway_height(_p: Vec2, t: f32) -> f32 {
+    // Floating high above the city, rolling like a ribbon with two big crests.
+    let tau = std::f32::consts::TAU;
+    40.0 + 7.0 * (tau * t * 2.0).sin() + 4.0 * (tau * t * 5.0 + 1.3).sin()
+}
+
+pub const TRACKS: [TrackDef; 3] = [
+    TrackDef {
+        id: TrackId::Dustbowl,
+        name: "DUSTBOWL LOOP",
+        tagline: "SUN-BLASTED CANYON CIRCUIT. MIND THE REFINERY.",
+        points: &DUSTBOWL_POINTS,
+        height: desert_height,
+        bank: Some(bank_weight),
+        bank_degrees: BANK_DEGREES,
+        pads: &[0.09, 0.60],
+        box_rows: &[0.2, 0.5, 0.82],
+        style: TrackStyle {
+            road: Layer::Asphalt,
+            road_tint: [0.72, 0.72, 0.74, 0.0],
+            curbs: ([0.95, 0.18, 0.12, 0.0], [1.0, 0.98, 0.95, 0.0]),
+            curb_glow: false,
+            barrier_low: Layer::Concrete,
+            barrier_high: Layer::MetalRust,
+            barrier_tint: [1.0, 0.95, 0.9, 0.0],
+            barrier_height: WALL_HEIGHT,
+            crenellations: false,
+            rail_glow: None,
+            torches: false,
+            gantry: Layer::MetalRust,
+            gantry_glow: [1.0, 0.55, 0.15],
+            pad_glow: ([1.0, 0.45, 0.05, 0.0], [1.0, 0.8, 0.2, 0.0]),
+            terrain: TerrainKind::Desert,
+        },
+    },
+    TrackDef {
+        id: TrackId::Grindstone,
+        name: "CASTLE GRINDSTONE",
+        tagline: "TORCHLIT RAMPARTS AT DUSK. JUMP THE DRAWBRIDGE.",
+        points: &GRINDSTONE_POINTS,
+        height: grindstone_height,
+        bank: Some(no_bank),
+        bank_degrees: 0.0,
+        pads: &[0.04, 0.47],
+        box_rows: &[0.15, 0.4, 0.86],
+        style: TrackStyle {
+            road: Layer::Cobblestone,
+            road_tint: [0.85, 0.82, 0.78, 0.0],
+            curbs: ([0.55, 0.08, 0.1, 0.0], [0.82, 0.74, 0.55, 0.0]),
+            curb_glow: false,
+            barrier_low: Layer::StoneWall,
+            barrier_high: Layer::StoneWall,
+            barrier_tint: [0.92, 0.9, 0.86, 0.0],
+            barrier_height: 3.2,
+            crenellations: true,
+            rail_glow: None,
+            torches: true,
+            gantry: Layer::WoodPlanks,
+            gantry_glow: [1.0, 0.45, 0.12],
+            pad_glow: ([1.0, 0.35, 0.05, 0.0], [1.0, 0.65, 0.15, 0.0]),
+            terrain: TerrainKind::Hills,
+        },
+    },
+    TrackDef {
+        id: TrackId::Skyway,
+        name: "SKYWAY ZERO",
+        tagline: "A NEON RIBBON IN THE NIGHT SKY. DON'T LOOK DOWN.",
+        points: &SKYWAY_POINTS,
+        height: skyway_height,
+        bank: None,
+        bank_degrees: 22.0,
+        pads: &[0.05, 0.27, 0.55, 0.8],
+        box_rows: &[0.15, 0.42, 0.7],
+        style: TrackStyle {
+            road: Layer::TechPanel,
+            road_tint: [0.8, 0.85, 0.95, 0.0],
+            curbs: ([0.1, 0.9, 1.0, 0.0], [1.0, 0.15, 0.75, 0.0]),
+            curb_glow: true,
+            barrier_low: Layer::MetalRust,
+            barrier_high: Layer::TechPanel,
+            barrier_tint: [0.35, 0.38, 0.5, 0.0],
+            barrier_height: 1.1,
+            crenellations: false,
+            rail_glow: Some([0.15, 0.85, 1.0]),
+            torches: false,
+            gantry: Layer::TechPanel,
+            gantry_glow: [1.0, 0.2, 0.8],
+            pad_glow: ([0.1, 0.8, 1.0, 0.0], [0.7, 0.3, 1.0, 0.0]),
+            terrain: TerrainKind::Void,
+        },
+    },
+];
+
+fn no_bank(_p: Vec2) -> f32 {
+    0.0
+}
 
 /// A plane the kart must cross, in order, to count a lap.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,6 +246,10 @@ pub struct Checkpoint {
 }
 
 pub struct Track {
+    pub id: TrackId,
+    pub name: &'static str,
+    pub box_rows: Vec<f32>,
+    pub terrain_kind: TerrainKind,
     /// Road, curbs, barriers, pads, start line, gantry.
     pub road: MeshData,
     pub terrain: MeshData,
@@ -77,11 +275,11 @@ fn catmull_rom(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
 }
 
 /// Dense closed polyline through the control points, then resampled at equal arc length.
-fn resampled_loop() -> Vec<Vec2> {
-    let n = CONTROL_POINTS.len();
+fn resampled_loop(points: &[Vec2]) -> Vec<Vec2> {
+    let n = points.len();
     let mut dense = Vec::new();
     for i in 0..n {
-        let p = |k: usize| CONTROL_POINTS[(i + k + n - 1) % n];
+        let p = |k: usize| points[(i + k + n - 1) % n];
         for s in 0..200 {
             dense.push(catmull_rom(p(0), p(1), p(2), p(3), s as f32 / 200.0));
         }
@@ -248,10 +446,16 @@ fn rock_mesh(seed: u32) -> Vec<(Vec3, Vec3)> {
     out
 }
 
+/// The first circuit (kept for tests and tools that predate track selection).
 pub fn build_graybox_loop() -> Track {
-    let flat = resampled_loop();
+    build_track(&TRACKS[0])
+}
+
+pub fn build_track(def: &TrackDef) -> Track {
+    let st = def.style;
+    let flat = resampled_loop(def.points);
     let n = flat.len();
-    let bank_max = BANK_DEGREES.to_radians();
+    let bank_max = def.bank_degrees.to_radians();
 
     // Frames: position, forward, right, up. Banks pivot on the inner edge so nothing dips below 0.
     let mut frames = Vec::with_capacity(n);
@@ -259,17 +463,25 @@ pub fn build_graybox_loop() -> Track {
         let p = flat[i];
         let prev = flat[(i + n - 1) % n];
         let next = flat[(i + 1) % n];
-        let h = |q: Vec2| jump_height(q);
-        let fwd =
-            (Vec3::new(next.x, h(next), next.y) - Vec3::new(prev.x, h(prev), prev.y)).normalize();
+        let h = |q: Vec2, k: usize| (def.height)(q, k as f32 / n as f32);
+        let fwd = (Vec3::new(next.x, h(next, (i + 1) % n), next.y)
+            - Vec3::new(prev.x, h(prev, (i + n - 1) % n), prev.y))
+        .normalize();
         let right_flat = fwd.cross(Vec3::Y).normalize();
-        let turn = (next - p).perp_dot(p - prev).signum();
-        let bank = bank_weight(p) * bank_max * turn;
+        let bend =
+            (next - p).perp_dot(p - prev) / ((next - p).length() * (p - prev).length()).max(1e-6);
+        let turn = bend.signum();
+        // Explicit bank zones, or bank by curvature (Skyway's sweeping turns).
+        let weight = match def.bank {
+            Some(f) => f(p),
+            None => (bend.abs() * 30.0).clamp(0.0, 1.0),
+        };
+        let bank = weight * bank_max * turn;
         let rot = Quat::from_axis_angle(fwd, -bank);
         let right = rot * right_flat;
         let up = right.cross(fwd).normalize();
         let lift = ROAD_HALF_WIDTH * bank.abs().sin();
-        let center = Vec3::new(p.x, h(p) + lift, p.y);
+        let center = Vec3::new(p.x, h(p, i) + lift, p.y);
         frames.push((center, fwd, right, up));
     }
     let edge = |i: usize, side: f32, inset: f32| {
@@ -279,7 +491,7 @@ pub fn build_graybox_loop() -> Track {
 
     let mut road = MeshData::default();
     let mut col = Collision::default();
-    let asphalt = material(Layer::Asphalt as u32, Layer::Asphalt as u32, 0);
+    let asphalt = material(st.road as u32, st.road as u32, 0);
 
     // Road surface first (contiguous, so its UVs can be checked).
     for i in 0..n {
@@ -298,20 +510,27 @@ pub fn build_graybox_loop() -> Track {
             &mut road,
             v,
             [[0.0, v0], [u, v0], [u, v1], [0.0, v1]],
-            WHITE,
+            st.road_tint,
             asphalt,
         );
         col.quad(v, Surface::Road);
     }
 
     // Curbs, barriers.
-    let concrete = material(Layer::Concrete as u32, Layer::Concrete as u32, 0);
-    let metal = material(Layer::MetalRust as u32, Layer::MetalRust as u32, 0);
+    let concrete = material(st.barrier_low as u32, st.barrier_low as u32, 0);
+    let metal = material(st.barrier_high as u32, st.barrier_high as u32, 0);
+    let curb_mat = if st.curb_glow {
+        material(0, 0, UNTEXTURED | EMISSIVE)
+    } else {
+        material(Layer::Concrete as u32, Layer::Concrete as u32, 0)
+    };
+    let wall_h = st.barrier_height;
+    let base_h = (WALL_BASE / WALL_HEIGHT) * wall_h;
     for i in 0..n {
         let (s0, s1) = (i as f32 * SAMPLE_SPACING, (i + 1) as f32 * SAMPLE_SPACING);
         let (_, _, _, u0) = frames[i];
         let (_, _, _, u1) = frames[(i + 1) % n];
-        let curb = if i % 2 == 0 { CURB_RED } else { CURB_WHITE };
+        let curb = if i % 2 == 0 { st.curbs.0 } else { st.curbs.1 };
         for side in [-1.0f32, 1.0] {
             let lift0 = u0 * CURB_LIFT;
             let lift1 = u1 * CURB_LIFT;
@@ -327,31 +546,31 @@ pub fn build_graybox_loop() -> Track {
                 [0.0, s1 / 2.0],
             ];
             if side < 0.0 {
-                quad(&mut road, [o0, i0, i1, o1], uv, curb, concrete);
+                quad(&mut road, [o0, i0, i1, o1], uv, curb, curb_mat);
             } else {
-                quad(&mut road, [i0, o0, o1, i1], uv, curb, concrete);
+                quad(&mut road, [i0, o0, o1, i1], uv, curb, curb_mat);
             }
 
             // Barrier: concrete base, rusty metal above; faces the road.
             let (e0, e1) = (edge(i, side, 0.0), edge(i + 1, side, 0.0));
-            let (b0, b1) = (e0 + u0 * WALL_BASE, e1 + u1 * WALL_BASE);
-            let (t0, t1) = (e0 + u0 * WALL_HEIGHT, e1 + u1 * WALL_HEIGHT);
+            let (b0, b1) = (e0 + u0 * base_h, e1 + u1 * base_h);
+            let (t0, t1) = (e0 + u0 * wall_h, e1 + u1 * wall_h);
             let (ua, ub) = (s0 / WALL_TEX, s1 / WALL_TEX);
-            let hb = WALL_BASE / WALL_TEX;
-            let ht = WALL_HEIGHT / WALL_TEX;
+            let hb = base_h / WALL_TEX;
+            let ht = wall_h / WALL_TEX;
             if side < 0.0 {
                 quad(
                     &mut road,
                     [e0, e1, b1, b0],
                     [[ua, 0.0], [ub, 0.0], [ub, hb], [ua, hb]],
-                    BARRIER,
+                    st.barrier_tint,
                     concrete,
                 );
                 quad(
                     &mut road,
                     [b0, b1, t1, t0],
                     [[ua, hb], [ub, hb], [ub, ht], [ua, ht]],
-                    BARRIER,
+                    st.barrier_tint,
                     metal,
                 );
                 col.quad(
@@ -368,14 +587,14 @@ pub fn build_graybox_loop() -> Track {
                     &mut road,
                     [e0, b0, b1, e1],
                     [[ua, 0.0], [ua, hb], [ub, hb], [ub, 0.0]],
-                    BARRIER,
+                    st.barrier_tint,
                     concrete,
                 );
                 quad(
                     &mut road,
                     [b0, t0, t1, b1],
                     [[ua, hb], [ua, ht], [ub, ht], [ub, hb]],
-                    BARRIER,
+                    st.barrier_tint,
                     metal,
                 );
                 col.quad(
@@ -394,9 +613,62 @@ pub fn build_graybox_loop() -> Track {
             let (c0, c1) = (t0 + r0 * side * 0.35, t1 + r1 * side * 0.35);
             let cap_uv = [[ua, 0.0], [ub, 0.0], [ub, 0.12], [ua, 0.12]];
             if side < 0.0 {
-                quad(&mut road, [t0, t1, c1, c0], cap_uv, BARRIER, metal);
+                quad(&mut road, [t0, t1, c1, c0], cap_uv, st.barrier_tint, metal);
             } else {
-                quad(&mut road, [t0, c0, c1, t1], cap_uv, BARRIER, metal);
+                quad(&mut road, [t0, c0, c1, t1], cap_uv, st.barrier_tint, metal);
+            }
+            // Castle merlons: a stone block every other segment on the wall top.
+            if st.crenellations && i % 2 == 0 {
+                let mid = (t0 + t1) * 0.5 + (r0 + r1) * 0.5 * side * 0.2 + (u0 + u1) * 0.25 * 0.55;
+                let f = (t1 - t0).normalize_or(Vec3::Z);
+                let rot = Quat::from_rotation_y(f.x.atan2(f.z));
+                textured_box(
+                    &mut road,
+                    Vec3::new(0.45, 0.55, 0.55),
+                    Mat4::from_rotation_translation(rot, mid),
+                    st.barrier_high,
+                    [0.9, 0.88, 0.84],
+                );
+            }
+            // Torches: a glowing flame bowl on the wall every 30 m.
+            if st.torches && i % 15 == 7 {
+                let at = t0 + r0 * side * 0.1 + u0 * 0.35;
+                emissive_box(
+                    &mut road,
+                    Vec3::new(0.22, 0.28, 0.22),
+                    Mat4::from_translation(at),
+                    [1.0, 0.5, 0.12],
+                );
+                textured_box(
+                    &mut road,
+                    Vec3::new(0.12, 0.35, 0.12),
+                    Mat4::from_translation(at - u0 * 0.55),
+                    Layer::MetalRust,
+                    [0.5, 0.5, 0.5],
+                );
+            }
+            // Neon rail along the barrier top.
+            if let Some(glow) = st.rail_glow {
+                let (g0, g1) = (t0 + u0 * 0.02, t1 + u1 * 0.02);
+                let (h0, h1) = (g0 + r0 * side * 0.18, g1 + r1 * side * 0.18);
+                let glow4 = [glow[0], glow[1], glow[2], 0.0];
+                if side < 0.0 {
+                    quad(
+                        &mut road,
+                        [g0, g1, h1, h0],
+                        [[0.0; 2]; 4],
+                        glow4,
+                        material(0, 0, UNTEXTURED | EMISSIVE),
+                    );
+                } else {
+                    quad(
+                        &mut road,
+                        [g0, h0, h1, g1],
+                        [[0.0; 2]; 4],
+                        glow4,
+                        material(0, 0, UNTEXTURED | EMISSIVE),
+                    );
+                }
             }
         }
     }
@@ -437,7 +709,7 @@ pub fn build_graybox_loop() -> Track {
                 &mut road,
                 Vec3::new(0.45, 4.0, 0.45),
                 Mat4::from_rotation_translation(rot, p),
-                Layer::MetalRust,
+                st.gantry,
                 [1.0, 1.0, 1.0],
             );
         }
@@ -446,20 +718,20 @@ pub fn build_graybox_loop() -> Track {
             &mut road,
             Vec3::new(ROAD_HALF_WIDTH + 1.8, 0.6, 0.5),
             Mat4::from_rotation_translation(rot, beam),
-            Layer::MetalRust,
+            st.gantry,
             [0.9, 0.85, 0.8],
         );
         emissive_box(
             &mut road,
             Vec3::new(ROAD_HALF_WIDTH + 1.2, 0.12, 0.08),
             Mat4::from_rotation_translation(rot, beam - Vec3::Y * 0.65 - f * 0.45),
-            [1.0, 0.55, 0.15],
+            st.gantry_glow,
         );
     }
 
     // Boost pads on the two long straights: glowing chevron strips.
     let mut boost_pads = Vec::new();
-    for at in [n * 9 / 100, n * 60 / 100] {
+    for at in def.pads.iter().map(|f| (f * n as f32) as usize) {
         for k in 0..PAD_SEGMENTS {
             let i = at + k;
             let (c0, _, r0, u0) = frames[i % n];
@@ -471,9 +743,9 @@ pub fn build_graybox_loop() -> Track {
                 c1 - r1 * PAD_HALF_WIDTH + u1 * PAD_LIFT,
             ];
             let glow = if k % 2 == 0 {
-                [1.0, 0.45, 0.05, 0.0]
+                st.pad_glow.0
             } else {
-                [1.0, 0.8, 0.2, 0.0]
+                st.pad_glow.1
             };
             quad(
                 &mut road,
@@ -498,7 +770,7 @@ pub fn build_graybox_loop() -> Track {
     hi += Vec2::splat(terrain::MARGIN);
     let mut centerline: Vec<Vec3> = frames.iter().map(|f| f.0).collect();
     centerline.push(centerline[0]);
-    let (terrain_mesh, tpos, ttris) = terrain::build(&centerline, lo, hi);
+    let (terrain_mesh, tpos, ttris) = terrain::build_kind(st.terrain, &centerline, lo, hi);
     let base = col.positions.len() as u32;
     col.positions.extend(tpos);
     col.surfaces
@@ -515,7 +787,12 @@ pub fn build_graybox_loop() -> Track {
     let mut rng = Rng(0x5eed_cafe);
     let rock_mat = material(Layer::Rock as u32, Layer::Rock as u32, TRIPLANAR_B);
     let mut tries = 0;
-    while rocks.len() < 110 && tries < 8000 {
+    let rock_count = match st.terrain {
+        TerrainKind::Desert => 110,
+        TerrainKind::Hills => 60,
+        TerrainKind::Void => 0,
+    };
+    while rocks.len() < rock_count && tries < 8000 {
         tries += 1;
         let x = lo.x + 100.0 + rng.next() * (hi.x - lo.x - 200.0);
         let z = lo.y + 100.0 + rng.next() * (hi.y - lo.y - 200.0);
@@ -525,7 +802,7 @@ pub fn build_graybox_loop() -> Track {
         }
         // Boulders: bigger farther out, a few big ones near the road for parallax.
         let scale = 2.0 + rng.next() * rng.next() * 6.0 + (d / 240.0) * 5.0;
-        let y = terrain::height_at(&centerline, x, z) - 0.3 * scale;
+        let y = terrain::height_for(st.terrain, &centerline, x, z) - 0.3 * scale;
         let pos = Vec3::new(x, y, z);
         let rot = Quat::from_rotation_y(rng.next() * std::f32::consts::TAU);
         let xf = Mat4::from_scale_rotation_translation(Vec3::splat(scale), rot, pos);
@@ -554,6 +831,28 @@ pub fn build_graybox_loop() -> Track {
         rocks.push(pos);
     }
 
+    // The skyway rides on slender pylons down into the haze.
+    if st.terrain == TerrainKind::Void {
+        for i in (0..n).step_by(30) {
+            let (c, f, _, _) = frames[i];
+            let rot = Quat::from_rotation_y(f.x.atan2(f.z));
+            let depth = c.y + 120.0;
+            textured_box(
+                &mut road,
+                Vec3::new(1.1, depth * 0.5, 1.1),
+                Mat4::from_rotation_translation(rot, c - Vec3::Y * (depth * 0.5 + 0.6)),
+                Layer::TechPanel,
+                [0.3, 0.32, 0.42],
+            );
+            emissive_box(
+                &mut road,
+                Vec3::new(1.15, 0.12, 1.15),
+                Mat4::from_translation(c - Vec3::Y * 2.0),
+                [0.15, 0.85, 1.0],
+            );
+        }
+    }
+
     let collision = TriMesh::with_surfaces(col.positions, col.indices, col.surfaces, 8.0);
 
     let every = (CHECKPOINT_SPACING / SAMPLE_SPACING).round() as usize;
@@ -570,6 +869,10 @@ pub fn build_graybox_loop() -> Track {
     let spawn = (sp, sf.x.atan2(sf.z));
 
     Track {
+        id: def.id,
+        name: def.name,
+        box_rows: def.box_rows.to_vec(),
+        terrain_kind: st.terrain,
         road,
         terrain: terrain_mesh,
         props,
@@ -776,6 +1079,53 @@ mod tests {
             .raycast(c + Vec3::Y * 5.0, right, 20.0)
             .expect("invisible wall above the barrier");
         assert!((hit.t - ROAD_HALF_WIDTH).abs() < 0.5);
+    }
+
+    #[test]
+    fn every_track_builds_with_a_drivable_road() {
+        for def in TRACKS.iter() {
+            let t = build_track(def);
+            assert_eq!(t.id, def.id);
+            let len: f32 = t.centerline.windows(2).map(|w| w[0].distance(w[1])).sum();
+            assert!(
+                (700.0..=1700.0).contains(&len),
+                "{}: length {len}",
+                def.name
+            );
+            for (i, c) in t.centerline.iter().enumerate().step_by(7) {
+                let hit = t
+                    .collision
+                    .raycast(*c + Vec3::Y * 3.0, Vec3::NEG_Y, 10.0)
+                    .unwrap_or_else(|| panic!("{}: no road under point {i}", def.name));
+                assert!(hit.normal.y > 0.75, "{}: road too steep at {i}", def.name);
+            }
+            assert!(
+                t.checkpoints.len() >= 15,
+                "{}: {} checkpoints",
+                def.name,
+                t.checkpoints.len()
+            );
+            assert!(!t.box_rows.is_empty());
+        }
+    }
+
+    #[test]
+    fn tracks_have_distinct_character() {
+        let ids: Vec<_> = TRACKS.iter().map(|d| d.id).collect();
+        assert_eq!(
+            ids,
+            vec![TrackId::Dustbowl, TrackId::Grindstone, TrackId::Skyway]
+        );
+        assert!(
+            TRACKS
+                .iter()
+                .all(|d| !d.name.is_empty() && !d.tagline.is_empty())
+        );
+        let sky = build_track(&TRACKS[2]);
+        assert!(
+            sky.terrain.indices.is_empty() || sky.centerline.iter().all(|c| c.y > 15.0),
+            "the skyway floats"
+        );
     }
 
     #[test]

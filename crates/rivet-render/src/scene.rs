@@ -13,7 +13,7 @@ const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const LDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MODEL_STRIDE: u64 = 256;
-const MAX_MATERIALS: usize = 32;
+const MAX_MATERIALS: usize = 48;
 /// Bloom starts at this HDR brightness (soft knee below it).
 const BLOOM_THRESHOLD: f32 = 1.4;
 const BLOOM_KNEE: f32 = 0.7;
