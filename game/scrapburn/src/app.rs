@@ -1389,6 +1389,11 @@ impl Game {
         let fstate = &self.race.racers[focus].state;
         self.camera.set_boost(fstate.boost_timer > 0.0);
         self.camera.update(fpos, frot, fstate.speed(), frame_dt);
+        let collision = &self.track.collision;
+        self.camera.keep_clear(
+            |o, d, max| collision.raycast(o, d, max).map(|h| h.t),
+            frame_dt,
+        );
         let (w, h) = self.ctx.size();
         let (view_m, eye) = if matches!(self.session, Session::Attract) {
             // Cinematic orbit around the featured kart.
