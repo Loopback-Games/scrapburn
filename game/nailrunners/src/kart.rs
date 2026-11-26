@@ -224,6 +224,45 @@ mod model_tests {
     }
 
     #[test]
+    fn every_shipped_kart_splits_into_four_corner_wheels() {
+        let assets = crate::materials::find_assets_dir().expect("assets directory");
+        for (d, k) in KARTS.iter().enumerate() {
+            let (mesh, tex) = load(&assets, k, 20 + d as u32).expect(k.name);
+            assert!(tex.is_some(), "{} has a texture", k.name);
+            let parts = split_wheels(&mesh, KART_LENGTH * k.wheel_ratio);
+            let (lo, hi) = bounds(&parts.body.vertices);
+            for (w, wheel) in parts.wheels.iter().enumerate() {
+                let tris = wheel.indices.len() / 3;
+                assert!(tris > 200, "{} wheel {w}: only {tris} triangles", k.name);
+                let h = parts.hubs[w];
+                // Left wheels on +X, right on -X; fronts toward +Z.
+                assert_eq!(h.x > 0.0, w % 2 == 0, "{} wheel {w} side ({h})", k.name);
+                assert_eq!(h.z > 0.0, w < 2, "{} wheel {w} front/rear ({h})", k.name);
+                assert!(
+                    h.x.abs() > 0.25 * hi[0].max(-lo[0]),
+                    "{} wheel {w} near the edge",
+                    k.name
+                );
+            }
+            // Left/right hubs mirror each other.
+            for (a, b) in [(0, 1), (2, 3)] {
+                let (ha, hb) = (parts.hubs[a], parts.hubs[b]);
+                assert!(
+                    (ha.x + hb.x).abs() < 0.25 && (ha.z - hb.z).abs() < 0.25,
+                    "{} axle {a}/{b}: {ha} vs {hb}",
+                    k.name
+                );
+            }
+            let body = parts.body.indices.len() / 3;
+            assert!(
+                body > 3000,
+                "{} body keeps most of the model ({body} triangles)",
+                k.name
+            );
+        }
+    }
+
+    #[test]
     fn every_kart_model_has_sane_proportions() {
         for k in &KARTS {
             assert!((0.1..0.25).contains(&k.wheel_ratio), "{}", k.name);
