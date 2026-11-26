@@ -637,13 +637,14 @@ mod tests {
         T.get_or_init(build_graybox_loop)
     }
 
-    /// Two racers on the first straight, `gap` meters apart, both moving.
+    /// Two racers early on the first straight (room ahead for 2 s at full boost before the
+    /// kink), `gap` meters apart, both moving.
     fn duel(gap: f32) -> Race {
         let t = track();
         let mut r = Race::new(t, 2, true, 3);
         r.phase = crate::race::Phase::Racing;
-        let (a, b) = (t.centerline[40], t.centerline[40 + (gap / 2.0) as usize]);
-        let f = (t.centerline[41] - t.centerline[39]).normalize();
+        let (a, b) = (t.centerline[8], t.centerline[8 + (gap / 2.0) as usize]);
+        let f = (t.centerline[9] - t.centerline[7]).normalize();
         let yaw = f.x.atan2(f.z);
         for (k, p) in [a, b].into_iter().enumerate() {
             r.racers[k].state = rivet_physics::VehicleState::spawn(p + Vec3::Y * 0.5, yaw);

@@ -17,6 +17,8 @@ pub const JUMP_HEIGHT: f32 = 6.0;
 const SAMPLE_SPACING: f32 = 2.0;
 const CHECKPOINT_SPACING: f32 = 40.0;
 const BANK_DEGREES: f32 = 15.0;
+/// Half-width (samples, so ×2 m) of the window curvature banking is smoothed over.
+const BANK_SMOOTHING: usize = 12;
 /// Texture repeat lengths (m).
 const WALL_TEX: f32 = 3.0;
 const CURB_WIDTH: f32 = 1.1;
@@ -26,41 +28,68 @@ const PAD_LIFT: f32 = 0.04;
 const PAD_HALF_WIDTH: f32 = 2.6;
 const PAD_SEGMENTS: usize = 5;
 
-const DUSTBOWL_POINTS: [Vec2; 8] = [
+/// Dustbowl: a kink off the start straight, the banked right-hander, the dune jump on the top
+/// straight, then a hook that cuts back into the canyon floor before the run home.
+const DUSTBOWL_POINTS: [Vec2; 16] = [
     Vec2::new(0.0, 0.0),
-    Vec2::new(220.0, 0.0),
-    Vec2::new(300.0, 80.0),
+    Vec2::new(150.0, 0.0),
+    Vec2::new(205.0, -35.0),
+    Vec2::new(265.0, -20.0),
+    Vec2::new(300.0, 60.0),
     Vec2::new(300.0, 200.0),
-    Vec2::new(220.0, 280.0),
-    Vec2::new(60.0, 280.0),
-    Vec2::new(-40.0, 200.0),
-    Vec2::new(-60.0, 100.0),
+    Vec2::new(255.0, 265.0),
+    Vec2::new(200.0, 282.0),
+    Vec2::new(80.0, 282.0),
+    Vec2::new(10.0, 262.0),
+    Vec2::new(-45.0, 215.0),
+    Vec2::new(0.0, 165.0),
+    Vec2::new(55.0, 130.0),
+    Vec2::new(30.0, 75.0),
+    Vec2::new(-45.0, 60.0),
+    Vec2::new(-50.0, 15.0),
 ];
 
-const GRINDSTONE_POINTS: [Vec2; 10] = [
+/// Grindstone: a chicane off the start, then a deep hairpin pocket into the bailey and back
+/// out around the keep: tight and technical.
+const GRINDSTONE_POINTS: [Vec2; 18] = [
     Vec2::new(0.0, 0.0),
-    Vec2::new(160.0, 0.0),
-    Vec2::new(230.0, 50.0),
-    Vec2::new(215.0, 135.0),
-    Vec2::new(140.0, 160.0),
-    Vec2::new(125.0, 235.0),
-    Vec2::new(40.0, 265.0),
+    Vec2::new(130.0, 0.0),
+    Vec2::new(165.0, -22.0),
+    Vec2::new(205.0, -5.0),
+    Vec2::new(240.0, 50.0),
+    Vec2::new(235.0, 125.0),
+    Vec2::new(150.0, 125.0),
+    Vec2::new(75.0, 118.0),
+    Vec2::new(35.0, 150.0),
+    Vec2::new(75.0, 185.0),
+    Vec2::new(150.0, 190.0),
+    Vec2::new(220.0, 220.0),
+    Vec2::new(205.0, 285.0),
+    Vec2::new(110.0, 300.0),
+    Vec2::new(30.0, 270.0),
     Vec2::new(-45.0, 215.0),
     Vec2::new(-70.0, 120.0),
     Vec2::new(-40.0, 40.0),
 ];
 
-const SKYWAY_POINTS: [Vec2; 10] = [
+/// Skyway: a long launch straight, then S-bends both ways around the towers: fast, with a few
+/// corners that need the brakes.
+const SKYWAY_POINTS: [Vec2; 15] = [
     Vec2::new(0.0, 0.0),
-    Vec2::new(330.0, 0.0),
-    Vec2::new(440.0, 90.0),
-    Vec2::new(420.0, 240.0),
-    Vec2::new(270.0, 310.0),
-    Vec2::new(130.0, 260.0),
-    Vec2::new(60.0, 350.0),
-    Vec2::new(-90.0, 330.0),
-    Vec2::new(-130.0, 190.0),
-    Vec2::new(-90.0, 60.0),
+    Vec2::new(320.0, 0.0),
+    Vec2::new(430.0, 70.0),
+    Vec2::new(420.0, 180.0),
+    Vec2::new(320.0, 210.0),
+    Vec2::new(280.0, 280.0),
+    Vec2::new(350.0, 360.0),
+    Vec2::new(270.0, 440.0),
+    Vec2::new(110.0, 420.0),
+    Vec2::new(50.0, 340.0),
+    Vec2::new(-60.0, 380.0),
+    Vec2::new(-170.0, 320.0),
+    Vec2::new(-150.0, 190.0),
+    Vec2::new(-70.0, 130.0),
+    Vec2::new(-120.0, 40.0),
 ];
 
 /// Which circuit.
@@ -142,7 +171,7 @@ fn grindstone_height(_p: Vec2, t: f32) -> f32 {
         let x = ((t - c) / w).clamp(-1.0, 1.0);
         h * 0.5 * (1.0 + (std::f32::consts::PI * x).cos())
     };
-    rise + bump(0.72, 0.035, 4.5)
+    rise + bump(0.755, 0.03, 4.5)
 }
 
 fn skyway_height(_p: Vec2, t: f32) -> f32 {
@@ -161,7 +190,7 @@ pub const TRACKS: [TrackDef; 3] = [
         bank: Some(bank_weight),
         bank_degrees: BANK_DEGREES,
         pads: &[0.09, 0.60],
-        box_rows: &[0.2, 0.5, 0.82],
+        box_rows: &[0.27, 0.5, 0.78],
         style: TrackStyle {
             road: Layer::Dirt,
             road_tint: [0.8, 0.68, 0.56, 0.0],
@@ -191,8 +220,8 @@ pub const TRACKS: [TrackDef; 3] = [
         height: grindstone_height,
         bank: Some(no_bank),
         bank_degrees: 0.0,
-        pads: &[0.04, 0.47],
-        box_rows: &[0.15, 0.4, 0.86],
+        pads: &[0.04, 0.485],
+        box_rows: &[0.17, 0.33, 0.86],
         style: TrackStyle {
             road: Layer::Cobblestone,
             road_tint: [0.85, 0.82, 0.78, 0.0],
@@ -222,7 +251,7 @@ pub const TRACKS: [TrackDef; 3] = [
         height: skyway_height,
         bank: None,
         bank_degrees: 22.0,
-        pads: &[0.05, 0.27, 0.55, 0.8],
+        pads: &[0.05, 0.26, 0.55, 0.8],
         box_rows: &[0.15, 0.42, 0.7],
         style: TrackStyle {
             road: Layer::TechPanel,
@@ -536,6 +565,41 @@ pub fn build_track(def: &TrackDef) -> Track {
     let n = flat.len();
     let bank_max = def.bank_degrees.to_radians();
 
+    // Signed bank per sample: explicit bank zones, or bank by curvature (Skyway's sweeping
+    // turns). A Catmull-Rom spline's curvature jumps at its control points, so curvature banking
+    // is smoothed along the road; unsmoothed, the bank (and the lift that keeps the inner edge
+    // up) steps by meters there, and karts slam into the step.
+    let bend_at = |i: usize| {
+        let (prev, p, next) = (flat[(i + n - 1) % n], flat[i], flat[(i + 1) % n]);
+        (next - p).perp_dot(p - prev) / ((next - p).length() * (p - prev).length()).max(1e-6)
+    };
+    let raw_bank: Vec<f32> = (0..n)
+        .map(|i| {
+            let bend = bend_at(i);
+            let weight = match def.bank {
+                Some(f) => f(flat[i]),
+                None => (bend.abs() * 30.0).clamp(0.0, 1.0),
+            };
+            weight * bank_max * bend.signum()
+        })
+        .collect();
+    let banks: Vec<f32> = match def.bank {
+        Some(_) => raw_bank,
+        None => (0..n)
+            .map(|i| {
+                // Triangular window over ±BANK_SMOOTHING samples.
+                let r = BANK_SMOOTHING as isize;
+                let (mut sum, mut weights) = (0.0, 0.0);
+                for d in -r..=r {
+                    let w = (r + 1 - d.abs()) as f32;
+                    sum += w * raw_bank[(i as isize + d).rem_euclid(n as isize) as usize];
+                    weights += w;
+                }
+                sum / weights
+            })
+            .collect(),
+    };
+
     // Frames: position, forward, right, up. Banks pivot on the inner edge so nothing dips below 0.
     let mut frames = Vec::with_capacity(n);
     for i in 0..n {
@@ -547,15 +611,7 @@ pub fn build_track(def: &TrackDef) -> Track {
             - Vec3::new(prev.x, h(prev, (i + n - 1) % n), prev.y))
         .normalize();
         let right_flat = fwd.cross(Vec3::Y).normalize();
-        let bend =
-            (next - p).perp_dot(p - prev) / ((next - p).length() * (p - prev).length()).max(1e-6);
-        let turn = bend.signum();
-        // Explicit bank zones, or bank by curvature (Skyway's sweeping turns).
-        let weight = match def.bank {
-            Some(f) => f(p),
-            None => (bend.abs() * 30.0).clamp(0.0, 1.0),
-        };
-        let bank = weight * bank_max * turn;
+        let bank = banks[i];
         let rot = Quat::from_axis_angle(fwd, -bank);
         let right = rot * right_flat;
         let up = right.cross(fwd).normalize();
@@ -1053,8 +1109,8 @@ mod tests {
         let last = *t.centerline.last().unwrap();
         assert!(first.distance(last) < 2.5, "gap {}", first.distance(last));
         let len: f32 = t.centerline.windows(2).map(|w| w[0].distance(w[1])).sum();
-        // The pinned control points plus the jump and banking come to ~1.1 km of 3D road.
-        assert!((900.0..=1150.0).contains(&len), "length {len}");
+        // The pinned control points plus the jump and banking come to ~1.3 km of 3D road.
+        assert!((1150.0..=1400.0).contains(&len), "length {len}");
     }
 
     #[test]
@@ -1238,13 +1294,50 @@ mod tests {
     }
 
     #[test]
+    fn roads_have_no_steps() {
+        // Ramps and crests climb under 0.8 m per 2 m sample; a bank that flips at a spline
+        // control point used to lift the road by meters in one sample.
+        for def in TRACKS.iter() {
+            let t = build_track(def);
+            for (i, w) in t.centerline.windows(2).enumerate() {
+                let dy = (w[1].y - w[0].y).abs();
+                assert!(dy < 0.8, "{}: {dy} m step at sample {i}", def.name);
+            }
+        }
+    }
+
+    #[test]
+    fn tracks_keep_their_stretches_apart() {
+        // Stretches of road more than 60 m apart along the lap stay 40 m apart in the world, so
+        // barriers, terrain and scenery between them never overlap.
+        for def in TRACKS.iter() {
+            let t = build_track(def);
+            let c = &t.centerline;
+            let n = c.len() - 1;
+            for i in (0..n).step_by(2) {
+                for j in (i + 30..n).step_by(2) {
+                    if n - (j - i) < 30 {
+                        continue;
+                    }
+                    let d = Vec2::new(c[i].x - c[j].x, c[i].z - c[j].z).length();
+                    assert!(
+                        d > 40.0,
+                        "{}: samples {i} and {j} only {d} m apart",
+                        def.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_track_builds_with_a_drivable_road() {
         for def in TRACKS.iter() {
             let t = build_track(def);
             assert_eq!(t.id, def.id);
             let len: f32 = t.centerline.windows(2).map(|w| w[0].distance(w[1])).sum();
             assert!(
-                (700.0..=1700.0).contains(&len),
+                (900.0..=2100.0).contains(&len),
                 "{}: length {len}",
                 def.name
             );
