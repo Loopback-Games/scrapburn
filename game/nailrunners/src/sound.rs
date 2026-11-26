@@ -135,6 +135,15 @@ impl SoundDirector {
         audio.send(Command::OrbHum { gain: orb_gain });
 
         for e in events {
+            if let RaceEvent::Eliminated { racer, .. } = *e {
+                let (gain, pan) = spatial(ear, right, race.racers[racer].state.position, 400.0);
+                audio.send(Command::Play {
+                    sfx: Sfx::Explosion,
+                    gain: gain.sqrt().max(0.4),
+                    pan,
+                });
+                continue;
+            }
             let RaceEvent::Combat(c) = e else { continue };
             let at = |i: usize| race.racers[i].state.position;
             let (sfx, pos, loud) = match *c {

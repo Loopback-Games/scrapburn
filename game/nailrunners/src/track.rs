@@ -297,6 +297,8 @@ pub struct Track {
     pub name: &'static str,
     pub box_rows: Vec<f32>,
     pub terrain_kind: TerrainKind,
+    /// Below this height a kart has fallen off and respawns.
+    pub fall_y: f32,
     /// Road, curbs, barriers, pads, start line, gantry.
     pub road: MeshData,
     pub terrain: MeshData,
@@ -965,6 +967,7 @@ pub fn build_track(def: &TrackDef) -> Track {
         name: def.name,
         box_rows: def.box_rows.to_vec(),
         terrain_kind: st.terrain,
+        fall_y: centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min) - 12.0,
         road,
         terrain: terrain_mesh,
         props,

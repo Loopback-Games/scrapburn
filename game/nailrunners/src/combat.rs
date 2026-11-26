@@ -372,7 +372,7 @@ impl Combat {
                 return false;
             }
             for (j, r) in racers.iter().enumerate() {
-                if j == nail.owner {
+                if j == nail.owner || r.out {
                     continue;
                 }
                 let c = r.state.position;
@@ -464,6 +464,7 @@ impl Combat {
             for (j, r) in racers.iter_mut().enumerate() {
                 if j != orb.owner
                     && j != orb.target
+                    && !r.out
                     && !orb.zapped[j]
                     && r.state.position.distance(orb.pos) < ORB_ZAP_RADIUS
                 {
@@ -481,6 +482,7 @@ impl Combat {
                 for (j, r) in racers.iter_mut().enumerate() {
                     if j != victim
                         && j != orb.owner
+                        && !r.out
                         && r.state.position.distance(orb.pos) < ORB_SPLASH.0
                     {
                         r.state.spin_out(ORB_SPLASH.1, ORB_SPLASH.2);

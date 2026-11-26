@@ -13,7 +13,6 @@ pub const COUNTDOWN: f32 = 3.0;
 const KART_RADIUS: f32 = 1.0;
 const BASE_MASS: f32 = 300.0;
 const START_BOOST: (f32, f32) = (6.0, 0.9);
-const FALL_LIMIT_Y: f32 = -30.0;
 const STUCK_SPEED: f32 = 2.0;
 const STUCK_SECONDS: f32 = 3.0;
 /// Farther than this from the centerline (beyond the barriers) for this long = put back.
@@ -52,6 +51,11 @@ pub enum RaceEvent {
         place: u32,
     },
     Combat(CombatEvent),
+    /// Elimination: racer knocked out in last place, finishing `place`.
+    Eliminated {
+        racer: usize,
+        place: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,6 +77,8 @@ pub struct Racer {
     pub finish: Option<(u32, f64)>,
     pub last_lap: Option<f64>,
     pub best_lap: Option<f64>,
+    /// Knocked out of an elimination race: parked, untouchable, ranked by `finish`.
+    pub out: bool,
     stuck: f32,
     /// Seconds spent far off the track.
     off_track: f32,
@@ -93,6 +99,8 @@ pub struct Race {
     respawned: Vec<usize>,
     /// Items and weapons are on (any race with rivals).
     pub combat_on: bool,
+    /// Elimination mode: last place is knocked out each time the leader completes a lap.
+    pub elimination: bool,
 }
 
 /// Grid positions behind the start line: two columns, staggered rows, facing forward.
@@ -149,6 +157,7 @@ impl Race {
                     finish: None,
                     last_lap: None,
                     best_lap: None,
+                    out: false,
                     stuck: 0.0,
                     off_track: 0.0,
                     hop: HopLatch::default(),
@@ -166,6 +175,62 @@ impl Race {
             combat: Combat::new(track, count),
             respawned: Vec::new(),
             combat_on: count > 1,
+            elimination: false,
+        }
+    }
+
+    /// An elimination race: everyone drives until one survivor is left.
+    pub fn new_elimination(track: &Track, count: usize, player: bool) -> Self {
+        let mut race = Self::new(track, count, player, u32::MAX);
+        race.elimination = true;
+        race
+    }
+
+    /// Racers still running in an elimination race (or everyone otherwise).
+    fn active(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.racers.len()).filter(|&i| !self.racers[i].out && self.racers[i].finish.is_none())
+    }
+
+    /// Knocks out the last active racer whenever the leader starts a new lap; crowns the survivor.
+    fn eliminate(&mut self, track: &Track, events: &mut Vec<RaceEvent>) {
+        let active: Vec<usize> = self.active().collect();
+        if active.len() < 2 {
+            return;
+        }
+        let cuts = (self.racers.len() - active.len()) as u32;
+        let leader_laps = active
+            .iter()
+            .map(|&i| self.racers[i].laps.laps())
+            .max()
+            .unwrap_or(0);
+        if leader_laps <= cuts {
+            return;
+        }
+        let Some(&last) = active
+            .iter()
+            .min_by(|&&a, &&b| self.progress(a, track).total_cmp(&self.progress(b, track)))
+        else {
+            return;
+        };
+        let place = active.len() as u32;
+        let r = &mut self.racers[last];
+        r.out = true;
+        r.finish = Some((place, self.time));
+        r.state.velocity = Vec3::ZERO;
+        r.prev = r.state.clone();
+        self.combat.cancel_for(last);
+        events.push(RaceEvent::Eliminated { racer: last, place });
+        if active.len() == 2 {
+            let survivor = active[if active[0] == last { 1 } else { 0 }];
+            self.finished += 1;
+            self.racers[survivor].finish = Some((1, self.time));
+            events.push(RaceEvent::Finish {
+                racer: survivor,
+                place: 1,
+            });
+            if self.racers[survivor].bot.is_none() {
+                self.racers[survivor].bot = Some(BotDriver::new(0.85, 0.0));
+            }
         }
     }
 
@@ -179,7 +244,10 @@ impl Race {
         let mut idx: Vec<usize> = (0..self.racers.len()).collect();
         idx.sort_by(|&a, &b| {
             let (fa, fb) = (self.racers[a].finish, self.racers[b].finish);
+            let (oa, ob) = (self.racers[a].out, self.racers[b].out);
             match (fa, fb) {
+                // Knocked-out racers rank below everyone still running.
+                _ if oa != ob => oa.cmp(&ob),
                 (Some((pa, _)), Some((pb, _))) => pa.cmp(&pb),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
@@ -246,6 +314,9 @@ impl Race {
             let progress = self.progress(i, track);
             let r = &mut self.racers[i];
             r.prev = r.state.clone();
+            if r.out {
+                continue;
+            }
             let input = if !racing {
                 DriveInput::default()
             } else if let Some(bot) = r.bot.as_mut() {
@@ -306,7 +377,7 @@ impl Race {
             let p = r.state.position;
             let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
             r.off_track = if far { r.off_track + dt } else { 0.0 };
-            if p.y < FALL_LIMIT_Y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS {
+            if p.y < track.fall_y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS {
                 Self::respawn(r, track);
                 self.respawned.push(i);
             }
@@ -317,8 +388,14 @@ impl Race {
             for b in a + 1..self.racers.len() {
                 let (left, right) = self.racers.split_at_mut(b);
                 let (ra, rb) = (&mut left[a], &mut right[0]);
+                if ra.out || rb.out {
+                    continue;
+                }
                 collide_karts(&mut ra.state, ra.mass, &mut rb.state, rb.mass, KART_RADIUS);
             }
+        }
+        if racing && self.elimination {
+            self.eliminate(track, &mut events);
         }
         for i in std::mem::take(&mut self.respawned) {
             self.combat.cancel_for(i);
@@ -364,6 +441,78 @@ mod tests {
     fn track() -> &'static Track {
         static T: OnceLock<Track> = OnceLock::new();
         T.get_or_init(build_graybox_loop)
+    }
+
+    #[test]
+    fn falling_off_the_skyway_respawns_quickly() {
+        let t = crate::track::build_track(&crate::track::TRACKS[2]);
+        let mut race = Race::new(&t, 1, false, 3);
+        race.phase = Phase::Racing;
+        // Over the void, just past the rail.
+        let c = t.centerline[40];
+        let f = (t.centerline[41] - c).normalize();
+        race.racers[0].state.position = c + f.cross(Vec3::Y).normalize() * 12.0 + Vec3::Y * 2.0;
+        race.racers[0].prev = race.racers[0].state.clone();
+        let back = (1..=120).find(|_| {
+            race.step(&t, DriveInput::default(), 1.0 / 60.0);
+            let p = race.racers[0].state.position;
+            crate::terrain::distance_to(&t.centerline, p.x, p.z) < crate::track::ROAD_HALF_WIDTH
+        });
+        assert!(
+            back.is_some(),
+            "still falling after 2 s (y = {})",
+            race.racers[0].state.position.y
+        );
+    }
+
+    #[test]
+    fn elimination_cuts_last_place_each_lap_until_one_survives() {
+        let t = track();
+        let mut race = Race::new_elimination(t, 4, false);
+        let mut cuts = Vec::new();
+        let mut winner = None;
+        let mut parked: Vec<(usize, Vec3)> = Vec::new();
+        for _ in 0..(240 * 60) {
+            for e in race.step(t, DriveInput::default(), 1.0 / 60.0) {
+                match e {
+                    RaceEvent::Eliminated { racer, place } => {
+                        cuts.push(place);
+                        parked.push((racer, race.racers[racer].state.position));
+                    }
+                    RaceEvent::Finish { racer, place } => winner = Some((racer, place)),
+                    _ => {}
+                }
+            }
+            for &(r, p) in &parked {
+                assert_eq!(
+                    race.racers[r].state.position, p,
+                    "eliminated karts stay parked"
+                );
+            }
+            if winner.is_some() {
+                break;
+            }
+        }
+        assert_eq!(cuts, vec![4, 3, 2], "last place out each lap");
+        let (w, place) = winner.expect("a survivor wins");
+        assert_eq!(place, 1);
+        let st = race.standings(t);
+        assert_eq!(st[0], w);
+        let places: Vec<u32> = st
+            .iter()
+            .map(|&i| race.racers[i].finish.unwrap().0)
+            .collect();
+        assert_eq!(places, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn eliminated_racers_rank_below_everyone_still_running() {
+        let t = track();
+        let mut race = Race::new_elimination(t, 3, false);
+        race.racers[2].finish = Some((3, 10.0));
+        race.racers[2].out = true;
+        let st = race.standings(t);
+        assert_eq!(st[2], 2);
     }
 
     #[test]

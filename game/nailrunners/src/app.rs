@@ -167,6 +167,8 @@ struct Game {
     audio: Option<rivet_audio::Audio>,
     sound: SoundDirector,
     frame_events: Vec<RaceEvent>,
+    /// The latest elimination knockout: racer and race time.
+    knockout: Option<(usize, f64)>,
 }
 
 fn placeholder_kart() -> MeshData {
@@ -386,6 +388,7 @@ impl Game {
             },
             sound: SoundDirector::default(),
             frame_events: Vec::new(),
+            knockout: None,
         })
     }
 
@@ -394,6 +397,9 @@ impl Game {
             Session::Attract => Race::new(track, 8, false, u32::MAX),
             Session::Play(Mode::Race) => Race::new(track, s.rivals + 1, !bench, s.laps),
             Session::Play(Mode::TimeTrial) => Race::new(track, 1, !bench, u32::MAX),
+            Session::Play(Mode::Elimination) => {
+                Race::new_elimination(track, s.rivals.max(1) + 1, !bench)
+            }
         }
     }
 
@@ -405,6 +411,7 @@ impl Game {
         self.leans = vec![0.0; n];
         self.wheel_spin = vec![0.0; n];
         self.recorder = GhostRecorder::default();
+        self.knockout = None;
         self.camera.reset();
         self.menu = MenuState::new(if matches!(session, Session::Attract) {
             Screen::Title
@@ -509,6 +516,7 @@ impl Game {
                     MenuAction::None => {}
                     MenuAction::StartRace => self.start(Session::Play(Mode::Race)),
                     MenuAction::StartTimeTrial => self.start(Session::Play(Mode::TimeTrial)),
+                    MenuAction::StartElimination => self.start(Session::Play(Mode::Elimination)),
                     MenuAction::Resume => self.menu.go(Screen::Playing),
                     MenuAction::Restart => self.start(self.session),
                     MenuAction::ToTitle => self.start(Session::Attract),
@@ -652,6 +660,34 @@ impl Game {
         let focus_pos = self.race.racers[self.focus()].state.position;
         let mut rng = Lcg((self.race.time * 1000.0) as u32 | 1);
         for e in events {
+            if let RaceEvent::Eliminated { racer, .. } = *e {
+                // Knocked out: the kart goes up in a fireball.
+                let p = self.race.racers[racer].state.position + Vec3::Y * 0.8;
+                fx_burst(
+                    &mut self.combat_fx,
+                    &mut rng,
+                    p,
+                    140,
+                    18.0,
+                    [9.0, 4.0, 1.2, 1.0],
+                    1.0,
+                    1.0,
+                );
+                fx_burst(
+                    &mut self.combat_fx,
+                    &mut rng,
+                    p,
+                    60,
+                    7.0,
+                    [1.5, 1.2, 1.0, 1.0],
+                    1.6,
+                    1.4,
+                );
+                self.camera
+                    .kick((1.0 - p.distance(focus_pos) / 60.0).max(0.0));
+                self.knockout = Some((racer, self.race.time));
+                continue;
+            }
             let RaceEvent::Combat(c) = e else { continue };
             match *c {
                 CombatEvent::Hit { victim, .. } => {
@@ -831,6 +867,10 @@ impl Game {
             .map(|m| Draw::new(m, Mat4::IDENTITY))
             .collect();
         for (i, (_, _, model)) in models.iter().enumerate() {
+            // Knocked-out rivals leave the track (the player's own wreck stays in view).
+            if self.race.racers[i].out && i != focus {
+                continue;
+            }
             let tint = self.race.racers[i].tint;
             draws.push(Draw {
                 mesh: &self.kart_mesh,
@@ -1052,10 +1092,10 @@ impl Game {
                 hud::draw_track_card(o, w, h, self.settings.track % n, n, def.name, def.tagline);
             }
         } else {
-            let in_race = matches!(self.session, Session::Play(Mode::Race));
+            let in_race = matches!(self.session, Session::Play(Mode::Race | Mode::Elimination));
             let info = HudInfo {
                 lap: r.laps.laps() + 1,
-                total_laps: in_race.then_some(race.laps_to_win),
+                total_laps: (in_race && !race.elimination).then_some(race.laps_to_win),
                 lap_time: race.time - r.laps.lap_start(),
                 last: r.last_lap,
                 best: r.best_lap.or(self
@@ -1098,10 +1138,24 @@ impl Game {
                     .racers
                     .iter()
                     .enumerate()
+                    .filter(|(_, k)| !k.out)
                     .map(|(i, k)| (k.state.position, k.tint, i == focus))
                     .collect(),
             };
             hud::draw_race(o, w, h, &race_hud);
+            if race.elimination && race.phase == Phase::Racing {
+                let left = race.racers.iter().filter(|k| !k.out).count();
+                let last_active = standings
+                    .iter()
+                    .rev()
+                    .find(|&&i| !race.racers[i].out)
+                    .copied();
+                let danger = last_active == Some(focus) && r.finish.is_none() && left > 1;
+                let knockout = self
+                    .knockout
+                    .map(|(k, t)| (race.racers[k].name, (race.time - t) as f32, k == focus));
+                hud::draw_elimination(o, w, h, left, danger, knockout, self.attract_t);
+            }
             if race.combat_on {
                 hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t);
             }

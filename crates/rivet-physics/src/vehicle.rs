@@ -373,7 +373,8 @@ pub fn step(
         // Arcade grip redirects most of the sideways slide into forward motion. Transfer energy,
         // not speed: adding the removed lateral speed linearly would pump energy into the kart
         // on every corner (it ran away to 160 m/s on tight tracks).
-        let shed = lateral * lateral - damped * damped;
+        // Faded out near standstill, so a sideways shove can't launch a parked kart.
+        let shed = (lateral * lateral - damped * damped) * (speed.abs() / 5.0).min(1.0);
         speed = speed.signum() * (speed * speed + shed * GRIP_REDIRECT).sqrt();
         let lateral = damped;
         let normal_v = state.velocity.dot(ground_n);
@@ -442,7 +443,8 @@ pub fn step(
             let up = state.rotation * Vec3::Y;
             let along = (state.velocity - up * state.velocity.dot(up)).normalize_or_zero();
             let fwd = state.rotation * Vec3::Z;
-            if along != Vec3::ZERO && fwd.dot(along) > 0.0 {
+            // Only for glancing hits: after a head-on hit the residual direction is noise.
+            if along != Vec3::ZERO && fwd.dot(along) > 0.5 {
                 let turn = Quat::from_rotation_arc(fwd, along);
                 state.rotation =
                     (Quat::IDENTITY.slerp(turn, WALL_ALIGN) * state.rotation).normalize();
@@ -723,6 +725,37 @@ mod tests {
                 s.position.z
             );
         }
+    }
+
+    #[test]
+    fn sideways_shove_at_rest_does_not_launch_the_kart() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        let mut s = settled(&w, &p);
+        s.velocity = s.rotation * Vec3::X * 6.0;
+        for _ in 0..30 {
+            step(&mut s, &p, DriveInput::default(), &w, DT);
+        }
+        let fwd = (s.rotation * Vec3::Z).dot(s.velocity);
+        assert!(fwd.abs() < 1.0, "forward speed {fwd} from a sideways shove");
+    }
+
+    #[test]
+    fn head_on_wall_hit_does_not_twist_the_nose() {
+        let w = walled_world();
+        let p = VehicleParams::default();
+        let mut s = settled(&w, &p);
+        // Almost straight at the z = 50 wall (1 degree off).
+        s.rotation = Quat::from_rotation_y(1f32.to_radians());
+        s.position.z = 45.0;
+        s.velocity = s.rotation * Vec3::Z * 25.0;
+        let yaw0 = (s.rotation * Vec3::Z).x.atan2((s.rotation * Vec3::Z).z);
+        for _ in 0..40 {
+            step(&mut s, &p, DriveInput::default(), &w, DT);
+        }
+        let f = s.rotation * Vec3::Z;
+        let turned = (f.x.atan2(f.z) - yaw0).abs().to_degrees();
+        assert!(turned < 10.0, "nose twisted {turned} degrees");
     }
 
     #[test]

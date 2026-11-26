@@ -31,6 +31,8 @@ pub enum Mode {
     Race,
     /// Solo laps against your best-lap ghost.
     TimeTrial,
+    /// Last place is knocked out every lap until one racer survives.
+    Elimination,
 }
 
 impl std::str::FromStr for Mode {
@@ -40,13 +42,16 @@ impl std::str::FromStr for Mode {
         match s.to_ascii_lowercase().as_str() {
             "race" => Ok(Self::Race),
             "timetrial" | "time-trial" | "tt" => Ok(Self::TimeTrial),
-            other => Err(format!("unknown mode '{other}' (use race or timetrial)")),
+            "elimination" | "elim" => Ok(Self::Elimination),
+            other => Err(format!(
+                "unknown mode '{other}' (use race, timetrial or elimination)"
+            )),
         }
     }
 }
 
 pub const USAGE: &str = "usage: nailrunners [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial] [--track dustbowl|castle|skyway] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -225,6 +230,14 @@ mod tests {
             Mode::TimeTrial
         );
         assert!(parse_strs(&["--mode", "derby"], None).is_err());
+    }
+
+    #[test]
+    fn args_elimination_mode() {
+        assert_eq!(
+            parse_strs(&["--mode", "elimination"], None).unwrap().mode,
+            Mode::Elimination
+        );
     }
 
     #[test]

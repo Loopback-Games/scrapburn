@@ -401,6 +401,72 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
 }
 
 /// A centered menu panel with an optional big title (the game logo on the title screen).
+/// Elimination: racers left, a pulsing warning in last place, and the knockout callout.
+pub fn draw_elimination(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    left: usize,
+    danger: bool,
+    knockout: Option<(&str, f32, bool)>,
+    t: f32,
+) {
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let tag = format!("ELIMINATION  {left} LEFT");
+    let ts = 1.6 * ui;
+    let tw = width(&tag, ts);
+    o.rect(
+        w * 0.5 - tw * 0.5 - 14.0 * ui,
+        118.0 * ui,
+        tw + 28.0 * ui,
+        30.0 * ui,
+        PANEL,
+    );
+    o.label(w * 0.5 - tw * 0.5, 123.0 * ui, ts, ACCENT, &tag);
+    if danger {
+        let pulse = 0.55 + 0.45 * (t * 7.0).sin().abs();
+        let msg = "LAST PLACE - YOU'RE NEXT";
+        let ms = 2.4 * ui;
+        let mw = width(msg, ms);
+        o.rect(
+            w * 0.5 - mw * 0.5 - 18.0 * ui,
+            h * 0.22,
+            mw + 36.0 * ui,
+            44.0 * ui,
+            [0.55, 0.03, 0.02, 0.6 * pulse],
+        );
+        o.label(
+            w * 0.5 - mw * 0.5,
+            h * 0.22 + 6.0 * ui,
+            ms,
+            [1.0, 0.85, 0.8, pulse],
+            msg,
+        );
+    }
+    if let Some((name, age, is_you)) = knockout
+        && age < 2.8
+    {
+        let fade = (1.0 - (age - 2.2).max(0.0) / 0.6).clamp(0.0, 1.0);
+        let pop = 1.0 + 0.25 * (1.0 - (age / 0.25).min(1.0));
+        let msg = if is_you {
+            "YOU'RE OUT!".to_string()
+        } else {
+            format!("{name} IS OUT!")
+        };
+        let ms = 4.0 * ui * pop;
+        let mw = width(&msg, ms);
+        let y = h * 0.3;
+        o.label(
+            w * 0.5 - mw * 0.5 + 4.0 * ui,
+            y + 4.0 * ui,
+            ms,
+            [0.0, 0.0, 0.0, 0.6 * fade],
+            &msg,
+        );
+        o.label(w * 0.5 - mw * 0.5, y, ms, [1.0, 0.3, 0.12, fade], &msg);
+    }
+}
+
 /// The selected circuit on the title screen: number, name and tagline, bottom left.
 pub fn draw_track_card(
     o: &mut Overlay,

@@ -32,6 +32,8 @@ pub enum MenuAction {
     Restart,
     ToTitle,
     Quit,
+    /// Start an elimination race.
+    StartElimination,
     /// The graphics preset changed; rebuild the renderer.
     PresetChanged,
     /// A different track was picked on the title screen.
@@ -90,7 +92,7 @@ impl Default for Settings {
 }
 
 /// Title screen rows.
-pub const TITLE_TRACK: usize = 2;
+pub const TITLE_TRACK: usize = 3;
 
 pub const SETTING_PRESET: usize = 0;
 pub const SETTING_LAPS: usize = 1;
@@ -140,6 +142,7 @@ impl MenuState {
             Screen::Title => vec![
                 "RACE".into(),
                 "TIME TRIAL".into(),
+                "ELIMINATION".into(),
                 format!(
                     "TRACK  < {} >",
                     crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
@@ -189,7 +192,8 @@ impl MenuState {
                 match (input.select, self.selected) {
                     (true, 0) => MenuAction::StartRace,
                     (true, 1) => MenuAction::StartTimeTrial,
-                    (true, 3) => {
+                    (true, 2) => MenuAction::StartElimination,
+                    (true, 4) => {
                         self.go(Screen::Settings);
                         MenuAction::None
                     }
@@ -292,7 +296,12 @@ mod tests {
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::StartTimeTrial
         );
-        m.selected = 3;
+        m.selected = 2;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::StartElimination
+        );
+        m.selected = 4;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::None
