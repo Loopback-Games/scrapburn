@@ -18,6 +18,7 @@ rivet-physics = { path = "crates/rivet-physics" }
 rivet-assets = { path = "crates/rivet-assets" }
 rivet-ai = { path = "crates/rivet-ai" }
 rivet-audio = { path = "crates/rivet-audio" }
+rivet-net = { path = "crates/rivet-net" }
 wgpu = "30.0.2"
 winit = "0.30.13"
 glam = { version = "0.34.3", features = ["bytemuck"] }

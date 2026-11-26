@@ -1,0 +1,15 @@
+[package]
+name = "rivet-net"
+description = "Small UDP host/client links with a handshake and timeouts, plus a bounds-checked byte codec."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

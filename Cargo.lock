@@ -1987,6 +1987,13 @@ name = "rivet-core"
 version = "0.1.0"
 
 [[package]]
+name = "rivet-net"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "rivet-physics"
 version = "0.1.0"
 dependencies = [
