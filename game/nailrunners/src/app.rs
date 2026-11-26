@@ -137,6 +137,10 @@ struct Game {
     track: Track,
     track_meshes: [GpuMesh; 3],
     kart_mesh: GpuMesh,
+    wheel_meshes: [GpuMesh; 4],
+    wheel_hubs: [Vec3; 4],
+    wheel_radius: f32,
+    wheel_spin: Vec<f32>,
     ghost_mesh: GpuMesh,
     fx_meshes: FxMeshes,
     combat_fx: ParticleSystem,
@@ -262,7 +266,25 @@ impl Game {
         let track = build_graybox_loop();
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
-        let kart_mesh = GpuMesh::new(&ctx.device, &kart_data);
+        let parts = nailrunners::kart::split_wheels(
+            &kart_data,
+            nailrunners::kart::KART_LENGTH * nailrunners::kart::WHEEL_RADIUS_RATIO,
+        );
+        log::info!(
+            "kart wheels: {} triangles split off the body",
+            parts
+                .wheels
+                .iter()
+                .map(|w| w.indices.len() / 3)
+                .sum::<usize>()
+        );
+        let kart_mesh = GpuMesh::new(&ctx.device, &parts.body);
+        let wheel_meshes = parts
+            .wheels
+            .each_ref()
+            .map(|w| GpuMesh::new(&ctx.device, w));
+        let wheel_hubs = parts.hubs;
+        let wheel_radius = parts.radius;
         let mut ghost_data = kart_data.clone();
         for v in &mut ghost_data.vertices {
             v.color = [0.2, 0.5, 0.6, 0.0];
@@ -322,6 +344,10 @@ impl Game {
             track,
             track_meshes,
             kart_mesh,
+            wheel_meshes,
+            wheel_hubs,
+            wheel_radius,
+            wheel_spin: vec![0.0; n],
             ghost_mesh,
             fx_meshes,
             combat_fx: ParticleSystem::new(2500),
@@ -362,6 +388,7 @@ impl Game {
         let n = self.race.racers.len();
         self.effects = (0..n).map(|_| Effects::new()).collect();
         self.leans = vec![0.0; n];
+        self.wheel_spin = vec![0.0; n];
         self.recorder = GhostRecorder::default();
         self.camera.reset();
         self.menu = MenuState::new(if matches!(session, Session::Attract) {
@@ -683,6 +710,8 @@ impl Game {
                 0.0
             };
             self.leans[i] += (target - self.leans[i]) * (1.0 - (-8.0 * frame_dt).exp());
+            self.wheel_spin[i] = (self.wheel_spin[i] + r.state.speed() * fx_dt / self.wheel_radius)
+                % std::f32::consts::TAU;
             models.push((
                 pos,
                 rot,
@@ -726,12 +755,30 @@ impl Game {
             .map(|m| Draw::new(m, Mat4::IDENTITY))
             .collect();
         for (i, (_, _, model)) in models.iter().enumerate() {
+            let tint = self.race.racers[i].tint;
             draws.push(Draw {
                 mesh: &self.kart_mesh,
                 model: *model,
                 casts_shadow: true,
-                tint: self.race.racers[i].tint,
+                tint,
             });
+            // Wheels roll with speed; the front pair steers with the turn rate.
+            let steer = (self.race.racers[i].state.angular_yaw * 0.3).clamp(-0.45, 0.45);
+            let roll = Mat4::from_rotation_x(self.wheel_spin[i]);
+            for (k, mesh) in self.wheel_meshes.iter().enumerate() {
+                let yaw = if k < 2 {
+                    Mat4::from_rotation_y(steer)
+                } else {
+                    Mat4::IDENTITY
+                };
+                let m = *model * Mat4::from_translation(self.wheel_hubs[k]) * yaw * roll;
+                draws.push(Draw {
+                    mesh,
+                    model: m,
+                    casts_shadow: true,
+                    tint,
+                });
+            }
         }
         if let (Session::Play(Mode::TimeTrial), Some(p)) = (self.session, self.race.player) {
             let lap_t = (self.race.time - self.race.racers[p].laps.lap_start()) as f32;

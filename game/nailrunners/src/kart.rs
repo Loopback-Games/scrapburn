@@ -82,10 +82,135 @@ pub fn load(assets: &Path, name: &str) -> Result<(MeshData, Option<Rgba8Image>),
     Ok((normalize(&g, KART_LENGTH, 0.0), tex))
 }
 
+/// Wheel radius relative to the kart's length (the scrap kart's chunky tires).
+pub const WHEEL_RADIUS_RATIO: f32 = 0.16;
+
+/// The kart split for animation: body plus four wheels stored around their hubs.
+/// Wheel order: front-left(+X), front-right(-X), rear-left(+X), rear-right(-X).
+pub struct KartParts {
+    pub body: MeshData,
+    pub wheels: [MeshData; 4],
+    pub hubs: [Vec3; 4],
+    pub radius: f32,
+}
+
+/// Splits wheels out of a single kart mesh by geometry: the lowest vertices mark the four
+/// contact patches, and triangles inside a wheel-sized cylinder around each axle go to that
+/// wheel.
+pub fn split_wheels(m: &MeshData, radius: f32) -> KartParts {
+    let (lo, hi) = bounds(&m.vertices);
+    let min_y = lo[1];
+    let mut groups: [Vec<Vec3>; 4] = Default::default();
+    for v in &m.vertices {
+        let p = Vec3::from_array(v.pos);
+        if p.y < min_y + 0.06 {
+            let k = (p.z < 0.0) as usize * 2 + (p.x < 0.0) as usize;
+            groups[k].push(p);
+        }
+    }
+    let mut hubs = [Vec3::ZERO; 4];
+    let mut half_width = [0.15f32; 4];
+    for k in 0..4 {
+        let sx = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let sz = if k < 2 { 1.0 } else { -1.0 };
+        if groups[k].is_empty() {
+            hubs[k] = Vec3::new(sx * hi[0] * 0.8, min_y + radius, sz * hi[2] * 0.65);
+            continue;
+        }
+        let n = groups[k].len() as f32;
+        let mean = groups[k].iter().fold(Vec3::ZERO, |a, p| a + *p) / n;
+        let (xmin, xmax) = groups[k]
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+        hubs[k] = Vec3::new(mean.x, min_y + radius, mean.z);
+        half_width[k] = ((xmax - xmin) * 0.5 + 0.04).clamp(0.08, 0.35);
+    }
+
+    let mut body = MeshData::default();
+    let mut wheels: [MeshData; 4] = Default::default();
+    for tri in m.indices.chunks(3) {
+        let c = tri.iter().fold(Vec3::ZERO, |a, &i| {
+            a + Vec3::from_array(m.vertices[i as usize].pos)
+        }) / 3.0;
+        let wheel = (0..4).find(|&k| {
+            let h = hubs[k];
+            (c.x - h.x).abs() < half_width[k]
+                && ((c.y - h.y).powi(2) + (c.z - h.z).powi(2)).sqrt() < radius * 1.08
+        });
+        let (target, offset) = match wheel {
+            Some(k) => (&mut wheels[k], hubs[k]),
+            None => (&mut body, Vec3::ZERO),
+        };
+        for &i in tri {
+            let mut v = m.vertices[i as usize];
+            v.pos = (Vec3::from_array(v.pos) - offset).to_array();
+            target.indices.push(target.vertices.len() as u32);
+            target.vertices.push(v);
+        }
+    }
+    KartParts {
+        body,
+        wheels,
+        hubs,
+        radius,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rivet_assets::GlbMesh;
+    use rivet_render::box_mesh;
+
+    /// A body box plus four wheel "drums" (boxes at the corners touching the ground).
+    fn synthetic_kart() -> MeshData {
+        let mut m = MeshData::default();
+        let mut add = |half: Vec3, at: Vec3| {
+            let mut b = box_mesh(half, [1.0; 4]);
+            for v in &mut b.vertices {
+                v.pos = (Vec3::from_array(v.pos) + at).to_array();
+            }
+            m.append(&b);
+        };
+        add(Vec3::new(0.6, 0.2, 1.2), Vec3::new(0.0, 0.1, 0.0));
+        for (x, z) in [(0.8, 0.9), (-0.8, 0.9), (0.8, -0.9), (-0.8, -0.9)] {
+            add(Vec3::new(0.15, 0.4, 0.4), Vec3::new(x, -0.05, z));
+        }
+        m
+    }
+
+    #[test]
+    fn splits_four_wheels_from_the_body() {
+        let parts = split_wheels(&synthetic_kart(), 0.4);
+        for (k, (x, z)) in [(0.8, 0.9), (-0.8, 0.9), (0.8, -0.9), (-0.8, -0.9)]
+            .into_iter()
+            .enumerate()
+        {
+            let h = parts.hubs[k];
+            assert!(
+                (h.x - x).abs() < 0.12 && (h.z - z).abs() < 0.15,
+                "hub {k} at {h}"
+            );
+            assert!(
+                !parts.wheels[k].indices.is_empty(),
+                "wheel {k} has geometry"
+            );
+            // Wheel geometry is stored around its hub.
+            let far = parts.wheels[k]
+                .vertices
+                .iter()
+                .map(|v| Vec3::from_array(v.pos).length())
+                .fold(0.0f32, f32::max);
+            assert!(far < 0.75, "wheel {k} vertices hug the hub ({far})");
+        }
+        assert!(!parts.body.indices.is_empty());
+        let wheel_tris: usize = parts.wheels.iter().map(|w| w.indices.len()).sum();
+        assert_eq!(
+            parts.body.indices.len() + wheel_tris,
+            synthetic_kart().indices.len(),
+            "every triangle lands somewhere"
+        );
+    }
 
     #[test]
     fn normalize_scales_orients_and_grounds() {
