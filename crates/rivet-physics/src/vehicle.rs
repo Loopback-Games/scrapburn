@@ -89,8 +89,8 @@ impl Default for VehicleParams {
     fn default() -> Self {
         Self {
             mass: 300.0,
-            max_speed: 32.0,
-            accel: 12.0,
+            max_speed: 38.0,
+            accel: 15.0,
             brake_decel: 30.0,
             reverse_max: 8.0,
             coast_decel: 2.0,
@@ -103,34 +103,35 @@ impl Default for VehicleParams {
             grip: 10.0,
             drift_grip: 2.5,
             steer_rate_low: 2.2,
-            steer_rate_high: 1.1,
+            // Holds the tightest full-speed turn near a 30 m radius.
+            steer_rate_high: 1.25,
             drift_arc_min: -0.35,
             drift_arc_max: 1.45,
             drift_tight_charge_bonus: 0.6,
             drift_min_speed: 10.0,
             hop_speed: 4.5,
             body_radius: 0.8,
-            boost_accel: 40.0,
+            boost_accel: 60.0,
             boost_tiers: [
                 BoostTier {
                     charge: 0.55,
-                    speed: 5.0,
+                    speed: 7.0,
                     duration: 0.6,
                 },
                 BoostTier {
                     charge: 1.2,
-                    speed: 7.0,
+                    speed: 10.0,
                     duration: 1.1,
                 },
                 BoostTier {
                     charge: 2.0,
-                    speed: 9.0,
+                    speed: 14.0,
                     duration: 1.7,
                 },
             ],
             boost_pad: BoostTier {
                 charge: 0.0,
-                speed: 8.0,
+                speed: 12.0,
                 duration: 1.2,
             },
             offroad_speed_scale: 0.55,
@@ -655,11 +656,11 @@ mod tests {
     fn boost_tiers_by_charge() {
         let p = VehicleParams::default();
         assert_eq!(p.boost_for_charge(0.5), None);
-        assert_eq!(p.boost_for_charge(0.6).map(|t| t.speed), Some(5.0));
-        assert_eq!(p.boost_for_charge(1.3).map(|t| t.speed), Some(7.0));
+        assert_eq!(p.boost_for_charge(0.6).map(|t| t.speed), Some(7.0));
+        assert_eq!(p.boost_for_charge(1.3).map(|t| t.speed), Some(10.0));
         assert_eq!(
             p.boost_for_charge(2.1).map(|t| (t.speed, t.duration)),
-            Some((9.0, 1.7))
+            Some((14.0, 1.7))
         );
     }
 
@@ -1003,7 +1004,7 @@ mod tests {
             step(&mut s, &p, input, &w, DT);
             if i == 60 {
                 let v = forward_speed(&s);
-                assert!((8.0..=14.0).contains(&v), "speed at 1 s = {v}");
+                assert!((10.0..=17.0).contains(&v), "speed at 1 s = {v}");
             }
         }
         let v = forward_speed(&s);
@@ -1048,7 +1049,7 @@ mod tests {
             ..Default::default()
         };
         step(&mut s, &p, release, &w, DT);
-        assert_eq!(s.boost_speed, 9.0, "a long tight drift earns the top tier");
+        assert_eq!(s.boost_speed, 14.0, "a long tight drift earns the top tier");
         assert!(
             (s.boost_timer - 1.7).abs() < 0.02,
             "timer {}",

@@ -15,8 +15,8 @@ const SHAKE_DECAY: f32 = 7.0;
 const MAX_FRAME_DT: f32 = 0.1;
 const SPRING_SUBSTEP: f32 = 1.0 / 120.0;
 const FOV_MAX: f32 = 82.0;
-/// Speed at which the FOV reaches its maximum (top speed + tier-2 boost).
-const FOV_FULL_SPEED: f32 = 39.0;
+/// Speed at which the FOV reaches its maximum (top speed + a tier-2 drift boost).
+const FOV_FULL_SPEED: f32 = 48.0;
 /// Height above the kart that the camera looks out from when checking for walls in the way.
 const PIVOT_HEIGHT: f32 = 1.0;
 /// Gap kept between the eye and a wall, so the near plane never cuts into it.
