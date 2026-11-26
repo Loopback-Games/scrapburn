@@ -467,6 +467,72 @@ pub fn draw_elimination(
     }
 }
 
+/// The online lobby: who's in, where, and how to reach this host. Top left, under the title.
+pub fn draw_lobby(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    heading: &str,
+    lines: &[String],
+    names: &[String],
+) {
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let (x, y) = (36.0 * ui, h * 0.3);
+    let row = 30.0 * ui;
+    let pw = 380.0 * ui;
+    let ph = 70.0 * ui + (lines.len() + names.len()) as f32 * row;
+    o.rect(x, y, pw, ph, PANEL);
+    o.rect(x, y, 6.0 * ui, ph, ACCENT);
+    o.label(x + 24.0 * ui, y + 14.0 * ui, 2.0 * ui, ACCENT, heading);
+    let mut yy = y + 50.0 * ui;
+    for l in lines {
+        o.label(x + 24.0 * ui, yy, 1.4 * ui, DIM, l);
+        yy += row;
+    }
+    for (k, n) in names.iter().enumerate() {
+        let tag = if k == 0 { "HOST" } else { "" };
+        o.label(
+            x + 24.0 * ui,
+            yy,
+            1.9 * ui,
+            WHITE,
+            &format!("{}  {n}", k + 1),
+        );
+        if !tag.is_empty() {
+            o.label(x + pw - 80.0 * ui, yy + 2.0 * ui, 1.4 * ui, ACCENT, tag);
+        }
+        yy += row;
+    }
+    let _ = w;
+}
+
+/// A short network notice (joined, left, connection lost), fading out after a few seconds.
+pub fn draw_toast(o: &mut Overlay, w: f32, h: f32, msg: &str, age: f32) {
+    if age > 4.0 {
+        return;
+    }
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let a = (1.0 - (age - 3.4).max(0.0) / 0.6).clamp(0.0, 1.0);
+    let s = 1.8 * ui;
+    let tw = width(msg, s);
+    let (x, y) = (w * 0.5 - tw * 0.5, h - 110.0 * ui);
+    o.rect(
+        x - 18.0 * ui,
+        y - 8.0 * ui,
+        tw + 36.0 * ui,
+        40.0 * ui,
+        [0.05, 0.04, 0.03, 0.7 * a],
+    );
+    o.rect(
+        x - 18.0 * ui,
+        y - 8.0 * ui,
+        4.0 * ui,
+        40.0 * ui,
+        [ACCENT[0], ACCENT[1], ACCENT[2], a],
+    );
+    o.label(x, y, s, [1.0, 1.0, 1.0, a], msg);
+}
+
 /// The selected circuit on the title screen: number, name and tagline, bottom left.
 pub fn draw_track_card(
     o: &mut Overlay,

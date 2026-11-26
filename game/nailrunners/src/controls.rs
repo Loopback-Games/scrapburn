@@ -127,6 +127,21 @@ pub fn menu_input(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu::MenuI
     }
 }
 
+/// Menu navigation while a text field has focus: arrows, Enter, Escape and the pad only, so
+/// letters, Space and Backspace can be typed.
+pub fn menu_input_typing(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu::MenuInput {
+    let k = |a: KeyCode| keys.just_pressed(a);
+    let p = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
+    crate::menu::MenuInput {
+        up: k(KeyCode::ArrowUp) || p(PadButtons::DPAD_UP),
+        down: k(KeyCode::ArrowDown) || p(PadButtons::DPAD_DOWN),
+        left: false,
+        right: false,
+        select: k(KeyCode::Enter) || k(KeyCode::NumpadEnter) || p(PadButtons::SOUTH),
+        back: k(KeyCode::Escape) || p(PadButtons::EAST),
+    }
+}
+
 pub fn actions(keys: &KeyInput, pad: Option<&PadState>) -> Actions {
     let pad_pressed = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
     Actions {
@@ -205,6 +220,21 @@ mod tests {
         latch.press(false); // next frame, button no longer "just pressed"
         assert!(latch.take(), "the press must reach the first sim step");
         assert!(!latch.take(), "and hop only once");
+    }
+
+    #[test]
+    fn typing_mode_ignores_letter_keys_and_backspace() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyS, true);
+        k.on_key(KeyCode::KeyD, true);
+        k.on_key(KeyCode::Backspace, true);
+        k.on_key(KeyCode::Space, true);
+        let i = menu_input_typing(&k, None);
+        assert_eq!(i, crate::menu::MenuInput::default());
+        k.on_key(KeyCode::ArrowDown, true);
+        k.on_key(KeyCode::Escape, true);
+        let i = menu_input_typing(&k, None);
+        assert!(i.down && i.back);
     }
 
     #[test]

@@ -9,6 +9,10 @@ pub enum Screen {
     Playing,
     Paused,
     Results,
+    /// Host or join an online game.
+    Online,
+    /// Waiting for the host to start.
+    Lobby,
 }
 
 /// Edge-triggered menu input for one frame.
@@ -38,6 +42,14 @@ pub enum MenuAction {
     PresetChanged,
     /// A different track was picked on the title screen.
     TrackChanged,
+    /// Host an online game.
+    HostGame,
+    /// Join the game at `MenuState::join_target`.
+    JoinGame,
+    /// The host starts the online race.
+    LobbyStart,
+    /// Leave the online game (back to the title).
+    LeaveOnline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,7 +104,11 @@ impl Default for Settings {
 }
 
 /// Title screen rows.
-pub const TITLE_TRACK: usize = 3;
+pub const TITLE_TRACK: usize = 4;
+/// Online screen: the typed address row.
+pub const ONLINE_ADDRESS: usize = 1;
+/// Longest typed address.
+const MAX_ADDRESS: usize = 64;
 
 pub const SETTING_PRESET: usize = 0;
 pub const SETTING_LAPS: usize = 1;
@@ -112,6 +128,16 @@ pub struct MenuState {
     pub screen: Screen,
     pub selected: usize,
     return_to: Screen,
+    /// The address typed on the Online screen.
+    pub join_addr: String,
+    /// Online tailnet peers (name, address) offered on the Online screen.
+    pub peers: Vec<(String, String)>,
+    /// This machine hosts the lobby.
+    pub lobby_host: bool,
+    /// The host picked Elimination for the online race.
+    pub lobby_elimination: bool,
+    /// The address the last JoinGame action refers to.
+    join_choice: Option<String>,
 }
 
 impl MenuState {
@@ -120,7 +146,36 @@ impl MenuState {
             screen,
             selected: 0,
             return_to: Screen::Title,
+            join_addr: String::new(),
+            peers: Vec::new(),
+            lobby_host: false,
+            lobby_elimination: false,
+            join_choice: None,
         }
+    }
+
+    /// Text typed while the address row is selected (address characters only).
+    pub fn type_text(&mut self, text: &str) {
+        if self.screen != Screen::Online || self.selected != ONLINE_ADDRESS {
+            return;
+        }
+        for c in text.chars() {
+            let ok = c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '-' | '[' | ']');
+            if ok && self.join_addr.len() < MAX_ADDRESS {
+                self.join_addr.push(c.to_ascii_lowercase());
+            }
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.screen == Screen::Online && self.selected == ONLINE_ADDRESS {
+            self.join_addr.pop();
+        }
+    }
+
+    /// Where to connect after a JoinGame action.
+    pub fn join_target(&self) -> Option<String> {
+        self.join_choice.clone()
     }
 
     pub fn go(&mut self, screen: Screen) {
@@ -143,6 +198,7 @@ impl MenuState {
                 "RACE".into(),
                 "TIME TRIAL".into(),
                 "ELIMINATION".into(),
+                "ONLINE".into(),
                 format!(
                     "TRACK  < {} >",
                     crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
@@ -165,6 +221,32 @@ impl MenuState {
                 "QUIT".into(),
             ],
             Screen::Results => vec!["CONTINUE".into(), "RACE AGAIN".into()],
+            Screen::Online => {
+                let mut v = vec![
+                    "HOST GAME".into(),
+                    if self.join_addr.is_empty() {
+                        "JOIN  TYPE AN ADDRESS_".to_string()
+                    } else {
+                        format!("JOIN  {}_", self.join_addr.to_ascii_uppercase())
+                    },
+                ];
+                v.extend(self.peers.iter().map(|(n, _)| format!("JOIN  {n}")));
+                v.push("BACK".into());
+                v
+            }
+            Screen::Lobby if self.lobby_host => vec![
+                "START RACE".into(),
+                format!(
+                    "MODE  < {} >",
+                    if self.lobby_elimination {
+                        "ELIMINATION"
+                    } else {
+                        "RACE"
+                    }
+                ),
+                "LEAVE".into(),
+            ],
+            Screen::Lobby => vec!["WAITING FOR THE HOST".into(), "LEAVE".into()],
             Screen::Playing => vec![],
         }
     }
@@ -193,7 +275,11 @@ impl MenuState {
                     (true, 0) => MenuAction::StartRace,
                     (true, 1) => MenuAction::StartTimeTrial,
                     (true, 2) => MenuAction::StartElimination,
-                    (true, 4) => {
+                    (true, 3) => {
+                        self.go(Screen::Online);
+                        MenuAction::None
+                    }
+                    (true, 5) => {
                         self.go(Screen::Settings);
                         MenuAction::None
                     }
@@ -252,6 +338,46 @@ impl MenuState {
                     _ => MenuAction::None,
                 }
             }
+            Screen::Online => {
+                if input.back || (input.select && self.selected == n - 1) {
+                    self.go(Screen::Title);
+                    return MenuAction::None;
+                }
+                if !input.select {
+                    return MenuAction::None;
+                }
+                match self.selected {
+                    0 => MenuAction::HostGame,
+                    ONLINE_ADDRESS if self.join_addr.is_empty() => MenuAction::None,
+                    ONLINE_ADDRESS => {
+                        self.join_choice = Some(self.join_addr.clone());
+                        MenuAction::JoinGame
+                    }
+                    k => {
+                        self.join_choice =
+                            self.peers.get(k - ONLINE_ADDRESS - 1).map(|p| p.1.clone());
+                        if self.join_choice.is_some() {
+                            MenuAction::JoinGame
+                        } else {
+                            MenuAction::None
+                        }
+                    }
+                }
+            }
+            Screen::Lobby => {
+                if input.back || (input.select && self.selected == n - 1) {
+                    return MenuAction::LeaveOnline;
+                }
+                if self.lobby_host {
+                    if self.selected == 1 && (dir != 0 || input.select) {
+                        self.lobby_elimination = !self.lobby_elimination;
+                    }
+                    if input.select && self.selected == 0 {
+                        return MenuAction::LobbyStart;
+                    }
+                }
+                MenuAction::None
+            }
             Screen::Results if input.back => MenuAction::ToTitle,
             Screen::Results => match (input.select, self.selected) {
                 (true, 0) => MenuAction::ToTitle,
@@ -301,7 +427,14 @@ mod tests {
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::StartElimination
         );
-        m.selected = 4;
+        m.selected = 3;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::None
+        );
+        assert_eq!(m.screen, Screen::Online);
+        m.go(Screen::Title);
+        m.selected = 5;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::None
@@ -325,6 +458,92 @@ mod tests {
         m.handle(press(|i| i.left = true), &mut s);
         assert_eq!(s.track, crate::track::TRACKS.len() - 1, "wraps");
         assert!(m.items(&s)[TITLE_TRACK].contains(crate::track::TRACKS[s.track].name));
+    }
+
+    #[test]
+    fn online_menu_hosts_and_joins_by_typed_address_or_tailnet_peer() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Online);
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::HostGame
+        );
+        // Typing only lands in the address row.
+        m.type_text("9");
+        assert_eq!(m.join_addr, "");
+        m.selected = ONLINE_ADDRESS;
+        m.type_text("100.64.0.2:27960 ;x");
+        m.backspace();
+        assert_eq!(m.join_addr, "100.64.0.2:27960");
+        assert!(m.items(&s)[ONLINE_ADDRESS].contains("100.64.0.2:27960"));
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::JoinGame
+        );
+        assert_eq!(m.join_target().as_deref(), Some("100.64.0.2:27960"));
+        // Tailnet peers appear as their own rows.
+        m.peers = vec![("THINKPAD".into(), "100.64.0.9".into())];
+        m.selected = ONLINE_ADDRESS + 1;
+        assert!(m.items(&s)[m.selected].contains("THINKPAD"));
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::JoinGame
+        );
+        assert_eq!(m.join_target().as_deref(), Some("100.64.0.9"));
+        // An empty address does nothing; Back returns to the title.
+        m.join_addr.clear();
+        m.selected = ONLINE_ADDRESS;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::None
+        );
+        m.handle(press(|i| i.back = true), &mut s);
+        assert_eq!(m.screen, Screen::Title);
+    }
+
+    #[test]
+    fn lobby_host_starts_and_picks_the_mode_guests_wait() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Lobby);
+        m.lobby_host = true;
+        assert!(m.items(&s)[1].contains("RACE"));
+        assert_eq!(
+            m.handle(
+                press(|i| {
+                    i.down = true;
+                }),
+                &mut s
+            ),
+            MenuAction::None
+        );
+        assert_eq!(
+            m.handle(press(|i| i.right = true), &mut s),
+            MenuAction::None
+        );
+        assert!(m.lobby_elimination);
+        assert!(m.items(&s)[1].contains("ELIMINATION"));
+        m.selected = 0;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::LobbyStart
+        );
+        assert_eq!(
+            m.handle(press(|i| i.back = true), &mut s),
+            MenuAction::LeaveOnline
+        );
+
+        let mut g = MenuState::new(Screen::Lobby);
+        g.lobby_host = false;
+        assert_eq!(
+            g.handle(press(|i| i.select = true), &mut s),
+            MenuAction::None,
+            "guests can't start"
+        );
+        g.selected = 1;
+        assert_eq!(
+            g.handle(press(|i| i.select = true), &mut s),
+            MenuAction::LeaveOnline
+        );
     }
 
     #[test]

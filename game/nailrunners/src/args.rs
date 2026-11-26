@@ -21,6 +21,12 @@ pub struct Args {
     pub attract: bool,
     /// Index into `track::TRACKS`.
     pub track: usize,
+    /// Host an online game at launch.
+    pub host: bool,
+    /// Join the online game at this address at launch.
+    pub join: Option<String>,
+    /// Player name shown to others online.
+    pub name: Option<String>,
 }
 
 /// What to play.
@@ -51,7 +57,7 @@ impl std::str::FromStr for Mode {
 }
 
 pub const USAGE: &str = "usage: nailrunners [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -69,6 +75,9 @@ pub fn parse(
     let mut mode = Mode::Race;
     let mut attract = false;
     let mut track = 0;
+    let mut host = false;
+    let mut join = None;
+    let mut name = None;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -103,6 +112,9 @@ pub fn parse(
             "--preset" => preset = value()?.parse()?,
             "--mode" => mode = value()?.parse()?,
             "--attract" => attract = true,
+            "--host" => host = true,
+            "--join" => join = Some(value()?),
+            "--name" => name = Some(value()?),
             "--track" => {
                 let v = value()?.to_ascii_lowercase();
                 track = crate::track::TRACKS
@@ -139,6 +151,9 @@ pub fn parse(
         mode,
         attract,
         track,
+        host,
+        join,
+        name,
     })
 }
 
@@ -238,6 +253,16 @@ mod tests {
             parse_strs(&["--mode", "elimination"], None).unwrap().mode,
             Mode::Elimination
         );
+    }
+
+    #[test]
+    fn args_online() {
+        let a = parse_strs(&["--join", "100.64.0.2", "--name", "Rusty"], None).unwrap();
+        assert_eq!(a.join.as_deref(), Some("100.64.0.2"));
+        assert_eq!(a.name.as_deref(), Some("Rusty"));
+        assert!(!a.host);
+        assert!(parse_strs(&["--host"], None).unwrap().host);
+        assert!(parse_strs(&["--join"], None).is_err());
     }
 
     #[test]

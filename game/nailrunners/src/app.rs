@@ -10,13 +10,16 @@ use nailrunners::args::{Args, Mode};
 use nailrunners::bench::{Bench, BenchPhase};
 use nailrunners::camera::ChaseCamera;
 use nailrunners::combat::CombatEvent;
-use nailrunners::controls::{SteerRamp, actions, drive_input, menu_input};
+use nailrunners::controls::{SteerRamp, actions, drive_input, menu_input, menu_input_typing};
 use nailrunners::effects::Effects;
 use nailrunners::fx_meshes;
 use nailrunners::ghost::{BestGhost, GhostRecorder};
 use nailrunners::hud::{self, HudInfo, RaceHud};
 use nailrunners::materials::{find_assets_dir, load_layers, shading};
 use nailrunners::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
+use nailrunners::netplay::{
+    self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
+};
 use nailrunners::particles::{Blend, Particle, ParticleSystem};
 use nailrunners::race::{Phase, Race, RaceEvent};
 use nailrunners::scenery;
@@ -69,6 +72,24 @@ enum Session {
     /// Bots racing behind the title screen.
     Attract,
     Play(Mode),
+}
+
+/// Online role of this machine.
+enum Net {
+    Off,
+    Host(Box<NetHost>),
+    Client {
+        link: Box<NetClient>,
+        /// Set once a race snapshot arrives.
+        view: Option<ClientView>,
+        lobby: Option<Lobby>,
+    },
+}
+
+/// What to do online right after launch (`--host` / `--join`).
+enum LaunchNet {
+    Host,
+    Join(String),
 }
 
 /// Tiny deterministic RNG for cosmetic effects.
@@ -169,6 +190,15 @@ struct Game {
     frame_events: Vec<RaceEvent>,
     /// The latest elimination knockout: racer and race time.
     knockout: Option<(usize, f64)>,
+    net: Net,
+    launch_net: Option<LaunchNet>,
+    /// Name shown to other players online.
+    player_name: String,
+    /// A short notice and when it appeared (wall seconds).
+    toast: Option<(String, f32)>,
+    /// Tailnet peers being looked up for the Online screen.
+    peers_rx: Option<std::sync::mpsc::Receiver<Vec<netplay::TailnetPeer>>>,
+    net_ticks: u32,
 }
 
 fn placeholder_kart() -> MeshData {
@@ -389,6 +419,24 @@ impl Game {
             sound: SoundDirector::default(),
             frame_events: Vec::new(),
             knockout: None,
+            net: Net::Off,
+            launch_net: if args.host {
+                Some(LaunchNet::Host)
+            } else {
+                args.join.clone().map(LaunchNet::Join)
+            },
+            player_name: rivet_net::clean_name(
+                &args
+                    .name
+                    .clone()
+                    .or_else(|| std::env::var("USER").ok())
+                    .or_else(|| std::env::var("USERNAME").ok())
+                    .unwrap_or_default(),
+            )
+            .to_ascii_uppercase(),
+            toast: None,
+            peers_rx: None,
+            net_ticks: 0,
         })
     }
 
@@ -413,11 +461,236 @@ impl Game {
         self.recorder = GhostRecorder::default();
         self.knockout = None;
         self.camera.reset();
-        self.menu = MenuState::new(if matches!(session, Session::Attract) {
+        let mut menu = MenuState::new(if matches!(session, Session::Attract) {
             Screen::Title
         } else {
             Screen::Playing
         });
+        // Online choices survive a restart.
+        menu.join_addr = std::mem::take(&mut self.menu.join_addr);
+        menu.peers = std::mem::take(&mut self.menu.peers);
+        menu.lobby_host = self.menu.lobby_host;
+        menu.lobby_elimination = self.menu.lobby_elimination;
+        self.menu = menu;
+        // Hosting: everyone connected gets a seat; bots fill the rest.
+        if let (Net::Host(h), Session::Play(mode)) = (&mut self.net, session) {
+            h.setup = RaceSetup {
+                track: self.settings.track as u8,
+                elimination: mode == Mode::Elimination,
+                laps: self.settings.laps as u8,
+                rivals: self.settings.rivals as u8,
+            };
+            let count = h.racer_count();
+            self.race = if mode == Mode::Elimination {
+                Race::new_elimination(&self.track, count, true)
+            } else {
+                Race::new(&self.track, count, true, self.settings.laps)
+            };
+            h.start(&mut self.race);
+            self.fit_race_buffers();
+        }
+    }
+
+    /// Per-kart effect buffers sized to the current race.
+    fn fit_race_buffers(&mut self) {
+        let n = self.race.racers.len();
+        self.effects = (0..n).map(|_| Effects::new()).collect();
+        self.leans = vec![0.0; n];
+        self.wheel_spin = vec![0.0; n];
+    }
+
+    fn show_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some((msg.into(), self.attract_t));
+    }
+
+    /// Starts hosting and opens the lobby.
+    fn host_game(&mut self) {
+        let setup = RaceSetup {
+            track: self.settings.track as u8,
+            elimination: self.menu.lobby_elimination,
+            laps: self.settings.laps as u8,
+            rivals: self.settings.rivals as u8,
+        };
+        match NetHost::bind(netplay::DEFAULT_PORT, setup, &self.player_name) {
+            Ok(h) => {
+                log::info!("hosting on UDP port {}", h.port());
+                self.net = Net::Host(Box::new(h));
+                self.menu.lobby_host = true;
+                self.menu.go(Screen::Lobby);
+            }
+            Err(e) => self.show_toast(format!("COULDN'T HOST: {e}").to_ascii_uppercase()),
+        }
+    }
+
+    /// Connects to `addr` and waits in the lobby.
+    fn join_game(&mut self, addr: &str) {
+        let Some(server) = netplay::resolve(addr) else {
+            self.show_toast(format!("CAN'T FIND {}", addr.to_ascii_uppercase()));
+            return;
+        };
+        match NetClient::connect(server, &self.player_name) {
+            Ok(link) => {
+                self.net = Net::Client {
+                    link: Box::new(link),
+                    view: None,
+                    lobby: None,
+                };
+                self.menu.lobby_host = false;
+                self.menu.go(Screen::Lobby);
+                self.show_toast(format!("CONNECTING TO {server}"));
+            }
+            Err(e) => self.show_toast(format!("COULDN'T CONNECT: {e}").to_ascii_uppercase()),
+        }
+    }
+
+    /// Leaves any online game and returns to the title.
+    fn leave_online(&mut self) {
+        self.net = Net::Off;
+        self.start(Session::Attract);
+    }
+
+    /// Back to the lobby after an online race (still connected).
+    fn back_to_lobby(&mut self) {
+        if let Net::Host(h) = &mut self.net {
+            h.end_race();
+        }
+        if let Net::Client { view, .. } = &mut self.net {
+            *view = None;
+        }
+        self.start(Session::Attract);
+        self.menu.go(Screen::Lobby);
+    }
+
+    /// A client builds its copy of the host's race from the first snapshot.
+    fn start_client_race(&mut self, snap: &Snapshot) {
+        if snap.setup.track as usize != self.settings.track {
+            self.settings.track = snap.setup.track as usize;
+            self.load_track();
+        }
+        let mode = if snap.setup.elimination {
+            Mode::Elimination
+        } else {
+            Mode::Race
+        };
+        self.start(Session::Play(mode));
+        let n = snap.racers.len();
+        let you = snap.you as usize;
+        let mut race = if snap.setup.elimination {
+            Race::new_elimination(&self.track, n, true)
+        } else {
+            Race::new(&self.track, n, true, snap.setup.laps as u32)
+        };
+        race.player = Some(you);
+        for r in &mut race.racers {
+            r.bot = None;
+        }
+        race.racers[you].state = snap.racers[you].state.clone();
+        race.racers[you].prev = race.racers[you].state.clone();
+        self.race = race;
+        self.fit_race_buffers();
+        if let Net::Client { view, .. } = &mut self.net {
+            *view = Some(ClientView::new(you, snap.race_id, n));
+        }
+    }
+
+    /// Network input for this frame: joins, leaves, lobby updates and race snapshots.
+    fn net_poll(&mut self, now: Instant) {
+        match &mut self.net {
+            Net::Off => {}
+            Net::Host(h) => {
+                let racing = matches!(self.session, Session::Play(_)) && h.in_race();
+                let notes = h.poll(now, racing.then_some(&mut self.race));
+                if !h.in_race() {
+                    h.setup.track = self.settings.track as u8;
+                    h.setup.elimination = self.menu.lobby_elimination;
+                    self.net_ticks += 1;
+                    if self.net_ticks.is_multiple_of(6) {
+                        h.send(None);
+                    }
+                }
+                // Benchmarks (automated two-machine runs) start as soon as someone joins.
+                let autostart = self.bench.is_some() && !h.in_race() && h.player_count() > 1;
+                for n in notes {
+                    match n {
+                        HostNote::Joined(name) => self.show_toast(format!("{name} JOINED")),
+                        HostNote::Left(_) => self.show_toast("A PLAYER LEFT"),
+                    }
+                }
+                if autostart {
+                    self.start(Session::Play(Mode::Race));
+                }
+            }
+            Net::Client { link, .. } => {
+                let notes = link.poll(now);
+                for n in notes {
+                    self.client_note(n);
+                }
+            }
+        }
+    }
+
+    fn client_note(&mut self, note: ClientNote) {
+        match note {
+            ClientNote::Connected => self.show_toast("CONNECTED"),
+            ClientNote::Rejected(reason) => {
+                self.net = Net::Off;
+                self.start(Session::Attract);
+                self.menu.go(Screen::Online);
+                self.show_toast(format!("REJECTED: {}", reason.to_ascii_uppercase()));
+            }
+            ClientNote::Lost => {
+                self.leave_online();
+                self.show_toast("CONNECTION LOST");
+            }
+            ClientNote::Lobby(l) => {
+                let racing = matches!(self.session, Session::Play(_));
+                if let Net::Client { lobby, .. } = &mut self.net {
+                    *lobby = Some(l);
+                }
+                // The host ended the race: back to the lobby.
+                if racing {
+                    self.back_to_lobby();
+                }
+            }
+            ClientNote::Snapshot(snap) => {
+                let fresh = match &self.net {
+                    Net::Client { view: Some(v), .. } => v.race_id != snap.race_id,
+                    Net::Client { view: None, .. } => true,
+                    _ => return,
+                };
+                if fresh {
+                    self.start_client_race(&snap);
+                }
+                let events = match &mut self.net {
+                    Net::Client { view: Some(v), .. } => v.apply(&mut self.race, &snap),
+                    _ => return,
+                };
+                self.after_step(&events);
+                self.combat_effects(&events);
+                self.frame_events.extend(events);
+            }
+        }
+    }
+
+    /// Fetches tailnet peers in the background while the Online screen is open.
+    fn poll_peers(&mut self) {
+        if self.menu.screen != Screen::Online {
+            return;
+        }
+        if let Some(rx) = &self.peers_rx {
+            if let Ok(peers) = rx.try_recv() {
+                self.menu.peers = peers
+                    .into_iter()
+                    .map(|p| (p.name, p.ip.to_string()))
+                    .collect();
+            }
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(netplay::tailscale_peers());
+        });
+        self.peers_rx = Some(rx);
     }
 
     /// The racer the camera and HUD follow.
@@ -471,6 +744,12 @@ impl Game {
 
     /// Returns `Some(exit code)` when the app should quit.
     fn frame(&mut self, since_launch: f64) -> Option<ExitCode> {
+        match self.launch_net.take() {
+            Some(LaunchNet::Host) => self.host_game(),
+            Some(LaunchNet::Join(addr)) => self.join_game(&addr),
+            None => {}
+        }
+        self.poll_peers();
         let now = Instant::now();
         let frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
@@ -503,26 +782,64 @@ impl Game {
                         self.race.respawn_racer(p, &self.track);
                     }
                     if act.fire {
-                        self.race.fire(p);
+                        match &mut self.net {
+                            // The host fires for us.
+                            Net::Client { link, .. } => link.fires = link.fires.wrapping_add(1),
+                            _ => self.race.fire(p),
+                        }
                     }
                 }
             }
-            Screen::Title | Screen::Settings | Screen::Paused | Screen::Results => {
-                let paused_game =
-                    matches!(self.session, Session::Play(_)) && self.menu.screen != Screen::Results;
+            Screen::Title
+            | Screen::Settings
+            | Screen::Paused
+            | Screen::Results
+            | Screen::Online
+            | Screen::Lobby => {
+                // Online races can't be paused.
+                let online = !matches!(self.net, Net::Off);
+                let paused_game = matches!(self.session, Session::Play(_))
+                    && self.menu.screen != Screen::Results
+                    && !online;
                 simulate = !paused_game;
-                let input = menu_input(&self.keys, pad);
+                let typing = self.menu.screen == Screen::Online
+                    && self.menu.selected == nailrunners::menu::ONLINE_ADDRESS;
+                let input = if typing {
+                    menu_input_typing(&self.keys, pad)
+                } else {
+                    menu_input(&self.keys, pad)
+                };
                 match self.menu.handle(input, &mut self.settings) {
                     MenuAction::None => {}
                     MenuAction::StartRace => self.start(Session::Play(Mode::Race)),
                     MenuAction::StartTimeTrial => self.start(Session::Play(Mode::TimeTrial)),
                     MenuAction::StartElimination => self.start(Session::Play(Mode::Elimination)),
                     MenuAction::Resume => self.menu.go(Screen::Playing),
-                    MenuAction::Restart => self.start(self.session),
+                    MenuAction::Restart => match self.net {
+                        // Only the host decides when to race again.
+                        Net::Client { .. } => {}
+                        _ => self.start(self.session),
+                    },
+                    MenuAction::ToTitle if online => self.back_to_lobby(),
                     MenuAction::ToTitle => self.start(Session::Attract),
                     MenuAction::Quit => return Some(ExitCode::SUCCESS),
                     MenuAction::PresetChanged => self.rebuild_renderer(),
                     MenuAction::TrackChanged => self.load_track(),
+                    MenuAction::HostGame => self.host_game(),
+                    MenuAction::JoinGame => {
+                        if let Some(addr) = self.menu.join_target() {
+                            self.join_game(&addr);
+                        }
+                    }
+                    MenuAction::LobbyStart => {
+                        let mode = if self.menu.lobby_elimination {
+                            Mode::Elimination
+                        } else {
+                            Mode::Race
+                        };
+                        self.start(Session::Play(mode));
+                    }
+                    MenuAction::LeaveOnline => self.leave_online(),
                 }
             }
         }
@@ -547,9 +864,42 @@ impl Game {
             0
         };
         self.frame_events.clear();
+        self.net_poll(now);
         if simulate {
             for _ in 0..steps {
+                if let Net::Client {
+                    link,
+                    view: Some(view),
+                    ..
+                } = &mut self.net
+                    && matches!(self.session, Session::Play(_))
+                {
+                    // A client drives its own kart; everything else comes from the host.
+                    let you = view.you;
+                    // Benchmarks drive the client's kart with the autopilot.
+                    let input = if self.bench.is_some() {
+                        nailrunners::autopilot::autopilot(
+                            &self.race.racers[you].state,
+                            &self.track.centerline,
+                        )
+                    } else {
+                        input
+                    };
+                    self.race.step_own(&self.track, you, input, TICK_DT as f32);
+                    view.tick_others(&mut self.race, TICK_DT as f32);
+                    link.send_kart(&self.race.racers[you].state, view, now);
+                    continue;
+                }
                 let events = self.race.step(&self.track, input, TICK_DT as f32);
+                if let Net::Host(h) = &mut self.net
+                    && h.in_race()
+                {
+                    h.record(&events);
+                    self.net_ticks += 1;
+                    if self.net_ticks.is_multiple_of(2) {
+                        h.send(Some(&self.race));
+                    }
+                }
                 self.after_step(&events);
                 self.combat_effects(&events);
                 self.frame_events.extend(events);
@@ -1080,12 +1430,64 @@ impl Game {
             let items = self.menu.items(&self.settings);
             let on_title = self.menu.screen == Screen::Title;
             let title = on_title.then_some("NAILRUNNERS");
-            let sub = if on_title {
-                "COMBAT KART RACING IN THE WASTES"
-            } else {
-                "SETTINGS"
+            let sub = match self.menu.screen {
+                Screen::Title => "COMBAT KART RACING IN THE WASTES",
+                Screen::Online => "PLAY ONLINE",
+                Screen::Lobby => "LOBBY",
+                _ => "SETTINGS",
             };
             hud::draw_menu(o, w, h, title, sub, &items, self.menu.selected);
+            let n_tracks = nailrunners::track::TRACKS.len();
+            match (&self.net, self.menu.screen) {
+                (_, Screen::Online) => {
+                    let lines = [
+                        format!("YOUR NAME  {}", self.player_name),
+                        "HOST, THEN SHARE YOUR IP OR TAILSCALE NAME".to_string(),
+                        format!("UDP PORT {}", netplay::DEFAULT_PORT),
+                        if self.menu.peers.is_empty() {
+                            "NO TAILSCALE PEERS FOUND".to_string()
+                        } else {
+                            format!("{} TAILSCALE PEERS ONLINE", self.menu.peers.len())
+                        },
+                    ];
+                    hud::draw_lobby(o, w, h, "ONLINE", &lines, &[]);
+                }
+                (Net::Host(host), Screen::Lobby) => {
+                    let def = &nailrunners::track::TRACKS[self.settings.track % n_tracks];
+                    let lines = [
+                        format!("HOSTING ON PORT {}", host.port()),
+                        def.name.to_string(),
+                        format!(
+                            "{} PLAYERS  {} RACERS",
+                            host.player_count(),
+                            host.racer_count()
+                        ),
+                    ];
+                    hud::draw_lobby(o, w, h, "YOUR LOBBY", &lines, &host.names());
+                }
+                (Net::Client { link, lobby, .. }, Screen::Lobby) => {
+                    let (lines, names) = match lobby {
+                        Some(l) => (
+                            vec![
+                                format!("JOINED {}", link.server()),
+                                nailrunners::track::TRACKS[l.setup.track as usize % n_tracks]
+                                    .name
+                                    .to_string(),
+                                if l.setup.elimination {
+                                    "ELIMINATION"
+                                } else {
+                                    "RACE"
+                                }
+                                .to_string(),
+                            ],
+                            l.names.clone(),
+                        ),
+                        None => (vec![format!("CONNECTING TO {}", link.server())], Vec::new()),
+                    };
+                    hud::draw_lobby(o, w, h, "LOBBY", &lines, &names);
+                }
+                _ => {}
+            }
             if on_title {
                 let n = nailrunners::track::TRACKS.len();
                 let def = &nailrunners::track::TRACKS[self.settings.track % n];
@@ -1176,7 +1578,7 @@ impl Game {
                 Screen::Results => {
                     hud::draw_menu(o, w, h * 1.6, None, "", &items, self.menu.selected)
                 }
-                Screen::Title | Screen::Playing => {}
+                Screen::Title | Screen::Playing | Screen::Online | Screen::Lobby => {}
             }
         }
         match (self.settings.fps, self.bench.is_some()) {
@@ -1193,6 +1595,9 @@ impl Game {
                 hud::draw_fps_counter(o, w, h, self.stats.summary().fps)
             }
             (FpsDisplay::Off, false) => {}
+        }
+        if let Some((msg, at)) = &self.toast {
+            hud::draw_toast(o, w, h, msg, self.attract_t - at);
         }
     }
 }
@@ -1232,6 +1637,14 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     game.keys.on_key(code, event.state.is_pressed());
+                    // Text entry (the join address).
+                    if event.state.is_pressed() {
+                        if code == winit::keyboard::KeyCode::Backspace {
+                            game.menu.backspace();
+                        } else if let Some(text) = event.text.as_ref() {
+                            game.menu.type_text(text);
+                        }
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
