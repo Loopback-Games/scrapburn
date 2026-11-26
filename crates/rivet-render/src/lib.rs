@@ -4,6 +4,7 @@
 pub mod context;
 pub mod font;
 pub mod frame_graph;
+pub mod frustum;
 pub mod gpu_timer;
 pub mod mesh;
 pub mod noise;
@@ -15,6 +16,7 @@ pub mod texture;
 
 pub use context::{Frame, GpuContext, PresentChoice, RenderError, headless_device};
 pub use frame_graph::draw_frame_graph;
+pub use frustum::Frustum;
 pub use gpu_timer::GpuTimer;
 pub use mesh::{
     DITHER, EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material,

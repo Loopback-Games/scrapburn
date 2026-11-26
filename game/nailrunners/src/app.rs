@@ -19,6 +19,7 @@ use nailrunners::materials::{find_assets_dir, load_layers, shading};
 use nailrunners::menu::{MenuAction, MenuState, Screen, Settings};
 use nailrunners::particles::{Blend, Particle, ParticleSystem};
 use nailrunners::race::{Phase, Race, RaceEvent};
+use nailrunners::scenery;
 use nailrunners::track::{Track, build_graybox_loop};
 use nailrunners::{MAX_STEPS, TICK_DT};
 use rivet_assets::Rgba8Image;
@@ -128,6 +129,9 @@ struct Game {
     ctx: GpuContext,
     scene: SceneRenderer,
     layers: Vec<Vec<Rgba8Image>>,
+    shading_table: Vec<rivet_render::MaterialShading>,
+    prop_gpu: Vec<Option<GpuMesh>>,
+    placements: Vec<scenery::Placement>,
     overlay: Overlay,
     timer: Option<GpuTimer>,
     track: Track,
@@ -215,6 +219,31 @@ impl Game {
             |t| rivet_assets::resized(&t, size.0, size.1),
         );
         layers.push(rivet_assets::mip_chain(&kart_layer));
+        // Props: one texture layer each, after the kart.
+        let mut shading_table: Vec<rivet_render::MaterialShading> = shading().to_vec();
+        let mut prop_meshes = Vec::new();
+        for kind in scenery::PROPS.iter() {
+            let layer = layers.len() as u32;
+            match scenery::load_prop(&assets, kind.name, layer) {
+                Ok((mesh, tex)) => {
+                    let img = tex.map_or_else(
+                        || layers[0][0].clone(),
+                        |t| rivet_assets::resized(&t, size.0, size.1),
+                    );
+                    layers.push(rivet_assets::mip_chain(&img));
+                    shading_table.push(rivet_render::MaterialShading {
+                        specular: kind.specular,
+                        gloss: 24.0,
+                        triplanar_scale: 0.2,
+                    });
+                    prop_meshes.push(Some(mesh));
+                }
+                Err(e) => {
+                    log::warn!("prop {} unavailable ({e})", kind.name);
+                    prop_meshes.push(None);
+                }
+            }
+        }
         let settings = Settings {
             preset: args.preset,
             ..Settings::default()
@@ -226,7 +255,7 @@ impl Game {
             ctx.size(),
             settings.preset,
             &layers,
-            &shading(),
+            &shading_table,
         );
         let overlay = Overlay::new(&ctx.device, ctx.format(), None);
         let timer = GpuTimer::new(&ctx.device, &ctx.queue);
@@ -244,6 +273,11 @@ impl Game {
             );
         }
         let ghost_mesh = GpuMesh::new(&ctx.device, &ghost_data);
+        let prop_gpu: Vec<Option<GpuMesh>> = prop_meshes
+            .iter()
+            .map(|m| m.as_ref().map(|m| GpuMesh::new(&ctx.device, m)))
+            .collect();
+        let placements = scenery::placements(&track);
         let g = |m: MeshData| GpuMesh::new(&ctx.device, &m);
         let fx_meshes = FxMeshes {
             shell: g(fx_meshes::item_shell()),
@@ -280,6 +314,9 @@ impl Game {
             ctx,
             scene,
             layers,
+            shading_table,
+            prop_gpu,
+            placements,
             overlay,
             timer,
             track,
@@ -353,7 +390,7 @@ impl Game {
             self.ctx.size(),
             self.settings.preset,
             &self.layers,
-            &shading(),
+            &self.shading_table,
         );
     }
 
@@ -707,6 +744,26 @@ impl Game {
                 });
             }
         }
+        // Scenery: frustum-culled; small props dropped far away; shadows only near the focus.
+        let frustum = rivet_render::Frustum::from_view_proj(&(view.proj * view.view));
+        for p in &self.placements {
+            let Some(mesh) = self.prop_gpu[p.kind].as_ref() else {
+                continue;
+            };
+            let d = p.pos.distance(fpos);
+            if (p.size < 7.0 && d > 300.0)
+                || !frustum.sphere_visible(p.pos + Vec3::Y * p.size * 0.4, p.size * 0.7)
+            {
+                continue;
+            }
+            draws.push(Draw {
+                mesh,
+                model: p.model(),
+                casts_shadow: d < 110.0 + p.size,
+                tint: [1.0; 3],
+            });
+        }
+
         // Items and weapons.
         let spin = Mat4::from_rotation_y(self.attract_t * 1.6)
             * Mat4::from_rotation_x(self.attract_t * 0.9);

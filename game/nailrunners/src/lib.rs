@@ -18,6 +18,7 @@ pub mod menu;
 pub mod particles;
 pub mod png;
 pub mod race;
+pub mod scenery;
 pub mod style;
 pub mod terrain;
 pub mod track;
