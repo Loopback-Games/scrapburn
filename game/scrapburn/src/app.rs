@@ -1461,7 +1461,13 @@ impl Game {
         // Items and weapons.
         let spin = Mat4::from_rotation_y(self.attract_t * 1.6)
             * Mat4::from_rotation_x(self.attract_t * 0.9);
-        for b in self.race.combat.boxes.iter().filter(|b| b.active()) {
+        for b in self
+            .race
+            .combat
+            .boxes
+            .iter()
+            .filter(|b| b.active() && self.race.combat_on)
+        {
             let bob = Vec3::Y * (self.attract_t * 2.0 + b.pos.x).sin() * 0.15;
             let at = Mat4::from_translation(b.pos + bob);
             draws.push(Draw {
@@ -1489,23 +1495,31 @@ impl Game {
             });
         }
         for (from, to) in self.race.combat.chains(&self.race.racers) {
-            let d = to - from;
-            let len = d.length().max(0.01);
-            let rot = glam::Quat::from_rotation_arc(Vec3::Z, d / len);
-            let m = Mat4::from_scale_rotation_translation(
-                Vec3::new(1.0, 1.0, len),
-                rot,
-                from + d * 0.5,
-            );
-            draws.push(Draw {
-                mesh: &self.fx_meshes.chain,
-                model: m,
-                casts_shadow: true,
-                tint: [1.0; 3],
-            });
+            // The cable arcs over the track in short links instead of one straight bar.
+            let pts = scrapburn::combat::cable_points(from, to, 10);
+            for w in pts.windows(2) {
+                let d = w[1] - w[0];
+                let len = d.length().max(0.01);
+                let rot = glam::Quat::from_rotation_arc(Vec3::Z, d / len);
+                draws.push(Draw {
+                    mesh: &self.fx_meshes.chain,
+                    model: Mat4::from_scale_rotation_translation(
+                        Vec3::new(1.0, 1.0, len),
+                        rot,
+                        w[0] + d * 0.5,
+                    ),
+                    casts_shadow: false,
+                    tint: [1.0; 3],
+                });
+            }
+            let n = pts.len();
+            let head = (pts[n - 1] - pts[n - 2]).normalize_or(Vec3::Z);
             draws.push(Draw {
                 mesh: &self.fx_meshes.hook,
-                model: Mat4::from_rotation_translation(rot, to),
+                model: Mat4::from_rotation_translation(
+                    glam::Quat::from_rotation_arc(Vec3::Z, head),
+                    to,
+                ),
                 casts_shadow: true,
                 tint: [1.0; 3],
             });

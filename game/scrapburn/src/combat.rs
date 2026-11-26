@@ -579,9 +579,47 @@ impl Combat {
 
     /// Chain segments (from shooter to hook) for rendering.
     pub fn chains<'a>(&'a self, racers: &'a [Racer]) -> impl Iterator<Item = (Vec3, Vec3)> + 'a {
-        self.hooks
-            .iter()
-            .map(|h| (racers[h.owner].state.position + Vec3::Y * 0.6, h.pos))
+        self.hooks.iter().map(|h| {
+            (
+                racers[h.owner].state.position + Vec3::Y * 1.0,
+                h.pos + Vec3::Y * 0.4,
+            )
+        })
+    }
+}
+
+/// Points along a harpoon cable from `from` to `to`: an arc lifted above the straight line so
+/// the cable rides over the road, curbs and walls instead of cutting through them.
+pub fn cable_points(from: Vec3, to: Vec3, segments: usize) -> Vec<Vec3> {
+    let lift = 1.5 + from.distance(to) * 0.12;
+    (0..=segments)
+        .map(|k| {
+            let t = k as f32 / segments as f32;
+            from.lerp(to, t) + Vec3::Y * lift * 4.0 * t * (1.0 - t)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod cable_tests {
+    use super::*;
+
+    #[test]
+    fn the_cable_arcs_over_the_track() {
+        let (a, b) = (Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 40.0));
+        let pts = cable_points(a, b, 12);
+        assert_eq!(pts.len(), 13);
+        assert_eq!(pts[0], a);
+        assert_eq!(*pts.last().unwrap(), b);
+        assert!(
+            pts.iter().all(|p| p.y >= 1.0 - 1e-5),
+            "never below the ends"
+        );
+        assert!(
+            pts[6].y > 1.0 + 1.5 + 4.0,
+            "mid-span lifted well clear ({})",
+            pts[6].y
+        );
     }
 }
 
