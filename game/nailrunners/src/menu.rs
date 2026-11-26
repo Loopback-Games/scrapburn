@@ -244,6 +244,10 @@ impl MenuState {
                         "RACE"
                     }
                 ),
+                format!(
+                    "TRACK  < {} >",
+                    crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
+                ),
                 "LEAVE".into(),
             ],
             Screen::Lobby => vec!["WAITING FOR THE HOST".into(), "LEAVE".into()],
@@ -371,6 +375,12 @@ impl MenuState {
                 if self.lobby_host {
                     if self.selected == 1 && (dir != 0 || input.select) {
                         self.lobby_elimination = !self.lobby_elimination;
+                    }
+                    if self.selected == 2 && (dir != 0 || input.select) {
+                        let tracks = crate::track::TRACKS.len() as i32;
+                        let step = if dir != 0 { dir } else { 1 };
+                        s.track = (s.track as i32 + step).rem_euclid(tracks) as usize;
+                        return MenuAction::TrackChanged;
                     }
                     if input.select && self.selected == 0 {
                         return MenuAction::LobbyStart;
@@ -522,6 +532,14 @@ mod tests {
         );
         assert!(m.lobby_elimination);
         assert!(m.items(&s)[1].contains("ELIMINATION"));
+        m.selected = 0;
+        m.selected = 2;
+        assert!(m.items(&s)[2].contains(crate::track::TRACKS[0].name));
+        assert_eq!(
+            m.handle(press(|i| i.right = true), &mut s),
+            MenuAction::TrackChanged
+        );
+        assert_eq!(s.track, 1);
         m.selected = 0;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),

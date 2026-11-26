@@ -28,13 +28,21 @@ const KEEPALIVE: Duration = Duration::from_millis(500);
 const MIN_CONNECT: usize = 64;
 /// Datagrams handled per poll, so a flood can't stall the frame.
 const MAX_PER_POLL: usize = 256;
-/// Longest player name kept, in characters.
+/// Longest player name kept, in bytes.
 const MAX_NAME: usize = 16;
 
 /// A printable, trimmed, length-limited player name.
 pub fn clean_name(name: &str) -> String {
     let s: String = name.chars().filter(|c| !c.is_control()).collect();
-    let s: String = s.trim().chars().take(MAX_NAME).collect();
+    // At most MAX_NAME bytes (so names have a fixed worst-case size on the wire).
+    let mut out = String::new();
+    for c in s.trim().chars() {
+        if out.len() + c.len_utf8() > MAX_NAME {
+            break;
+        }
+        out.push(c);
+    }
+    let s = out;
     if s.is_empty() {
         "PLAYER".to_string()
     } else {
@@ -680,6 +688,10 @@ mod tests {
         assert_eq!(clean_name("  Rusty\n\u{7}  "), "Rusty");
         assert_eq!(clean_name("\t"), "PLAYER");
         assert_eq!(clean_name(&"x".repeat(40)).len(), 16);
+        assert!(
+            clean_name(&"Ж".repeat(40)).len() <= 16,
+            "limited in bytes, not just characters"
+        );
     }
 
     #[test]

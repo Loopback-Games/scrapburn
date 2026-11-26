@@ -65,7 +65,7 @@ weapons; each player drives their own kart locally, so steering feels immediate 
 - **Join:** Online, then type the address (`100.64.0.2`, `my-desktop`, `host:port`), or pick
   one of your online Tailscale peers from the list.
 - On the command line: `just run --host` or `just run --join 100.64.0.2`. Add
-  `--name RUSTY` to set your name; by default it's your user name.
+  `--name RUSTY` to set your name; otherwise you get a generated one like `RACER 4F`.
 
 Tailscale is the easy path: it works across networks with nothing to forward. Without it, the
 host must forward UDP 27960. Up to eight racers can play, and bots fill the empty seats.

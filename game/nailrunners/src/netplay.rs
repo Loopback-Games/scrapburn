@@ -394,6 +394,16 @@ impl Snapshot {
     /// Encodes as much as fits in one datagram: racers always, then combat objects and events
     /// as space allows (events left out are resent, since clients acknowledge them).
     pub fn encode(&self) -> Vec<u8> {
+        let bytes = self.encode_with(true);
+        if bytes.len() <= MAX_PAYLOAD {
+            bytes
+        } else {
+            // Never send an oversized datagram: drop the extras (events are resent later).
+            self.encode_with(false)
+        }
+    }
+
+    fn encode_with(&self, extras: bool) -> Vec<u8> {
         let mut w = Writer::new();
         w.u8(TAG_SNAPSHOT).u32(self.race_id);
         put_setup(&mut w, &self.setup);
@@ -427,12 +437,16 @@ impl Snapshot {
         for &h in c.held.iter().take(MAX_RACERS) {
             w.u8(item_code(h));
         }
-        let orbs = c.orbs.len().min(4);
-        let hooks = c.hooks.len().min(8);
+        let orbs = if extras { c.orbs.len().min(4) } else { 0 };
+        let hooks = if extras { c.hooks.len().min(8) } else { 0 };
         // Room left after orbs, hooks, the counts and at least a few events.
         let fixed = orbs * 13 + hooks * 15 + 3 + 4 + 1 + 4 * MAX_EVENT_BYTES;
         let room = MAX_PAYLOAD.saturating_sub(w.len() + fixed);
-        let nails = c.nails.len().min(room / 24).min(255);
+        let nails = if extras {
+            c.nails.len().min(room / 24).min(255)
+        } else {
+            0
+        };
         w.u8(nails as u8);
         for &(p, v) in c.nails.iter().take(nails) {
             put_vec3(&mut w, p);
@@ -451,7 +465,11 @@ impl Snapshot {
             w.u8(0);
         }
         let room = MAX_PAYLOAD.saturating_sub(w.len() + 5);
-        let events = self.events.len().min(room / MAX_EVENT_BYTES).min(255);
+        let events = if extras {
+            self.events.len().min(room / MAX_EVENT_BYTES).min(255)
+        } else {
+            0
+        };
         w.u32(self.first_event).u8(events as u8);
         for e in self.events.iter().take(events) {
             put_event(&mut w, e);
@@ -1000,7 +1018,13 @@ pub fn resolve(addr: &str) -> Option<SocketAddr> {
     } else {
         format!("{addr}:{DEFAULT_PORT}")
     };
-    with_port.to_socket_addrs().ok()?.next()
+    // The host listens on IPv4; prefer an IPv4 address when a name has both.
+    let addrs: Vec<SocketAddr> = with_port.to_socket_addrs().ok()?.collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(addrs.first())
+        .copied()
 }
 
 // --- Tailscale ---------------------------------------------------------------------------------
@@ -1269,6 +1293,34 @@ mod tests {
             race.step(&t, DriveInput::default(), 1.0 / 60.0);
             race.racers[1].state.position == moved.position
         }));
+    }
+
+    #[test]
+    fn snapshots_never_exceed_one_datagram() {
+        let t = build_graybox_loop();
+        let mut race = Race::new(&t, MAX_RACERS, true, 3);
+        for r in &mut race.racers {
+            r.name = rivet_net::clean_name(&"Жжжжжжжжжжжжжжжжжжжж".repeat(3)).into();
+        }
+        let mut combat = race.combat.net();
+        combat.nails = vec![(Vec3::ONE, Vec3::X); 80];
+        combat.orbs = vec![(Vec3::ONE, 0); 4];
+        combat.hooks = vec![(0, Vec3::ONE, Some(1)); 8];
+        let snap = Snapshot {
+            combat,
+            ..snapshot(&race, 1, setup(), 0, 1, vec![RaceEvent::Go; 200])
+        };
+        let bytes = snap.encode();
+        assert!(bytes.len() <= MAX_PAYLOAD, "{} bytes", bytes.len());
+        assert!(ToClient::decode(&bytes).is_ok());
+    }
+
+    #[test]
+    fn hostnames_prefer_ipv4() {
+        assert_eq!(
+            resolve("localhost"),
+            Some(SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT)))
+        );
     }
 
     #[test]

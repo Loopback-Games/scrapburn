@@ -83,6 +83,8 @@ enum Net {
         /// Set once a race snapshot arrives.
         view: Option<ClientView>,
         lobby: Option<Lobby>,
+        /// A race this player left early: its snapshots are ignored until the next one.
+        sat_out: Option<u32>,
     },
 }
 
@@ -198,6 +200,13 @@ struct Game {
     toast: Option<(String, f32)>,
     /// Tailnet peers being looked up for the Online screen.
     peers_rx: Option<std::sync::mpsc::Receiver<Vec<netplay::TailnetPeer>>>,
+    /// When the peer list was last fetched (wall seconds).
+    peers_at: f32,
+    /// A hostname being looked up off the frame thread.
+    resolving: Option<(
+        String,
+        std::sync::mpsc::Receiver<Option<std::net::SocketAddr>>,
+    )>,
     net_ticks: u32,
     /// Live fire: torch and brazier flames.
     flame_fx: ParticleSystem,
@@ -442,17 +451,18 @@ impl Game {
             } else {
                 args.join.clone().map(LaunchNet::Join)
             },
-            player_name: rivet_net::clean_name(
-                &args
-                    .name
-                    .clone()
-                    .or_else(|| std::env::var("USER").ok())
-                    .or_else(|| std::env::var("USERNAME").ok())
-                    .unwrap_or_default(),
-            )
+            // A generated name unless the player picks one (the OS account name stays private).
+            player_name: rivet_net::clean_name(&args.name.clone().unwrap_or_else(|| {
+                let t = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.subsec_nanos());
+                format!("RACER {:02X}", (t >> 8) & 0xff)
+            }))
             .to_ascii_uppercase(),
             toast: None,
             peers_rx: None,
+            peers_at: -100.0,
+            resolving: None,
             net_ticks: 0,
             flame_fx: ParticleSystem::new(1500),
             flame_acc: 0.0,
@@ -541,18 +551,52 @@ impl Game {
         }
     }
 
-    /// Connects to `addr` and waits in the lobby.
+    /// Joins `addr`: IP addresses connect at once, names are looked up on a thread first.
     fn join_game(&mut self, addr: &str) {
-        let Some(server) = netplay::resolve(addr) else {
-            self.show_toast(format!("CAN'T FIND {}", addr.to_ascii_uppercase()));
+        let literal = addr.parse::<std::net::SocketAddr>().is_ok()
+            || addr.parse::<std::net::IpAddr>().is_ok();
+        if literal {
+            if let Some(server) = netplay::resolve(addr) {
+                self.connect_to(server);
+            }
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = addr.to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send(netplay::resolve(&name));
+        });
+        self.resolving = Some((addr.to_string(), rx));
+        self.show_toast(format!("LOOKING UP {}", addr.to_ascii_uppercase()));
+    }
+
+    /// Finishes a pending name lookup.
+    fn poll_resolve(&mut self) {
+        let Some((name, rx)) = &self.resolving else {
             return;
         };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        let name = name.clone();
+        self.resolving = None;
+        match result {
+            Some(server) => self.connect_to(server),
+            None => self.show_toast(format!("CAN'T FIND {}", name.to_ascii_uppercase())),
+        }
+    }
+
+    /// Connects to `server` and waits in the lobby.
+    fn connect_to(&mut self, server: std::net::SocketAddr) {
         match NetClient::connect(server, &self.player_name) {
             Ok(link) => {
                 self.net = Net::Client {
                     link: Box::new(link),
                     view: None,
                     lobby: None,
+                    sat_out: None,
                 };
                 self.menu.lobby_host = false;
                 self.menu.go(Screen::Lobby);
@@ -560,6 +604,17 @@ impl Game {
             }
             Err(e) => self.show_toast(format!("COULDN'T CONNECT: {e}").to_ascii_uppercase()),
         }
+    }
+
+    /// Hosting, on the results screen, with a remote player still on track.
+    fn remote_still_racing(&self) -> bool {
+        matches!(self.net, Net::Host(_))
+            && self.menu.screen == Screen::Results
+            && self
+                .race
+                .racers
+                .iter()
+                .any(|r| r.remote && r.finish.is_none() && !r.out)
     }
 
     /// Leaves any online game and returns to the title.
@@ -573,8 +628,9 @@ impl Game {
         if let Net::Host(h) = &mut self.net {
             h.end_race();
         }
-        if let Net::Client { view, .. } = &mut self.net {
-            *view = None;
+        if let Net::Client { view, sat_out, .. } = &mut self.net {
+            // Sit out the rest of this race instead of being pulled back in.
+            *sat_out = view.take().map(|v| v.race_id);
         }
         self.start(Session::Attract);
         self.menu.go(Screen::Lobby);
@@ -673,6 +729,9 @@ impl Game {
             }
             ClientNote::Snapshot(snap) => {
                 let fresh = match &self.net {
+                    Net::Client {
+                        sat_out: Some(id), ..
+                    } if *id == snap.race_id => return,
                     Net::Client { view: Some(v), .. } => v.race_id != snap.race_id,
                     Net::Client { view: None, .. } => true,
                     _ => return,
@@ -702,7 +761,13 @@ impl Game {
                     .into_iter()
                     .map(|p| (p.name, p.ip.to_string()))
                     .collect();
+                self.peers_rx = None;
+                self.peers_at = self.attract_t;
             }
+            return;
+        }
+        // Refresh every few seconds while the screen is open.
+        if self.attract_t - self.peers_at < 5.0 {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -771,6 +836,7 @@ impl Game {
             None => {}
         }
         self.poll_peers();
+        self.poll_resolve();
         let now = Instant::now();
         let frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
@@ -841,6 +907,9 @@ impl Game {
                         Net::Client { .. } => {}
                         _ => self.start(self.session),
                     },
+                    MenuAction::ToTitle if online && self.remote_still_racing() => {
+                        self.show_toast("WAITING FOR EVERYONE TO FINISH")
+                    }
                     MenuAction::ToTitle if online => self.back_to_lobby(),
                     MenuAction::ToTitle => self.start(Session::Attract),
                     MenuAction::Quit => return Some(ExitCode::SUCCESS),
