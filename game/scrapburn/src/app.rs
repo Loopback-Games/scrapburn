@@ -241,6 +241,8 @@ struct Game {
         std::sync::mpsc::Receiver<Option<std::net::SocketAddr>>,
     )>,
     net_ticks: u32,
+    /// Picks the graphics preset from measured frame times (when not set by hand).
+    tuner: scrapburn::autotune::AutoTuner,
     /// Live fire: torch and brazier flames.
     flame_fx: ParticleSystem,
     flame_points: Vec<Vec3>,
@@ -380,7 +382,15 @@ impl Game {
             }
         }
         let settings = Settings {
-            preset: args.preset,
+            // Explicit preset, Medium for benchmarks, otherwise start High and auto-tune.
+            preset: args
+                .preset
+                .unwrap_or(if args.bench.is_some() && !args.attract {
+                    rivet_render::Preset::Medium
+                } else {
+                    rivet_render::Preset::High
+                }),
+            auto_preset: args.preset.is_none() && (args.bench.is_none() || args.attract),
             track: args.track,
             ..Settings::default()
         };
@@ -533,6 +543,14 @@ impl Game {
             peers_at: -100.0,
             resolving: None,
             net_ticks: 0,
+            tuner: {
+                let mut t = scrapburn::autotune::AutoTuner::new();
+                // Benchmarks of races use a fixed preset; a title-screen benchmark may tune.
+                if args.preset.is_some() || (args.bench.is_some() && !args.attract) {
+                    t.stop();
+                }
+                t
+            },
             flame_fx: ParticleSystem::new(1500),
             flame_acc: 0.0,
         })
@@ -986,7 +1004,10 @@ impl Game {
                     MenuAction::ToTitle if online => self.back_to_lobby(),
                     MenuAction::ToTitle => self.start(Session::Attract),
                     MenuAction::Quit => return Some(ExitCode::SUCCESS),
-                    MenuAction::PresetChanged => self.rebuild_renderer(),
+                    MenuAction::PresetChanged => {
+                        self.tuner.stop();
+                        self.rebuild_renderer();
+                    }
                     MenuAction::TrackChanged => self.load_track(),
                     MenuAction::SceneryChanged => {
                         self.placements = self.scenery_for(&self.track);
@@ -1088,6 +1109,24 @@ impl Game {
             .as_mut()
             .and_then(|t| t.poll_ms(&self.ctx.device));
         self.stats.push(cpu_ms, gpu_ms);
+        // Auto graphics: settle the preset on the title screen. Without a GPU timer there is
+        // nothing reliable to measure, so play safe on Medium.
+        if self.tuner.active() && self.timer.is_none() {
+            self.tuner.stop();
+            self.settings.preset = rivet_render::Preset::Medium;
+            self.rebuild_renderer();
+        }
+        if self.tuner.active() && matches!(self.session, Session::Attract) {
+            // GPU time only: CPU frame time includes vsync waits.
+            if let Some(p) = gpu_ms.and_then(|g| self.tuner.feed(g)) {
+                log::info!("auto graphics: stepping down to {p:?}");
+                self.settings.preset = p;
+                self.rebuild_renderer();
+            }
+            if !self.tuner.active() {
+                log::info!("auto graphics: settled on {:?}", self.settings.preset);
+            }
+        }
         if let Some(b) = self.bench.as_mut()
             && b.record(since_launch, cpu_ms, gpu_ms) == BenchPhase::Done
         {

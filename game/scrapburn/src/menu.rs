@@ -64,6 +64,8 @@ pub struct Settings {
     pub track: usize,
     /// Background scenery (props and rocks around the circuits).
     pub scenery: bool,
+    /// The preset is being picked automatically.
+    pub auto_preset: bool,
 }
 
 /// How frame rate is shown in game (F3 / Select cycles it).
@@ -104,6 +106,7 @@ impl Default for Settings {
             fps: FpsDisplay::Off,
             track: 0,
             scenery: false,
+            auto_preset: false,
         }
     }
 }
@@ -213,7 +216,11 @@ impl MenuState {
                 "QUIT".into(),
             ],
             Screen::Settings => vec![
-                format!("GRAPHICS  < {preset} >"),
+                if s.auto_preset {
+                    format!("GRAPHICS  < {preset} (AUTO) >")
+                } else {
+                    format!("GRAPHICS  < {preset} >")
+                },
                 format!("LAPS  < {} >", s.laps),
                 format!("RIVALS  < {} >", s.rivals),
                 format!("SHOW FPS  < {} >", s.fps.label()),
@@ -318,6 +325,7 @@ impl MenuState {
                     SETTING_PRESET => {
                         s.preset =
                             cycle(&[Preset::Low, Preset::Medium, Preset::High], s.preset, step);
+                        s.auto_preset = false;
                         return MenuAction::PresetChanged;
                     }
                     SETTING_LAPS => s.laps = cycle(&LAP_CHOICES, s.laps, step),

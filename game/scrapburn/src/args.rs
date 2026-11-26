@@ -15,7 +15,8 @@ pub struct Args {
     pub offscreen: bool,
     /// Write the last offscreen bench frame here as PNG.
     pub screenshot: Option<std::path::PathBuf>,
-    pub preset: Preset,
+    /// `None`: pick automatically (benchmarks use Medium).
+    pub preset: Option<Preset>,
     pub mode: Mode,
     /// Benchmark the title screen (attract mode) instead of a race.
     pub attract: bool,
@@ -71,7 +72,7 @@ pub fn parse(
     let mut bench = None;
     let mut offscreen = false;
     let mut screenshot = None;
-    let mut preset = Preset::Medium;
+    let mut preset = None;
     let mut mode = Mode::Race;
     let mut attract = false;
     let mut track = 0;
@@ -109,7 +110,7 @@ pub fn parse(
                 );
             }
             "--offscreen" => offscreen = true,
-            "--preset" => preset = value()?.parse()?,
+            "--preset" => preset = Some(value()?.parse()?),
             "--mode" => mode = value()?.parse()?,
             "--attract" => attract = true,
             "--host" => host = true,
@@ -229,10 +230,14 @@ mod tests {
 
     #[test]
     fn args_preset() {
-        assert_eq!(parse_strs(&[], None).unwrap().preset, Preset::Medium);
+        assert_eq!(
+            parse_strs(&[], None).unwrap().preset,
+            None,
+            "auto by default"
+        );
         assert_eq!(
             parse_strs(&["--preset", "low"], None).unwrap().preset,
-            Preset::Low
+            Some(Preset::Low)
         );
         assert!(parse_strs(&["--preset", "potato"], None).is_err());
     }

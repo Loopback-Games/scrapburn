@@ -3,6 +3,7 @@
 
 pub mod args;
 pub mod autopilot;
+pub mod autotune;
 pub mod bench;
 pub mod camera;
 pub mod combat;
