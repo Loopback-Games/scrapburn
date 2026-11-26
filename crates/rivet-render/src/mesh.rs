@@ -69,12 +69,21 @@ impl GpuMesh {
     pub fn new(device: &wgpu::Device, data: &MeshData) -> Self {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh vertices"),
-            contents: bytemuck::cast_slice(&data.vertices),
+            // wgpu rejects zero-sized buffers; an empty mesh gets a placeholder (never drawn).
+            contents: if data.vertices.is_empty() {
+                &[0u8; 64]
+            } else {
+                bytemuck::cast_slice(&data.vertices)
+            },
             usage: wgpu::BufferUsages::VERTEX,
         });
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh indices"),
-            contents: bytemuck::cast_slice(&data.indices),
+            contents: if data.indices.is_empty() {
+                &[0u8; 4]
+            } else {
+                bytemuck::cast_slice(&data.indices)
+            },
             usage: wgpu::BufferUsages::INDEX,
         });
         Self {

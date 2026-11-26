@@ -16,3 +16,9 @@ image generation), then resized to 1024×1024 with ImageMagick. Common prompt fr
 | rock.png | rough cliff rock face, gray-brown sandstone with cracks and lichen |
 | concrete.png | cast concrete barrier surface, pores, stains, chipped edges, light gray |
 | metal_rust.png | weathered steel panel, rust streaks, flaking orange-teal paint |
+| stone_wall.png | medieval castle wall of weathered grey limestone blocks, moss in cracks |
+| cobblestone.png | old cobblestone road, dark grey and brown stones |
+| flagstone.png | mossy irregular stone flagstone floor with grass in the gaps |
+| tech_panel.png | futuristic dark metal track deck panels with glowing cyan seams |
+| city_facade.png | night skyscraper facade, grid of lit and unlit windows |
+| wood_planks.png | weathered dark wooden planks with iron nails |

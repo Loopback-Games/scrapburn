@@ -35,6 +35,8 @@ pub struct Lighting {
     pub bloom_intensity: f32,
     pub vignette: f32,
     pub saturation: f32,
+    /// Star field brightness (night skies).
+    pub stars: f32,
 }
 
 impl Default for Lighting {
@@ -53,6 +55,7 @@ impl Default for Lighting {
             bloom_intensity: 0.06,
             vignette: 0.35,
             saturation: 1.08,
+            stars: 0.0,
         }
     }
 }
@@ -1054,7 +1057,7 @@ impl SceneRenderer {
                 .normalize()
                 .extend(1.0 / self.settings.shadow_size as f32),
             sun_color: l.sun_color.extend(0.0),
-            sky_zenith: l.sky_zenith.extend(0.0),
+            sky_zenith: l.sky_zenith.extend(l.stars),
             sky_horizon: l.sky_horizon.extend(l.cloud_coverage),
             ambient_ground: l.ambient_ground.extend(0.0),
             fog: l.fog_color.extend(l.fog_density),
@@ -1112,7 +1115,11 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bg, &[]);
-            for (i, d) in draws.iter().enumerate().filter(|(_, d)| d.casts_shadow) {
+            for (i, d) in draws
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.casts_shadow && d.mesh.index_count > 0)
+            {
                 pass.set_bind_group(1, &self.model_bg, &[(i as u64 * MODEL_STRIDE) as u32]);
                 pass.set_vertex_buffer(0, d.mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(d.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -1147,7 +1154,11 @@ impl SceneRenderer {
             });
             pass.set_pipeline(&self.mesh_pipeline);
             pass.set_bind_group(0, &self.scene_bg, &[]);
-            for (i, d) in draws.iter().enumerate() {
+            for (i, d) in draws
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.mesh.index_count > 0)
+            {
                 pass.set_bind_group(1, &self.model_bg, &[(i as u64 * MODEL_STRIDE) as u32]);
                 pass.set_vertex_buffer(0, d.mesh.vertex_buffer.slice(..));
                 pass.set_index_buffer(d.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

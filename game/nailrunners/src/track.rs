@@ -233,6 +233,48 @@ pub const TRACKS: [TrackDef; 3] = [
     },
 ];
 
+/// The sun, sky and grade for each circuit.
+pub fn lighting(id: TrackId) -> rivet_render::Lighting {
+    let base = rivet_render::Lighting::default();
+    match id {
+        TrackId::Dustbowl => base,
+        // Dusk over the castle: a low burning sun, violet sky, warm haze.
+        TrackId::Grindstone => rivet_render::Lighting {
+            sun_dir: Vec3::new(-0.75, -0.2, 0.62).normalize(),
+            sun_color: Vec3::new(3.0, 1.6, 0.85),
+            sky_zenith: Vec3::new(0.12, 0.13, 0.36),
+            sky_horizon: Vec3::new(0.95, 0.52, 0.34),
+            ambient_ground: Vec3::new(0.22, 0.16, 0.14),
+            fog_color: Vec3::new(0.62, 0.42, 0.34),
+            fog_density: 0.0017,
+            fog_height_falloff: 0.025,
+            cloud_coverage: 0.6,
+            exposure: 1.0,
+            bloom_intensity: 0.1,
+            vignette: 0.42,
+            saturation: 1.12,
+            stars: 0.15,
+        },
+        // Night over the city: cold moonlight, a magenta glow on the horizon, stars.
+        TrackId::Skyway => rivet_render::Lighting {
+            sun_dir: Vec3::new(-0.3, -0.55, 0.25).normalize(),
+            sun_color: Vec3::new(0.32, 0.4, 0.7),
+            sky_zenith: Vec3::new(0.008, 0.012, 0.04),
+            sky_horizon: Vec3::new(0.16, 0.06, 0.22),
+            ambient_ground: Vec3::new(0.06, 0.04, 0.1),
+            fog_color: Vec3::new(0.09, 0.05, 0.15),
+            fog_density: 0.0011,
+            fog_height_falloff: 0.0,
+            cloud_coverage: 0.3,
+            exposure: 1.35,
+            bloom_intensity: 0.2,
+            vignette: 0.45,
+            saturation: 1.2,
+            stars: 1.0,
+        },
+    }
+}
+
 fn no_bank(_p: Vec2) -> f32 {
     0.0
 }
@@ -1107,6 +1149,21 @@ mod tests {
             );
             assert!(!t.box_rows.is_empty());
         }
+    }
+
+    #[test]
+    fn each_track_has_its_own_light() {
+        let (d, c, s) = (
+            lighting(TrackId::Dustbowl),
+            lighting(TrackId::Grindstone),
+            lighting(TrackId::Skyway),
+        );
+        assert!(c.sun_dir.y > d.sun_dir.y, "dusk sun is lower");
+        assert!(
+            s.sun_color.length() < d.sun_color.length() * 0.3,
+            "night is dark"
+        );
+        assert!(s.stars > 0.5 && d.stars == 0.0);
     }
 
     #[test]

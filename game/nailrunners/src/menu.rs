@@ -34,6 +34,8 @@ pub enum MenuAction {
     Quit,
     /// The graphics preset changed; rebuild the renderer.
     PresetChanged,
+    /// A different track was picked on the title screen.
+    TrackChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,6 +44,8 @@ pub struct Settings {
     pub laps: u32,
     pub rivals: usize,
     pub fps: FpsDisplay,
+    /// Index into `track::TRACKS`.
+    pub track: usize,
 }
 
 /// How frame rate is shown in game (F3 / Select cycles it).
@@ -80,9 +84,13 @@ impl Default for Settings {
             laps: 3,
             rivals: 7,
             fps: FpsDisplay::Off,
+            track: 0,
         }
     }
 }
+
+/// Title screen rows.
+pub const TITLE_TRACK: usize = 2;
 
 pub const SETTING_PRESET: usize = 0;
 pub const SETTING_LAPS: usize = 1;
@@ -132,6 +140,10 @@ impl MenuState {
             Screen::Title => vec![
                 "RACE".into(),
                 "TIME TRIAL".into(),
+                format!(
+                    "TRACK  < {} >",
+                    crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
+                ),
                 "SETTINGS".into(),
                 "QUIT".into(),
             ],
@@ -167,16 +179,24 @@ impl MenuState {
         }
         let dir = input.right as i32 - input.left as i32;
         match self.screen {
-            Screen::Title => match (input.select, self.selected) {
-                (true, 0) => MenuAction::StartRace,
-                (true, 1) => MenuAction::StartTimeTrial,
-                (true, 2) => {
-                    self.go(Screen::Settings);
-                    MenuAction::None
+            Screen::Title => {
+                let tracks = crate::track::TRACKS.len();
+                if self.selected == TITLE_TRACK && (dir != 0 || input.select) {
+                    let step = if dir != 0 { dir } else { 1 };
+                    s.track = (s.track as i32 + step).rem_euclid(tracks as i32) as usize;
+                    return MenuAction::TrackChanged;
                 }
-                (true, _) => MenuAction::Quit,
-                _ => MenuAction::None,
-            },
+                match (input.select, self.selected) {
+                    (true, 0) => MenuAction::StartRace,
+                    (true, 1) => MenuAction::StartTimeTrial,
+                    (true, 3) => {
+                        self.go(Screen::Settings);
+                        MenuAction::None
+                    }
+                    (true, _) => MenuAction::Quit,
+                    _ => MenuAction::None,
+                }
+            }
             Screen::Settings => {
                 if input.back || (input.select && self.selected == n - 1) {
                     let back = self.return_to;
@@ -272,7 +292,7 @@ mod tests {
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::StartTimeTrial
         );
-        m.selected = 2;
+        m.selected = 3;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::None
@@ -280,6 +300,22 @@ mod tests {
         assert_eq!(m.screen, Screen::Settings);
         assert_eq!(m.handle(press(|i| i.back = true), &mut s), MenuAction::None);
         assert_eq!(m.screen, Screen::Title, "back returns to the title");
+    }
+
+    #[test]
+    fn title_track_row_cycles_tracks() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Title);
+        m.selected = TITLE_TRACK;
+        assert_eq!(
+            m.handle(press(|i| i.right = true), &mut s),
+            MenuAction::TrackChanged
+        );
+        assert_eq!(s.track, 1);
+        m.handle(press(|i| i.left = true), &mut s);
+        m.handle(press(|i| i.left = true), &mut s);
+        assert_eq!(s.track, crate::track::TRACKS.len() - 1, "wraps");
+        assert!(m.items(&s)[TITLE_TRACK].contains(crate::track::TRACKS[s.track].name));
     }
 
     #[test]

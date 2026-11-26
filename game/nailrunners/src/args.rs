@@ -19,6 +19,8 @@ pub struct Args {
     pub mode: Mode,
     /// Benchmark the title screen (attract mode) instead of a race.
     pub attract: bool,
+    /// Index into `track::TRACKS`.
+    pub track: usize,
 }
 
 /// What to play.
@@ -44,7 +46,7 @@ impl std::str::FromStr for Mode {
 }
 
 pub const USAGE: &str = "usage: nailrunners [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial] [--track dustbowl|castle|skyway] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -61,6 +63,7 @@ pub fn parse(
     let mut preset = Preset::Medium;
     let mut mode = Mode::Race;
     let mut attract = false;
+    let mut track = 0;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -95,6 +98,13 @@ pub fn parse(
             "--preset" => preset = value()?.parse()?,
             "--mode" => mode = value()?.parse()?,
             "--attract" => attract = true,
+            "--track" => {
+                let v = value()?.to_ascii_lowercase();
+                track = crate::track::TRACKS
+                    .iter()
+                    .position(|t| t.name.to_ascii_lowercase().contains(&v))
+                    .ok_or_else(|| format!("unknown track '{v}' (dustbowl, castle, skyway)"))?;
+            }
             "--screenshot" => screenshot = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument '{other}'\n{USAGE}")),
@@ -123,6 +133,7 @@ pub fn parse(
         preset,
         mode,
         attract,
+        track,
     })
 }
 
@@ -214,6 +225,14 @@ mod tests {
             Mode::TimeTrial
         );
         assert!(parse_strs(&["--mode", "derby"], None).is_err());
+    }
+
+    #[test]
+    fn args_track() {
+        assert_eq!(parse_strs(&[], None).unwrap().track, 0);
+        assert_eq!(parse_strs(&["--track", "skyway"], None).unwrap().track, 2);
+        assert_eq!(parse_strs(&["--track", "castle"], None).unwrap().track, 1);
+        assert!(parse_strs(&["--track", "moon"], None).is_err());
     }
 
     #[test]

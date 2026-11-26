@@ -174,6 +174,15 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let glow = pow(max(cos_sun, 0.0), 300.0) * 3.0 + pow(max(cos_sun, 0.0), 12.0) * 0.35;
     sky = sky + g.sun_color.rgb * (disk + glow);
 
+    // Stars: sparse hashed points, twinkling, fading toward the horizon.
+    if (g.sky_zenith.w > 0.0 && up > 0.0) {
+        let cell = floor(dir * 420.0);
+        let h = fract(sin(dot(cell, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
+        let twinkle = 0.7 + 0.3 * sin(g.eye.w * 3.0 + h * 40.0);
+        let star = step(0.9965, h) * twinkle * smoothstep(0.0, 0.25, up);
+        sky = sky + vec3<f32>(0.9, 0.95, 1.0) * star * g.sky_zenith.w * 3.0;
+    }
+
     if (up > 0.0) {
         let t = g.eye.w;
         let proj = dir.xz / (up + 0.12);

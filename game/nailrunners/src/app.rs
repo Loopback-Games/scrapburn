@@ -21,7 +21,7 @@ use nailrunners::particles::{Blend, Particle, ParticleSystem};
 use nailrunners::race::{Phase, Race, RaceEvent};
 use nailrunners::scenery;
 use nailrunners::sound::SoundDirector;
-use nailrunners::track::{Track, build_graybox_loop};
+use nailrunners::track::{TRACKS, Track, build_track};
 use nailrunners::{MAX_STEPS, TICK_DT};
 use rivet_assets::Rgba8Image;
 use rivet_core::{FixedTimestep, FrameStats};
@@ -38,8 +38,6 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
-/// Identifies this track's saved data (ghosts).
-const TRACK_ID: &str = "dustbowl-loop";
 /// Seconds after the player finishes before the results screen appears.
 const RESULTS_DELAY: f64 = 2.5;
 
@@ -254,6 +252,7 @@ impl Game {
         }
         let settings = Settings {
             preset: args.preset,
+            track: args.track,
             ..Settings::default()
         };
         let scene = SceneRenderer::new(
@@ -268,9 +267,11 @@ impl Game {
         let font = std::fs::read(assets.join("fonts").join("Rajdhani-Bold.ttf"))
             .map_err(|e| log::warn!("HUD font missing ({e}); using the bitmap font"))
             .ok();
+        let mut scene = scene;
+        scene.lighting = nailrunners::track::lighting(TRACKS[settings.track].id);
         let overlay = Overlay::new(&ctx.device, &ctx.queue, ctx.format(), None, font.as_deref());
         let timer = GpuTimer::new(&ctx.device, &ctx.queue);
-        let track = build_graybox_loop();
+        let track = build_track(&TRACKS[settings.track]);
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
         let parts = nailrunners::kart::split_wheels(
@@ -325,8 +326,8 @@ impl Game {
                 rivet_render::EMISSIVE | rivet_render::DITHER,
             )),
         };
-        let ghost_file =
-            nailrunners::ghost::data_dir().map(|d| nailrunners::ghost::ghost_path(&d, TRACK_ID));
+        let ghost_file = nailrunners::ghost::data_dir()
+            .map(|d| nailrunners::ghost::ghost_path(&d, track.id.key()));
         let best_ghost =
             BestGhost::from_ghost(ghost_file.as_deref().and_then(nailrunners::ghost::load));
 
@@ -423,7 +424,32 @@ impl Game {
         }
     }
 
+    /// Switches to `settings.track`: geometry, scenery, lighting, ghosts, and a fresh race.
+    fn load_track(&mut self) {
+        self.track = build_track(&TRACKS[self.settings.track % TRACKS.len()]);
+        self.track_meshes = [&self.track.road, &self.track.terrain, &self.track.props]
+            .map(|m| GpuMesh::new(&self.ctx.device, m));
+        self.placements = scenery::placements(&self.track);
+        self.scene.lighting = nailrunners::track::lighting(self.track.id);
+        self.ghost_file = nailrunners::ghost::data_dir()
+            .map(|d| nailrunners::ghost::ghost_path(&d, self.track.id.key()));
+        self.best_ghost = BestGhost::from_ghost(
+            self.ghost_file
+                .as_deref()
+                .and_then(nailrunners::ghost::load),
+        );
+        let screen = self.menu.screen;
+        let selected = self.menu.selected;
+        self.start(self.session);
+        // Stay on the title row the player was adjusting.
+        if matches!(self.session, Session::Attract) {
+            self.menu.go(screen);
+            self.menu.selected = selected;
+        }
+    }
+
     fn rebuild_renderer(&mut self) {
+        let lighting = self.scene.lighting;
         self.scene = SceneRenderer::new(
             &self.ctx.device,
             &self.ctx.queue,
@@ -433,6 +459,7 @@ impl Game {
             &self.layers,
             &self.shading_table,
         );
+        self.scene.lighting = lighting;
     }
 
     /// Returns `Some(exit code)` when the app should quit.
@@ -487,6 +514,7 @@ impl Game {
                     MenuAction::ToTitle => self.start(Session::Attract),
                     MenuAction::Quit => return Some(ExitCode::SUCCESS),
                     MenuAction::PresetChanged => self.rebuild_renderer(),
+                    MenuAction::TrackChanged => self.load_track(),
                 }
             }
         }

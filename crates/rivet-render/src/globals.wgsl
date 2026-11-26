@@ -6,7 +6,7 @@ struct Globals {
     eye: vec4<f32>,            // w = time (s)
     sun_dir: vec4<f32>,        // direction light travels; w = shadow texel size (uv)
     sun_color: vec4<f32>,      // linear HDR
-    sky_zenith: vec4<f32>,
+    sky_zenith: vec4<f32>,     // w = star brightness
     sky_horizon: vec4<f32>,    // w = cloud coverage 0..1
     ambient_ground: vec4<f32>,
     fog: vec4<f32>,            // rgb, a = density
