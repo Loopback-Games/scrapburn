@@ -265,7 +265,10 @@ impl Game {
             &layers,
             &shading_table,
         );
-        let overlay = Overlay::new(&ctx.device, ctx.format(), None);
+        let font = std::fs::read(assets.join("fonts").join("Rajdhani-Bold.ttf"))
+            .map_err(|e| log::warn!("HUD font missing ({e}); using the bitmap font"))
+            .ok();
+        let overlay = Overlay::new(&ctx.device, &ctx.queue, ctx.format(), None, font.as_deref());
         let timer = GpuTimer::new(&ctx.device, &ctx.queue);
         let track = build_graybox_loop();
         let track_meshes =

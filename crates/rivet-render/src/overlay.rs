@@ -3,11 +3,14 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::font;
+use crate::font_atlas::FontAtlas;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct OverlayVertex {
     pos: [f32; 2],
+    /// Atlas UV; negative = solid color (no texture).
+    uv: [f32; 2],
     color: [f32; 4],
 }
 
@@ -20,27 +23,97 @@ pub struct Overlay {
     vertex_capacity: u64,
     vertices: Vec<OverlayVertex>,
     uploaded: u32,
+    atlas: Option<FontAtlas>,
+}
+
+/// Font metrics shared with layout code that has no overlay at hand (HUD width measuring).
+static GLOBAL_METRICS: std::sync::OnceLock<crate::font_atlas::FontMetrics> =
+    std::sync::OnceLock::new();
+
+/// Bitmap-scale units to TrueType pixels: a bitmap glyph is 7 units tall.
+const LABEL_PX_PER_SCALE: f32 = 12.0;
+
+/// Width of `label` text at `scale` (TrueType when loaded, else the bitmap font).
+pub fn label_width(s: &str, scale: f32) -> f32 {
+    match GLOBAL_METRICS.get() {
+        Some(m) => m.text_width(s, scale * LABEL_PX_PER_SCALE),
+        None => font::text_width(s, scale),
+    }
 }
 
 impl Overlay {
+    /// `font_ttf`: a TrueType font for `label` text (HUD); without it labels use the bitmap font.
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         depth_format: Option<wgpu::TextureFormat>,
+        font_ttf: Option<&[u8]>,
     ) -> Self {
+        let atlas = font_ttf.and_then(|bytes| match FontAtlas::new(bytes) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                log::warn!("HUD font unusable ({e}); using the bitmap font");
+                None
+            }
+        });
+        let atlas_view = match &atlas {
+            Some(a) => crate::texture::texture_2d(
+                device,
+                queue,
+                "font atlas",
+                wgpu::TextureFormat::R8Unorm,
+                (a.width, a.height),
+                1,
+                &a.pixels,
+            ),
+            None => crate::texture::texture_2d(
+                device,
+                queue,
+                "font atlas (empty)",
+                wgpu::TextureFormat::R8Unorm,
+                (1, 1),
+                1,
+                &[255],
+            ),
+        };
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("font sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let shader = device.create_shader_module(wgpu::include_wgsl!("overlay.wgsl"));
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("overlay layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("overlay pipeline layout"),
@@ -56,7 +129,7 @@ impl Overlay {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<OverlayVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
                 })],
                 compilation_options: Default::default(),
             },
@@ -91,10 +164,20 @@ impl Overlay {
         let screen_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("overlay bind group"),
             layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: screen_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
         });
         let vertex_capacity = 16 * 1024;
         let vertex_buf = Self::vertex_buffer(device, vertex_capacity);
@@ -106,6 +189,9 @@ impl Overlay {
             vertex_capacity,
             vertices: Vec::new(),
             uploaded: 0,
+            atlas: atlas.inspect(|a| {
+                let _ = GLOBAL_METRICS.set(a.metrics());
+            }),
         }
     }
 
@@ -124,7 +210,34 @@ impl Overlay {
         }
         let (x1, y1) = (x + w, y + h);
         for pos in [[x, y], [x1, y], [x1, y1], [x, y], [x1, y1], [x, y1]] {
-            self.vertices.push(OverlayVertex { pos, color });
+            self.vertices.push(OverlayVertex {
+                pos,
+                uv: [-1.0, -1.0],
+                color,
+            });
+        }
+    }
+
+    /// HUD text in the TrueType font (falls back to the bitmap font). `scale` matches `text`.
+    pub fn label(&mut self, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
+        let Some(atlas) = &self.atlas else {
+            self.text(x, y, scale, color, s);
+            return;
+        };
+        for q in atlas.layout(s, x, y, scale * LABEL_PX_PER_SCALE) {
+            let [x0, y0, w, h] = q.rect;
+            let [u0, v0, u1, v1] = q.uv;
+            let (x1, y1) = (x0 + w, y0 + h);
+            for (pos, uv) in [
+                ([x0, y0], [u0, v0]),
+                ([x1, y0], [u1, v0]),
+                ([x1, y1], [u1, v1]),
+                ([x0, y0], [u0, v0]),
+                ([x1, y1], [u1, v1]),
+                ([x0, y1], [u0, v1]),
+            ] {
+                self.vertices.push(OverlayVertex { pos, uv, color });
+            }
         }
     }
 

@@ -3,6 +3,7 @@
 
 pub mod context;
 pub mod font;
+pub mod font_atlas;
 pub mod frame_graph;
 pub mod frustum;
 pub mod gpu_timer;
@@ -21,7 +22,7 @@ pub use gpu_timer::GpuTimer;
 pub use mesh::{
     DITHER, EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material,
 };
-pub use overlay::Overlay;
+pub use overlay::{Overlay, label_width};
 pub use preset::{Preset, QualitySettings};
 pub use scene::{
     Draw, FrameContent, Lighting, MaterialShading, ParticleInstance, SceneRenderer, View,

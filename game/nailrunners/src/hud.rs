@@ -37,12 +37,12 @@ const PANEL: [f32; 4] = [0.05, 0.04, 0.03, 0.45];
 const ACCENT: [f32; 4] = [1.0, 0.55, 0.12, 1.0];
 
 fn text(o: &mut Overlay, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
-    o.text(x + scale * 0.6, y + scale * 0.6, scale, SHADOW, s);
-    o.text(x, y, scale, color, s);
+    o.label(x + scale * 0.45, y + scale * 0.45, scale, SHADOW, s);
+    o.label(x, y, scale, color, s);
 }
 
 fn width(s: &str, scale: f32) -> f32 {
-    rivet_render::font::text_width(s, scale)
+    rivet_render::label_width(s, scale)
 }
 
 pub struct HudInfo {
@@ -72,13 +72,13 @@ pub fn draw(
         None => format!("LAP {}", info.lap),
     };
     let time = fmt_time(info.lap_time);
-    let ts = 5.0 * ui;
+    let ts = 4.2 * ui;
     let tw = width(&time, ts);
     o.rect(
         w * 0.5 - tw * 0.5 - 18.0 * ui,
         14.0 * ui,
         tw + 36.0 * ui,
-        96.0 * ui,
+        112.0 * ui,
         PANEL,
     );
     o.rect(
@@ -105,9 +105,9 @@ pub fn draw(
     );
     text(
         o,
-        w * 0.5 - width(&sub, 1.6 * ui) * 0.5,
-        88.0 * ui,
-        1.6 * ui,
+        w * 0.5 - width(&sub, 1.5 * ui) * 0.5,
+        100.0 * ui,
+        1.5 * ui,
         DIM,
         &sub,
     );
@@ -115,15 +115,15 @@ pub fn draw(
     // Speed, bottom right: big number plus a segmented bar.
     let kmh = (kart.speed().abs() * 3.6).round() as i32;
     let num = format!("{kmh}");
-    let ns = 8.0 * ui;
+    let ns = 6.0 * ui;
     let right = w - 28.0 * ui;
     let base = h - 34.0 * ui;
     let unit_w = width("KM/H", 2.0 * ui);
-    text(o, right - unit_w, base - 14.0 * ui, 2.0 * ui, DIM, "KM/H");
+    text(o, right - unit_w, base - 24.0 * ui, 2.0 * ui, DIM, "KM/H");
     text(
         o,
         right - unit_w - 10.0 * ui - width(&num, ns),
-        base - 56.0 * ui,
+        base - 66.0 * ui,
         ns,
         WHITE,
         &num,
@@ -154,7 +154,7 @@ pub fn draw(
         let seg_h = (6.0 + 10.0 * t) * ui;
         o.rect(
             bar_x + i as f32 * (seg_w + 3.0 * ui),
-            base - 74.0 * ui - seg_h,
+            base - 80.0 * ui - seg_h,
             seg_w,
             seg_h,
             c,
@@ -429,14 +429,14 @@ pub fn draw_menu(
             5.0 * ui,
             ACCENT,
         );
-        o.text(
+        o.label(
             w * 0.5 - tw * 0.5 + s * 0.8,
             y + s * 0.8,
             s,
             [0.0, 0.0, 0.0, 0.7],
             t,
         );
-        o.text(w * 0.5 - tw * 0.5, y, s, ACCENT, t);
+        o.label(w * 0.5 - tw * 0.5, y, s, ACCENT, t);
         text(
             o,
             w * 0.5 - width(subtitle, 2.2 * ui) * 0.5,
@@ -482,7 +482,7 @@ pub fn draw_menu(
             );
         }
         let c = if sel { [0.08, 0.05, 0.02, 1.0] } else { WHITE };
-        o.text(w * 0.5 - width(item, s) * 0.5, y, s, c, item);
+        o.label(w * 0.5 - width(item, s) * 0.5, y, s, c, item);
     }
     let hint = "ARROWS/D-PAD  MOVE    ENTER/A  SELECT    ESC/B  BACK";
     text(
