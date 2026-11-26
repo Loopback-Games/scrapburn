@@ -297,6 +297,20 @@ mod tests {
     }
 
     #[test]
+    fn brakes_when_facing_backwards_at_speed() {
+        let line = oval();
+        let p = VehicleParams::default();
+        let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.45, -40.0), std::f32::consts::PI);
+        s.grounded = true;
+        s.velocity = s.rotation * Vec3::Z * 25.0;
+        let input = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0);
+        assert!(
+            input.brake > 0.5 && input.throttle == 0.0,
+            "brake, don't coast the wrong way: {input:?}"
+        );
+    }
+
+    #[test]
     fn dodges_a_kart_ahead() {
         let line = oval();
         let p = VehicleParams::default();

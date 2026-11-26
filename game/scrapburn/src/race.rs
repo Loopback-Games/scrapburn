@@ -88,6 +88,8 @@ pub struct Racer {
     pub hits: u32,
     pub last_hit: (f32, f32),
     incoming: Option<VehicleState>,
+    /// Seconds spent moving against the track direction.
+    wrong: f32,
     stuck: f32,
     /// Seconds spent far off the track.
     off_track: f32,
@@ -111,6 +113,11 @@ pub struct Race {
     /// Elimination mode: last place is knocked out each time the leader completes a lap.
     pub elimination: bool,
 }
+
+/// Moving backwards along the track faster than this (m/s) counts toward WRONG WAY.
+const WRONG_WAY_SPEED: f32 = 3.0;
+/// Seconds of that before the warning shows.
+const WRONG_WAY_SECONDS: f32 = 0.8;
 
 /// Brakes on during the countdown: a kart may settle on its suspension but not roll.
 fn hold_on_grid(r: &mut Racer) {
@@ -179,6 +186,7 @@ impl Race {
                     hits: 0,
                     last_hit: (0.0, 1.0),
                     incoming: None,
+                    wrong: 0.0,
                     stuck: 0.0,
                     off_track: 0.0,
                     hop: HopLatch::default(),
@@ -253,6 +261,26 @@ impl Race {
                 self.racers[survivor].bot = Some(BotDriver::new(0.85, 0.0));
             }
         }
+    }
+
+    /// Racer `i` has been driving against the track for a while (show WRONG WAY).
+    pub fn wrong_way(&self, i: usize) -> bool {
+        self.racers
+            .get(i)
+            .is_some_and(|r| r.wrong > WRONG_WAY_SECONDS)
+    }
+
+    /// Accumulates time spent moving backwards along the track.
+    fn track_direction(line: &RacingLine, r: &mut Racer, dt: f32) {
+        let along = r
+            .state
+            .velocity
+            .dot(line.tangent(line.nearest(r.state.position)));
+        r.wrong = if along < -WRONG_WAY_SPEED {
+            r.wrong + dt
+        } else {
+            (r.wrong - dt * 3.0).max(0.0)
+        };
     }
 
     /// Seat `i` belongs to a player on another machine.
@@ -336,6 +364,8 @@ impl Race {
         step(&mut r.state, &r.params, input, &track.collision, dt);
         if !racing {
             hold_on_grid(r);
+        } else {
+            Self::track_direction(line, r, dt);
         }
         let p = r.state.position;
         let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
@@ -427,6 +457,9 @@ impl Race {
         for i in 0..self.racers.len() {
             let progress = self.progress(i, track);
             let r = &mut self.racers[i];
+            if racing {
+                Self::track_direction(&self.line, r, dt);
+            }
             r.prev = r.state.clone();
             if r.out {
                 continue;
@@ -575,6 +608,90 @@ mod tests {
     fn track() -> &'static Track {
         static T: OnceLock<Track> = OnceLock::new();
         T.get_or_init(build_graybox_loop)
+    }
+
+    #[test]
+    fn driving_against_the_track_raises_wrong_way() {
+        let t = track();
+        let mut race = Race::new(t, 1, true, 3);
+        race.phase = Phase::Racing;
+        assert!(!race.wrong_way(0));
+        let r = &mut race.racers[0];
+        r.state.rotation *= glam::Quat::from_rotation_y(std::f32::consts::PI);
+        for _ in 0..30 {
+            race.step(
+                t,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        assert!(
+            !race.wrong_way(0),
+            "not instantly (a brief wobble isn't wrong way)"
+        );
+        for _ in 0..60 {
+            race.step(
+                t,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        assert!(
+            race.wrong_way(0),
+            "after a second of driving backwards along the track"
+        );
+        // Turning back around clears it.
+        race.racers[0].state.rotation *= glam::Quat::from_rotation_y(std::f32::consts::PI);
+        race.racers[0].state.velocity = -race.racers[0].state.velocity;
+        for _ in 0..30 {
+            race.step(
+                t,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        assert!(!race.wrong_way(0));
+    }
+
+    #[test]
+    fn a_bot_knocked_backwards_recovers_and_races_on() {
+        for track_i in 0..3 {
+            let t = crate::track::build_track(&crate::track::TRACKS[track_i]);
+            let mut race = Race::new(&t, 4, false, 3);
+            for _ in 0..(12 * 60) {
+                race.step(&t, DriveInput::default(), 1.0 / 60.0);
+            }
+            // A big crash: bot 1 flipped around, moving backwards along the track.
+            let r = &mut race.racers[1];
+            let back = r.state.rotation * glam::Quat::from_rotation_y(std::f32::consts::PI);
+            r.state.rotation = back;
+            r.state.velocity = back * Vec3::Z * 22.0;
+            let p0 = race.progress(1, &t);
+            for _ in 0..(8 * 60) {
+                race.step(&t, DriveInput::default(), 1.0 / 60.0);
+            }
+            let p1 = race.progress(1, &t);
+            let r = &race.racers[1];
+            let i = race.line.nearest(r.state.position);
+            let along = (r.state.rotation * Vec3::Z).dot(race.line.tangent(i));
+            assert!(
+                along > 0.5,
+                "track {track_i}: still facing the wrong way ({along:.2})"
+            );
+            assert!(
+                p1 > p0 + 0.5,
+                "track {track_i}: no progress after recovering ({p0:.2} -> {p1:.2})"
+            );
+        }
     }
 
     #[test]

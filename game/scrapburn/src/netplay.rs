@@ -109,6 +109,9 @@ pub fn get_state(r: &mut Reader) -> Result<VehicleState, WireError> {
         boost_speed,
         offroad,
         spin,
+        // Spin bookkeeping stays on the kart's own machine.
+        spin_from: 0.0,
+        spin_total: spin,
     })
 }
 

@@ -163,6 +163,10 @@ pub struct VehicleState {
     pub offroad: f32,
     /// Seconds of spin-out left (hit by a weapon): no control while > 0.
     pub spin: f32,
+    /// Heading (radians about +Y) when the current spin began, and the spin's total length:
+    /// a spin turns whole revolutions, so the kart ends it facing the way it was going.
+    pub spin_from: f32,
+    pub spin_total: f32,
 }
 
 impl VehicleState {
@@ -178,13 +182,23 @@ impl VehicleState {
             boost_speed: 0.0,
             offroad: 0.0,
             spin: 0.0,
+            spin_from: 0.0,
+            spin_total: 0.0,
         }
     }
 
     /// Knocks the kart into a spin for `secs`, keeping `keep` of its speed. Cancels drift and
     /// boost.
     pub fn spin_out(&mut self, secs: f32, keep: f32) {
+        if self.spin <= 0.0 {
+            let f = self.rotation * Vec3::Z;
+            self.spin_from = f.x.atan2(f.z);
+            self.spin_total = 0.0;
+        }
+        // Extending a spin keeps its start: elapsed time plus the new remaining time.
+        let elapsed = (self.spin_total - self.spin).max(0.0);
         self.spin = self.spin.max(secs);
+        self.spin_total = elapsed + self.spin;
         self.velocity *= keep.clamp(0.0, 1.0);
         self.drift = None;
         self.boost_timer = 0.0;
@@ -401,7 +415,18 @@ pub fn step(
         yaw_rate *= 0.3;
     }
     if spinning {
-        yaw_rate = SPIN_YAW_RATE;
+        // Whole revolutions over the spin, ending on the heading it started from.
+        let total = state.spin_total.max(1e-3);
+        let turns = (total * SPIN_YAW_RATE / std::f32::consts::TAU)
+            .round()
+            .max(1.0);
+        let progress = (1.0 - state.spin / total).clamp(0.0, 1.0);
+        let target = state.spin_from + turns * std::f32::consts::TAU * progress;
+        let f = state.rotation * Vec3::Z;
+        let current = f.x.atan2(f.z);
+        let err = (target - current + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI;
+        yaw_rate = err / dt;
     }
     state.angular_yaw = yaw_rate;
     state.rotation = (Quat::from_axis_angle(up, yaw_rate * dt) * state.rotation).normalize();
@@ -902,6 +927,27 @@ mod tests {
             );
         }
         assert_eq!(s.spin, 0.0, "control returns");
+    }
+
+    #[test]
+    fn a_spin_ends_facing_the_way_the_kart_was_going() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        for secs in [0.35f32, 0.8, 1.2, 1.6] {
+            let mut s = with_speed(&w, &p, 30.0);
+            let h0 = heading(&s);
+            s.spin_out(secs, 0.6);
+            // A second hit mid-spin extends it.
+            for tick in 0..240 {
+                if tick == 10 {
+                    s.spin_out(secs, 0.9);
+                }
+                step(&mut s, &p, DriveInput::default(), &w, DT);
+            }
+            let d = (heading(&s) - h0 + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            assert!(d.abs() < 0.15, "{secs} s spin ended {d:.2} rad off");
+        }
     }
 
     #[test]

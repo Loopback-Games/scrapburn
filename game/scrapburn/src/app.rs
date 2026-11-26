@@ -1741,6 +1741,9 @@ impl Game {
                     .collect(),
             };
             hud::draw_race(o, w, h, &race_hud);
+            if race.phase == Phase::Racing && r.finish.is_none() && race.wrong_way(focus) {
+                hud::draw_wrong_way(o, w, h, self.attract_t);
+            }
             if race.elimination && race.phase == Phase::Racing {
                 let left = race.racers.iter().filter(|k| !k.out).count();
                 let last_active = standings

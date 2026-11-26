@@ -467,6 +467,40 @@ pub fn draw_elimination(
     }
 }
 
+/// A pulsing WRONG WAY warning, upper middle of the screen.
+pub fn draw_wrong_way(o: &mut Overlay, w: f32, h: f32, t: f32) {
+    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let pulse = 0.6 + 0.4 * (t * 6.0).sin().abs();
+    let msg = "WRONG WAY";
+    let s = 4.4 * ui;
+    let mw = width(msg, s);
+    let y = h * 0.2;
+    o.rect(
+        w * 0.5 - mw * 0.5 - 30.0 * ui,
+        y - 12.0 * ui,
+        mw + 60.0 * ui,
+        96.0 * ui,
+        [0.6, 0.02, 0.02, 0.55 * pulse],
+    );
+    o.rect(
+        w * 0.5 - mw * 0.5 - 30.0 * ui,
+        y - 12.0 * ui,
+        mw + 60.0 * ui,
+        5.0 * ui,
+        [1.0, 0.3, 0.2, pulse],
+    );
+    o.label(w * 0.5 - mw * 0.5, y, s, [1.0, 0.92, 0.88, pulse], msg);
+    let sub = "TURN AROUND";
+    let ss = 1.6 * ui;
+    o.label(
+        w * 0.5 - width(sub, ss) * 0.5,
+        y + 58.0 * ui,
+        ss,
+        [1.0, 0.8, 0.75, pulse],
+        sub,
+    );
+}
+
 /// The online lobby: who's in, where, and how to reach this host. Top left, under the title.
 pub fn draw_lobby(
     o: &mut Overlay,
