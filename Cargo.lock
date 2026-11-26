@@ -1217,9 +1217,11 @@ dependencies = [
  "rivet-assets",
  "rivet-audio",
  "rivet-core",
+ "rivet-net",
  "rivet-physics",
  "rivet-platform",
  "rivet-render",
+ "serde_json",
  "wgpu",
  "winit",
 ]

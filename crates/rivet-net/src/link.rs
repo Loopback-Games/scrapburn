@@ -428,8 +428,8 @@ impl Client {
             };
             // After the handshake, only packets with our session token count.
             if let ClientState::Connected { token, .. } = self.state
-                && matches!(kind, Kind::Data | Kind::Disconnect)
-                && body.u64().ok() != Some(token)
+                && (!matches!(kind, Kind::Data | Kind::Disconnect)
+                    || body.u64().ok() != Some(token))
             {
                 continue;
             }
@@ -640,6 +640,21 @@ mod tests {
         sleep(Duration::from_millis(50));
         assert!(h.poll(Instant::now()).is_empty());
         assert_eq!(h.peers().count(), 1, "still connected");
+    }
+
+    #[test]
+    fn a_spoofed_reject_cannot_close_a_connected_client() {
+        let (mut h, addr) = host(2);
+        let mut c = Client::connect(addr, "A", GAME, Instant::now()).unwrap();
+        pump(&mut h, &mut [&mut c], |_, ce| !ce[0].is_empty());
+        let mut w = packet(Kind::Reject);
+        w.str("gotcha");
+        h.sock
+            .send_to(&w.finish(), c.sock.local_addr().unwrap())
+            .unwrap();
+        sleep(Duration::from_millis(30));
+        assert!(c.poll(Instant::now()).is_empty());
+        assert!(c.slot().is_some());
     }
 
     #[test]

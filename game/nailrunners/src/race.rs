@@ -73,7 +73,7 @@ pub struct Racer {
     pub bot: Option<BotDriver>,
     pub mass: f32,
     pub tint: [f32; 3],
-    pub name: &'static str,
+    pub name: std::borrow::Cow<'static, str>,
     pub finish: Option<(u32, f64)>,
     pub last_lap: Option<f64>,
     pub best_lap: Option<f64>,
@@ -157,11 +157,11 @@ impl Race {
                     bot: (!is_player).then(|| BotDriver::new(skill, lane)),
                     mass: BASE_MASS * (1.0 + 0.15 * (seat * 3.1).cos()),
                     tint: TINTS[k % TINTS.len()],
-                    name: if is_player {
+                    name: std::borrow::Cow::Borrowed(if is_player {
                         NAMES[0]
                     } else {
                         NAMES[1 + (k + NAMES.len() - 2) % (NAMES.len() - 1)]
-                    },
+                    }),
                     finish: None,
                     last_lap: None,
                     best_lap: None,
@@ -251,6 +251,17 @@ impl Race {
         let r = &mut self.racers[i];
         r.remote = true;
         r.bot = None;
+    }
+
+    /// A remote player left: their kart carries on as a bot.
+    pub fn make_bot(&mut self, i: usize) {
+        if let Some(r) = self.racers.get_mut(i) {
+            r.remote = false;
+            r.incoming = None;
+            if r.finish.is_none() {
+                r.bot = Some(BotDriver::new(0.9, 0.0));
+            }
+        }
     }
 
     /// The latest kart state reported by a remote player; applied on the next tick.

@@ -1117,7 +1117,7 @@ impl Game {
                     .iter()
                     .map(|&i| {
                         (
-                            race.racers[i].name,
+                            race.racers[i].name.as_ref(),
                             race.racers[i].tint,
                             race.racers[i].finish.map(|f| f.1),
                         )
@@ -1151,9 +1151,13 @@ impl Game {
                     .find(|&&i| !race.racers[i].out)
                     .copied();
                 let danger = last_active == Some(focus) && r.finish.is_none() && left > 1;
-                let knockout = self
-                    .knockout
-                    .map(|(k, t)| (race.racers[k].name, (race.time - t) as f32, k == focus));
+                let knockout = self.knockout.map(|(k, t)| {
+                    (
+                        race.racers[k].name.as_ref(),
+                        (race.time - t) as f32,
+                        k == focus,
+                    )
+                });
                 hud::draw_elimination(o, w, h, left, danger, knockout, self.attract_t);
             }
             if race.combat_on {

@@ -48,6 +48,22 @@ impl LapTracker {
         self.lap_start
     }
 
+    /// (next checkpoint, laps done, lap start time), for network snapshots.
+    pub fn net_state(&self) -> (u16, u16, f64) {
+        (
+            self.next as u16,
+            self.laps.min(u16::MAX as u32) as u16,
+            self.lap_start,
+        )
+    }
+
+    /// Restores a snapshot's lap state (an out-of-range checkpoint is clamped).
+    pub fn set_net_state(&mut self, next: u16, laps: u16, lap_start: f64) {
+        self.next = (next as usize).min(self.count - 1);
+        self.laps = laps as u32;
+        self.lap_start = lap_start;
+    }
+
     /// Index of the most recently passed checkpoint (respawn point).
     pub fn last_checkpoint(&self) -> usize {
         (self.next + self.count - 1) % self.count
@@ -128,6 +144,21 @@ impl LapTracker {
             });
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod net_tests {
+    use super::*;
+
+    #[test]
+    fn net_state_round_trips_and_clamps() {
+        let mut a = LapTracker::new(10);
+        a.set_net_state(4, 2, 31.5);
+        assert_eq!(a.net_state(), (4, 2, 31.5));
+        assert_eq!(a.laps(), 2);
+        a.set_net_state(99, 0, 0.0);
+        assert_eq!(a.net_state().0, 9);
     }
 }
 

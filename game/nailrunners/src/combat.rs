@@ -64,6 +64,18 @@ pub enum CombatEvent {
     Explode { victim: usize, pos: Vec3 },
 }
 
+/// Combat state as seen over the network.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CombatNet {
+    pub boxes: Vec<bool>,
+    pub held: Vec<Option<ItemKind>>,
+    pub nails: Vec<(Vec3, Vec3)>,
+    /// Position and target racer.
+    pub orbs: Vec<(Vec3, usize)>,
+    /// Owner, position, target racer.
+    pub hooks: Vec<(usize, Vec3, Option<usize>)>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ItemBox {
     pub pos: Vec3,
@@ -202,6 +214,68 @@ impl Combat {
             hold_time: vec![0.0; racers],
             rolls: 0,
         }
+    }
+
+    /// What a remote machine needs to show the combat state.
+    pub fn net(&self) -> CombatNet {
+        CombatNet {
+            boxes: self.boxes.iter().map(ItemBox::active).collect(),
+            held: self.held.clone(),
+            nails: self.nails.iter().map(|n| (n.pos, n.vel)).collect(),
+            orbs: self.orbs.iter().map(|o| (o.pos, o.target)).collect(),
+            hooks: self
+                .hooks
+                .iter()
+                .map(|h| (h.owner, h.pos, h.target))
+                .collect(),
+        }
+    }
+
+    /// Shows a host's combat state (display only: a client never simulates combat). Racer
+    /// indices out of range are dropped.
+    pub fn apply_net(&mut self, n: &CombatNet) {
+        let racers = self.held.len();
+        for (b, &active) in self.boxes.iter_mut().zip(&n.boxes) {
+            b.respawn = if active { 0.0 } else { 1.0 };
+        }
+        for (h, item) in self.held.iter_mut().zip(&n.held) {
+            *h = *item;
+        }
+        self.nails = n
+            .nails
+            .iter()
+            .map(|&(pos, vel)| Nail {
+                pos,
+                vel,
+                owner: usize::MAX,
+                life: 1.0,
+            })
+            .collect();
+        self.orbs = n
+            .orbs
+            .iter()
+            .filter(|o| o.1 < racers)
+            .map(|&(pos, target)| Orb {
+                pos,
+                owner: usize::MAX,
+                target,
+                line_pos: 0.0,
+                zapped: vec![false; racers],
+                life: 1.0,
+            })
+            .collect();
+        self.hooks = n
+            .hooks
+            .iter()
+            .filter(|h| h.0 < racers && h.2.is_none_or(|t| t < racers))
+            .map(|&(owner, pos, target)| Hook {
+                owner,
+                pos,
+                target,
+                vel: Vec3::ZERO,
+                state: HookState::Flying(0.0),
+            })
+            .collect();
     }
 
     /// Requests racer `i` to use its held item on the next tick.
