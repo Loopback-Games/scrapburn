@@ -22,6 +22,17 @@ pub fn spatial(ear: Vec3, right: Vec3, pos: Vec3, range: f32) -> (f32, f32) {
     (gain, pan * 0.85)
 }
 
+/// Engine revs (0..~1.1) for a speed ratio (of top speed): idle at rest, climbing through
+/// five gears and dropping at each shift, still pulling in top gear above top speed (boosts).
+pub fn engine_rpm(ratio: f32) -> f32 {
+    const SHIFTS: [f32; 6] = [0.0, 0.16, 0.34, 0.54, 0.76, 1.0];
+    let r = ratio.max(0.0);
+    let g = (0..5).find(|&g| r < SHIFTS[g + 1]).unwrap_or(4);
+    let t = ((r - SHIFTS[g]) / (SHIFTS[g + 1] - SHIFTS[g])).min(1.3);
+    let floor = if g == 0 { 0.16 } else { 0.42 };
+    floor + (0.95 - floor) * t
+}
+
 /// Where the player hears from: the camera position and its right vector.
 #[derive(Debug, Clone, Copy)]
 pub struct Listener {
@@ -36,6 +47,10 @@ pub struct SoundDirector {
     countdown_step: i32,
     nails: usize,
     silent: bool,
+    /// Last speed and smoothed engine load per kart (load comes from acceleration).
+    speeds: Vec<f32>,
+    loads: Vec<f32>,
+    last_time: f64,
 }
 
 impl SoundDirector {
@@ -59,16 +74,34 @@ impl SoundDirector {
         }
         self.silent = false;
         self.boosting.resize(race.racers.len(), false);
+        self.speeds.resize(race.racers.len(), 0.0);
+        self.loads.resize(race.racers.len(), 0.0);
+        let dt = (race.time - self.last_time).clamp(0.0, 0.1) as f32;
+        self.last_time = race.time;
 
         for (i, r) in race.racers.iter().enumerate() {
             let (gain, pan) = spatial(ear, right, r.state.position, HEARING);
             let max = r.params.max_speed + r.params.boost_tiers[2].speed;
-            let rpm = (r.state.speed().abs() / max).clamp(0.0, 1.2)
-                + if r.state.boost_timer > 0.0 { 0.12 } else { 0.0 };
+            let speed = r.state.speed().abs();
+            let rpm = engine_rpm(speed / max);
+            // Engine load: accelerating or boosting means on the throttle.
+            let accel = if dt > 0.0 {
+                (speed - self.speeds[i]) / dt
+            } else {
+                0.0
+            };
+            self.speeds[i] = speed;
+            let want = if r.state.boost_timer > 0.0 {
+                1.0
+            } else {
+                (accel / 8.0).clamp(0.0, 1.0)
+            };
+            self.loads[i] += (want - self.loads[i]) * 0.2;
             let me = if i == focus { 1.0 } else { 0.7 };
             audio.send(Command::Engine {
                 id: i as u8,
                 rpm,
+                load: self.loads[i],
                 gain: gain * me,
                 pan,
             });
@@ -171,6 +204,27 @@ impl SoundDirector {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gear_tests {
+    use super::engine_rpm;
+
+    #[test]
+    fn revs_climb_through_the_gears_and_drop_at_each_shift() {
+        assert!(engine_rpm(0.0) < 0.2, "idle");
+        assert!(engine_rpm(0.15) > engine_rpm(0.05), "climbs in first");
+        assert!(
+            engine_rpm(0.161) < engine_rpm(0.159) - 0.3,
+            "shift to second drops the revs"
+        );
+        assert!(engine_rpm(0.75) > engine_rpm(0.6));
+        assert!(
+            engine_rpm(1.15) > engine_rpm(0.95),
+            "boost pulls in top gear"
+        );
+        assert!(engine_rpm(2.0) < 1.2);
     }
 }
 

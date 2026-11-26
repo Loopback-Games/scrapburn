@@ -35,10 +35,12 @@ impl Sfx {
 /// Messages from the game to the mixer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Command {
-    /// Continuous engine for kart `id`: `rpm` 0..1, `gain` 0..1, `pan` -1 (left)..1 (right).
+    /// Continuous engine for kart `id`: `rpm` 0..1, `load` (throttle) 0..1, `gain` 0..1,
+    /// `pan` -1 (left)..1 (right).
     Engine {
         id: u8,
         rpm: f32,
+        load: f32,
         gain: f32,
         pan: f32,
     },
@@ -75,7 +77,20 @@ struct Loop {
     phase: f32,
     sub_phase: f32,
     lp: f32,
+    load: f32,
+    target_load: f32,
+    /// Which cylinder fires next (uneven firing gives the burble).
+    cyl: usize,
+    /// DC-blocking filter state.
+    hp: f32,
+    /// Seconds of exhaust crackle left (after lifting off at high revs).
+    crackle: f32,
+    /// Envelope of the current backfire pop.
+    pop: f32,
 }
+
+/// Relative strength of each firing in a cross-plane V8's cycle.
+const FIRING: [f32; 8] = [1.0, 0.72, 0.9, 0.66, 0.95, 0.7, 0.85, 0.62];
 
 #[derive(Debug, Clone, Copy)]
 struct OneShot {
@@ -121,9 +136,13 @@ impl Mixer {
     pub fn apply(&mut self, cmd: Command) {
         // A NaN would stick in the filters and silence the mix for good: drop such commands.
         let finite = match cmd {
-            Command::Engine { rpm, gain, pan, .. } => {
-                rpm.is_finite() && gain.is_finite() && pan.is_finite()
-            }
+            Command::Engine {
+                rpm,
+                load,
+                gain,
+                pan,
+                ..
+            } => rpm.is_finite() && load.is_finite() && gain.is_finite() && pan.is_finite(),
             Command::Skid { gain, pan, .. } | Command::Play { gain, pan, .. } => {
                 gain.is_finite() && pan.is_finite()
             }
@@ -134,14 +153,25 @@ impl Mixer {
             return;
         }
         match cmd {
-            Command::Engine { id, rpm, gain, pan } => {
+            Command::Engine {
+                id,
+                rpm,
+                load,
+                gain,
+                pan,
+            } => {
                 let e = &mut self.engines[id as usize % VOICES];
                 if e.target_gain == 0.0 && e.gain < 1e-4 {
                     e.rpm = rpm; // start at pitch instead of sliding up from zero
                     e.pan = pan;
                 }
-                (e.target_rpm, e.target_gain, e.target_pan) =
-                    (rpm.clamp(0.0, 1.2), gain.clamp(0.0, 1.0), pan);
+                let load = load.clamp(0.0, 1.0);
+                // Lifting off hard at high revs: the exhaust crackles and pops.
+                if e.target_load > 0.6 && load < 0.2 && e.rpm > 0.55 {
+                    e.crackle = 0.7;
+                }
+                (e.target_rpm, e.target_gain, e.target_pan, e.target_load) =
+                    (rpm.clamp(0.0, 1.2), gain.clamp(0.0, 1.0), pan, load);
             }
             Command::Skid { id, gain, pan } => {
                 let k = &mut self.skids[id as usize % VOICES];
@@ -184,22 +214,46 @@ impl Mixer {
         for frame in out.chunks_mut(channels.max(1)) {
             let (mut l, mut r) = (0.0f32, 0.0f32);
 
-            // Engines: sawtooth plus a sub-octave pulse and a little grit, pitched by rpm.
-            for e in self.engines.iter_mut() {
+            // Engines: a V8-style train of combustion pulses (uneven firing for the burble),
+            // combustion noise riding on each pulse, a load-dependent tone filter, DC blocking and
+            // soft saturation; plus exhaust crackle when lifting off at high revs.
+            for i in 0..VOICES {
+                if self.engines[i].gain < 1e-4 && self.engines[i].target_gain == 0.0 {
+                    continue;
+                }
+                let (n1, n2) = (self.white(), self.white());
+                let e = &mut self.engines[i];
                 e.rpm += (e.target_rpm - e.rpm) * smooth * 0.3;
                 e.gain += (e.target_gain - e.gain) * smooth;
                 e.pan += (e.target_pan - e.pan) * smooth;
-                if e.gain < 1e-4 && e.target_gain == 0.0 {
-                    continue;
+                e.load += (e.target_load - e.load) * smooth * 0.5;
+                let f = 30.0 + e.rpm * 150.0;
+                e.phase += f * dt;
+                if e.phase >= 1.0 {
+                    e.phase -= 1.0;
+                    e.cyl = (e.cyl + 1) % FIRING.len();
                 }
-                let f = 42.0 + e.rpm * 170.0;
-                e.phase = (e.phase + f * dt).fract();
                 e.sub_phase = (e.sub_phase + f * 0.5 * dt).fract();
-                let saw = e.phase * 2.0 - 1.0;
-                let sub = if e.sub_phase < 0.5 { 1.0 } else { -1.0 };
-                let raw = saw * 0.55 + sub * 0.3;
-                e.lp += (raw - e.lp) * (0.08 + e.rpm * 0.25);
-                let s = e.lp * e.gain * 0.22;
+                let pulse = (-e.phase * 7.0).exp() * FIRING[e.cyl];
+                let body = (e.sub_phase * TAU).sin() * 0.22;
+                let raw = pulse + n1 * pulse * 0.3 + body;
+                let cutoff = 0.04 + 0.22 * e.rpm.min(1.0) + 0.22 * e.load;
+                e.lp += (raw - e.lp) * cutoff;
+                e.hp += (e.lp - e.hp) * 0.004;
+                let x = e.lp - e.hp;
+                let drive = 1.6 + 2.4 * e.load;
+                let mut y = (x * drive).tanh();
+                if e.crackle > 0.0 {
+                    e.crackle -= dt;
+                    if n2 > 0.9997 {
+                        e.pop = 1.0;
+                    }
+                }
+                if e.pop > 1e-3 {
+                    y += n1 * e.pop * 2.4;
+                    e.pop *= 0.993;
+                }
+                let s = y * e.gain * (0.18 + 0.1 * e.load);
                 let (gl, gr) = pan_gains(e.pan);
                 l += s * gl;
                 r += s * gr;
@@ -325,13 +379,17 @@ mod tests {
         buf
     }
 
-    fn zero_crossings(buf: &[f32]) -> usize {
-        buf.chunks(2)
-            .map(|f| f[0])
-            .collect::<Vec<_>>()
-            .windows(2)
-            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
-            .count()
+    /// Fundamental frequency (Hz) of the left channel by autocorrelation: the shortest lag
+    /// whose correlation is close to the strongest (sub-harmonics would otherwise win).
+    fn pitch(buf: &[f32]) -> f32 {
+        let x: Vec<f32> = buf.chunks(2).map(|f| f[0]).collect();
+        let (lo, hi) = ((RATE / 400.0) as usize, (RATE / 20.0) as usize);
+        let corr: Vec<f32> = (lo..hi)
+            .map(|lag| x.iter().zip(&x[lag..]).map(|(a, b)| a * b).sum::<f32>())
+            .collect();
+        let best = corr.iter().cloned().fold(f32::MIN, f32::max);
+        let lag = corr.iter().position(|c| *c >= best * 0.8).unwrap_or(0) + lo;
+        RATE / lag as f32
     }
 
     #[test]
@@ -346,21 +404,69 @@ mod tests {
         slow.apply(Command::Engine {
             id: 0,
             rpm: 0.1,
+            load: 0.5,
             gain: 0.8,
             pan: 0.0,
         });
         render(&mut slow, 0.5);
-        let low = zero_crossings(&render(&mut slow, 0.5));
+        let low = pitch(&render(&mut slow, 0.5));
         let mut fast = Mixer::new(RATE);
         fast.apply(Command::Engine {
             id: 0,
             rpm: 0.95,
+            load: 0.5,
             gain: 0.8,
             pan: 0.0,
         });
         render(&mut fast, 0.5);
-        let high = zero_crossings(&render(&mut fast, 0.5));
-        assert!(high > low * 2, "low {low}, high {high}");
+        let high = pitch(&render(&mut fast, 0.5));
+        assert!(high > low * 2.0, "low {low} Hz, high {high} Hz");
+    }
+
+    fn engine(m: &mut Mixer, rpm: f32, load: f32) {
+        m.apply(Command::Engine {
+            id: 0,
+            rpm,
+            load,
+            gain: 0.8,
+            pan: 0.0,
+        });
+    }
+
+    fn rms(buf: &[f32]) -> f32 {
+        (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn the_engine_is_louder_under_load() {
+        let mut on = Mixer::new(RATE);
+        engine(&mut on, 0.6, 1.0);
+        render(&mut on, 0.5);
+        let mut off = Mixer::new(RATE);
+        engine(&mut off, 0.6, 0.0);
+        render(&mut off, 0.5);
+        let (a, b) = (rms(&render(&mut on, 0.5)), rms(&render(&mut off, 0.5)));
+        assert!(a > b * 1.3, "on throttle {a}, coasting {b}");
+    }
+
+    #[test]
+    fn lifting_off_at_high_revs_crackles() {
+        let peaks = |lift: bool| {
+            let mut m = Mixer::new(RATE);
+            engine(&mut m, 0.9, if lift { 1.0 } else { 0.0 });
+            render(&mut m, 0.5);
+            engine(&mut m, 0.9, 0.0);
+            render(&mut m, 0.05);
+            let buf = render(&mut m, 0.6);
+            let base = rms(&buf);
+            buf.iter().filter(|s| s.abs() > base * 4.0).count()
+        };
+        assert!(
+            peaks(true) > peaks(false) + 20,
+            "lift-off {} vs steady {}",
+            peaks(true),
+            peaks(false)
+        );
     }
 
     #[test]
@@ -395,6 +501,7 @@ mod tests {
             m.apply(Command::Engine {
                 id,
                 rpm: 1.0,
+                load: 1.0,
                 gain: 1.0,
                 pan: 0.0,
             });
@@ -408,6 +515,7 @@ mod tests {
         m.apply(Command::Engine {
             id: 0,
             rpm: f32::NAN,
+            load: 0.5,
             gain: 0.8,
             pan: f32::INFINITY,
         });
@@ -419,6 +527,7 @@ mod tests {
         m.apply(Command::Engine {
             id: 1,
             rpm: 0.5,
+            load: 0.5,
             gain: 0.5,
             pan: 0.0,
         });
@@ -431,6 +540,7 @@ mod tests {
         m.apply(Command::Engine {
             id: 0,
             rpm: 0.5,
+            load: 0.5,
             gain: 1.0,
             pan: -1.0,
         });
