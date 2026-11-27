@@ -22,6 +22,19 @@ pub struct PropKind {
     pub glow: f32,
 }
 
+impl PropKind {
+    /// A sunlit landmark with half its largest dimension reserved for road clearance.
+    const fn landmark(name: &'static str, size: f32, specular: f32) -> Self {
+        Self {
+            name,
+            size,
+            footprint: 0.5,
+            specular,
+            glow: 0.0,
+        }
+    }
+}
+
 pub const PROPS: [PropKind; 24] = [
     PropKind {
         name: "skull_rock",
@@ -156,41 +169,11 @@ pub const PROPS: [PropKind; 24] = [
         specular: 0.3,
         glow: 0.3,
     },
-    PropKind {
-        name: "solar_relay",
-        size: 42.0,
-        footprint: 0.5,
-        specular: 0.45,
-        glow: 0.0,
-    },
-    PropKind {
-        name: "sky_freighter",
-        size: 58.0,
-        footprint: 0.5,
-        specular: 0.25,
-        glow: 0.0,
-    },
-    PropKind {
-        name: "great_hall",
-        size: 42.0,
-        footprint: 0.5,
-        specular: 0.08,
-        glow: 0.0,
-    },
-    PropKind {
-        name: "sail_mill",
-        size: 32.0,
-        footprint: 0.5,
-        specular: 0.07,
-        glow: 0.0,
-    },
-    PropKind {
-        name: "sandstone_window",
-        size: 39.0,
-        footprint: 0.5,
-        specular: 0.04,
-        glow: 0.0,
-    },
+    PropKind::landmark("solar_relay", 42.0, 0.45),
+    PropKind::landmark("sky_freighter", 58.0, 0.25),
+    PropKind::landmark("great_hall", 42.0, 0.08),
+    PropKind::landmark("sail_mill", 32.0, 0.07),
+    PropKind::landmark("sandstone_window", 39.0, 0.04),
 ];
 
 fn kind(name: &str) -> usize {
