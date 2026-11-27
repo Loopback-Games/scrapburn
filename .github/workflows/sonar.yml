@@ -1,0 +1,47 @@
+name: sonar
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+
+jobs:
+  sonar:
+    # Pull requests from forks get no secrets, so they cannot be analyzed.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Skip until SonarQube Cloud is connected
+        if: env.SONAR_TOKEN == ''
+        run: echo "::warning::SONAR_TOKEN is not set; skipping SonarQube Cloud analysis"
+      - if: env.SONAR_TOKEN != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so new-code detection and blame work.
+          fetch-depth: 0
+          persist-credentials: false
+      - if: env.SONAR_TOKEN != ''
+        uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+      - if: env.SONAR_TOKEN != ''
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - if: env.SONAR_TOKEN != ''
+        name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libasound2-dev
+      - if: env.SONAR_TOKEN != ''
+        name: Clippy and coverage reports
+        run: just sonar-reports
+      - if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1

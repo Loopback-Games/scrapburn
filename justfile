@@ -12,9 +12,23 @@ fmt:
 lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
+    actionlint
+    zizmor --quiet .github/workflows
 
 test:
     cargo test --workspace
+    cd tools/tailcat && mise exec -- go test ./...
+
+# Clippy findings and test coverage for SonarQube Cloud, written to target/sonar.
+[unix]
+sonar-reports:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/sonar
+    cargo clippy --workspace --all-targets --message-format=json > target/sonar/clippy.json
+    cargo llvm-cov --workspace --lcov --output-path target/sonar/lcov.info
+    cd tools/tailcat
+    mise exec -- go test -coverprofile=../../target/sonar/go-coverage.out ./...
 
 security:
     cargo audit
@@ -26,7 +40,7 @@ build:
 run *ARGS:
     cargo run -p scrapburn --release -- {{ARGS}}
 
-# Ship the game, private-race helper and assets together.
+# Ship the game, private-race helper and assets together, as a .zip.
 [linux]
 package: build-portable
     python3 tools/package.py target/portable/release
