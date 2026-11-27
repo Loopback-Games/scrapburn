@@ -5,6 +5,10 @@ use rivet_render::Preset;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Title,
+    RaceSetup,
+    Circuits,
+    Controls,
+    DriverName,
     Garage,
     Settings,
     Playing,
@@ -33,6 +37,7 @@ pub enum MenuAction {
     None,
     StartRace,
     SaveGarage,
+    SaveName,
     StartTimeTrial,
     Resume,
     Restart,
@@ -117,10 +122,31 @@ impl Default for Settings {
     }
 }
 
-/// Title screen rows.
-pub const TITLE_TRACK: usize = 4;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RaceMode {
+    #[default]
+    Race,
+    TimeTrial,
+    Elimination,
+}
+impl RaceMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Race => "GRAND PRIX",
+            Self::TimeTrial => "TIME TRIAL",
+            Self::Elimination => "ELIMINATION",
+        }
+    }
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Race => "Battle the pack to the finish line.",
+            Self::TimeTrial => "Chase your own best lap.",
+            Self::Elimination => "Stay out of last place to survive.",
+        }
+    }
+}
 /// Online screen: the typed address row.
-pub const ONLINE_ADDRESS: usize = 1;
+pub const ONLINE_ADDRESS: usize = 4;
 /// Longest typed address.
 const MAX_ADDRESS: usize = 64;
 
@@ -143,6 +169,9 @@ pub struct MenuState {
     pub screen: Screen,
     pub selected: usize,
     return_to: Screen,
+    pub mode: RaceMode,
+    pub gamepad_guide: bool,
+    pub name_entry: String,
     /// The address typed on the Online screen.
     pub join_addr: String,
     /// Online tailnet peers (name, address) offered on the Online screen.
@@ -161,6 +190,9 @@ impl MenuState {
             screen,
             selected: 0,
             return_to: Screen::Title,
+            mode: RaceMode::Race,
+            gamepad_guide: false,
+            name_entry: String::new(),
             join_addr: String::new(),
             peers: Vec::new(),
             lobby_host: false,
@@ -171,6 +203,14 @@ impl MenuState {
 
     /// Text typed while the address row is selected (address characters only).
     pub fn type_text(&mut self, text: &str) {
+        if self.screen == Screen::DriverName && self.selected == 0 {
+            for c in text.chars().filter(|c| c.is_ascii_graphic() || *c == ' ') {
+                if self.name_entry.len() < 16 {
+                    self.name_entry.push(c);
+                }
+            }
+            return;
+        }
         if self.screen != Screen::Online || self.selected != ONLINE_ADDRESS {
             return;
         }
@@ -183,6 +223,9 @@ impl MenuState {
     }
 
     pub fn backspace(&mut self) {
+        if self.screen == Screen::DriverName && self.selected == 0 {
+            self.name_entry.pop();
+        }
         if self.screen == Screen::Online && self.selected == ONLINE_ADDRESS {
             self.join_addr.pop();
         }
@@ -194,7 +237,10 @@ impl MenuState {
     }
 
     pub fn go(&mut self, screen: Screen) {
-        if screen == Screen::Settings {
+        if matches!(
+            screen,
+            Screen::Settings | Screen::Controls | Screen::Circuits
+        ) {
             self.return_to = self.screen;
         }
         self.screen = screen;
@@ -209,18 +255,49 @@ impl MenuState {
             Preset::High => "HIGH",
         };
         match self.screen {
-            Screen::Title => vec![
-                "RACE".into(),
-                "TIME TRIAL".into(),
-                "ELIMINATION".into(),
-                "ONLINE".into(),
+            Screen::Title => [
+                "SOLO RACE",
+                "MULTIPLAYER",
+                "GARAGE",
+                "CONTROLS",
+                "SETTINGS",
+                "QUIT",
+            ]
+            .map(String::from)
+            .to_vec(),
+            Screen::RaceSetup => vec![
+                "START RACE".into(),
+                format!("MODE  < {} >", self.mode.name()),
+                format!("CIRCUIT  {}", crate::track::TRACKS[s.track].name),
+                "BACK".into(),
+            ],
+            Screen::Circuits => crate::track::TRACKS
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    if i == s.track {
+                        format!("{}  EQUIPPED", t.name)
+                    } else {
+                        t.name.into()
+                    }
+                })
+                .chain(std::iter::once("DONE".into()))
+                .collect(),
+            Screen::Controls => vec![
                 format!(
-                    "TRACK  < {} >",
-                    crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
+                    "DEVICE  < {} >",
+                    if self.gamepad_guide {
+                        "GAMEPAD"
+                    } else {
+                        "KEYBOARD"
+                    }
                 ),
-                "SETTINGS".into(),
-                "GARAGE".into(),
-                "QUIT".into(),
+                "BACK".into(),
+            ],
+            Screen::DriverName => vec![
+                format!("NAME  {}_", self.name_entry),
+                "SAVE NAME".into(),
+                "CANCEL".into(),
             ],
             Screen::Garage => vec![
                 format!(
@@ -248,12 +325,16 @@ impl MenuState {
                 "RESUME".into(),
                 "RESTART".into(),
                 "SETTINGS".into(),
+                "CONTROLS".into(),
                 "MAIN MENU".into(),
                 "QUIT".into(),
             ],
             Screen::Results => vec!["CONTINUE".into(), "RACE AGAIN".into()],
             Screen::Online => {
                 let mut v = vec![
+                    "HOST PRIVATE RACE".into(),
+                    "OPEN RACE INVITE".into(),
+                    "CHANGE RACER NAME".into(),
                     "HOST GAME".into(),
                     if self.join_addr.is_empty() {
                         "JOIN  TYPE AN ADDRESS_".to_string()
@@ -262,11 +343,7 @@ impl MenuState {
                     },
                 ];
                 v.extend(self.peers.iter().map(|(n, _)| format!("JOIN  {n}")));
-                v.extend([
-                    "HOST PRIVATE RACE".into(),
-                    "OPEN RACE INVITE".into(),
-                    "BACK".into(),
-                ]);
+                v.push("BACK".into());
                 v
             }
             Screen::Lobby if self.lobby_host => vec![
@@ -280,7 +357,7 @@ impl MenuState {
                     }
                 ),
                 format!(
-                    "TRACK  < {} >",
+                    "CIRCUIT  {}",
                     crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
                 ),
                 "LEAVE".into(),
@@ -295,6 +372,7 @@ impl MenuState {
         if n == 0 {
             return MenuAction::None;
         }
+        self.selected = self.selected.min(n - 1);
         if input.up {
             self.selected = (self.selected + n - 1) % n;
         }
@@ -304,36 +382,72 @@ impl MenuState {
         let dir = input.right as i32 - input.left as i32;
         match self.screen {
             Screen::Title => {
-                let tracks = crate::track::TRACKS.len();
-                if self.selected == TITLE_TRACK && (dir != 0 || input.select) {
-                    let step = if dir != 0 { dir } else { 1 };
-                    s.track = (s.track as i32 + step).rem_euclid(tracks as i32) as usize;
+                if input.select {
+                    let dest = match self.selected {
+                        0 => Screen::RaceSetup,
+                        1 => Screen::Online,
+                        2 => Screen::Garage,
+                        3 => Screen::Controls,
+                        4 => Screen::Settings,
+                        _ => return MenuAction::Quit,
+                    };
+                    self.go(dest);
+                }
+                MenuAction::None
+            }
+            Screen::RaceSetup => {
+                if input.back || (input.select && self.selected == 3) {
+                    self.go(Screen::Title);
+                } else if self.selected == 0 && input.select {
+                    return match self.mode {
+                        RaceMode::Race => MenuAction::StartRace,
+                        RaceMode::TimeTrial => MenuAction::StartTimeTrial,
+                        RaceMode::Elimination => MenuAction::StartElimination,
+                    };
+                } else if self.selected == 1 && (dir != 0 || input.select) {
+                    self.mode = cycle(
+                        &[RaceMode::Race, RaceMode::TimeTrial, RaceMode::Elimination],
+                        self.mode,
+                        if dir == 0 { 1 } else { dir },
+                    );
+                } else if self.selected == 2 && input.select {
+                    self.go(Screen::Circuits);
+                    self.selected = s.track;
+                }
+                MenuAction::None
+            }
+            Screen::Circuits => {
+                if input.back || (input.select && self.selected == n - 1) {
+                    self.go(self.return_to);
+                    self.selected = 2;
+                } else if input.select && s.track != self.selected {
+                    s.track = self.selected;
                     return MenuAction::TrackChanged;
                 }
-                match (input.select, self.selected) {
-                    (true, 0) => MenuAction::StartRace,
-                    (true, 1) => MenuAction::StartTimeTrial,
-                    (true, 2) => MenuAction::StartElimination,
-                    (true, 3) => {
-                        self.go(Screen::Online);
-                        MenuAction::None
-                    }
-                    (true, 6) => {
-                        self.go(Screen::Garage);
-                        MenuAction::None
-                    }
-                    (true, 5) => {
-                        self.go(Screen::Settings);
-                        MenuAction::None
-                    }
-                    (true, _) => MenuAction::Quit,
-                    _ => MenuAction::None,
+                MenuAction::None
+            }
+            Screen::Controls => {
+                if input.back || (input.select && self.selected == 1) {
+                    self.go(self.return_to);
+                    self.selected = 3;
+                } else if self.selected == 0 && (dir != 0 || input.select) {
+                    self.gamepad_guide = !self.gamepad_guide;
                 }
+                MenuAction::None
+            }
+            Screen::DriverName => {
+                if input.back || (input.select && self.selected == 2) {
+                    self.go(Screen::Online);
+                } else if input.select && !self.name_entry.trim().is_empty() {
+                    self.go(Screen::Online);
+                    return MenuAction::SaveName;
+                }
+                MenuAction::None
             }
             Screen::Garage => {
                 if input.back || (input.select && self.selected == 2) {
                     self.go(Screen::Title);
-                    self.selected = 6;
+                    self.selected = 2;
                     return MenuAction::SaveGarage;
                 }
                 let step = if dir != 0 {
@@ -353,6 +467,7 @@ impl MenuState {
                 if input.back || (input.select && self.selected == n - 1) {
                     let back = self.return_to;
                     self.go(back);
+                    self.selected = if back == Screen::Paused { 2 } else { 4 };
                     return MenuAction::None;
                 }
                 let step = if dir != 0 {
@@ -400,7 +515,11 @@ impl MenuState {
                         self.go(Screen::Settings);
                         MenuAction::None
                     }
-                    (true, 3) => MenuAction::ToTitle,
+                    (true, 3) => {
+                        self.go(Screen::Controls);
+                        MenuAction::None
+                    }
+                    (true, 4) => MenuAction::ToTitle,
                     (true, _) => MenuAction::Quit,
                     _ => MenuAction::None,
                 }
@@ -408,15 +527,21 @@ impl MenuState {
             Screen::Online => {
                 if input.back || (input.select && self.selected == n - 1) {
                     self.go(Screen::Title);
+                    self.selected = 1;
                     return MenuAction::None;
                 }
                 if !input.select {
                     return MenuAction::None;
                 }
                 match self.selected {
-                    0 => MenuAction::HostGame,
-                    k if k == n - 3 => MenuAction::PrivateHost,
-                    k if k == n - 2 => MenuAction::PrivateJoin,
+                    3 => MenuAction::HostGame,
+                    0 => MenuAction::PrivateHost,
+                    1 => MenuAction::PrivateJoin,
+                    2 => {
+                        self.name_entry.clear();
+                        self.go(Screen::DriverName);
+                        MenuAction::None
+                    }
                     ONLINE_ADDRESS if self.join_addr.is_empty() => MenuAction::None,
                     ONLINE_ADDRESS => {
                         self.join_choice = Some(self.join_addr.clone());
@@ -441,10 +566,14 @@ impl MenuState {
                     if self.selected == 1 && (dir != 0 || input.select) {
                         self.lobby_elimination = !self.lobby_elimination;
                     }
-                    if self.selected == 2 && (dir != 0 || input.select) {
+                    if self.selected == 2 && input.select {
+                        self.go(Screen::Circuits);
+                        self.selected = s.track;
+                        return MenuAction::None;
+                    }
+                    if self.selected == 2 && dir != 0 {
                         let tracks = crate::track::TRACKS.len() as i32;
-                        let step = if dir != 0 { dir } else { 1 };
-                        s.track = (s.track as i32 + step).rem_euclid(tracks) as usize;
+                        s.track = (s.track as i32 + dir).rem_euclid(tracks) as usize;
                         return MenuAction::TrackChanged;
                     }
                     if input.select && self.selected == 0 {
@@ -488,28 +617,24 @@ mod tests {
     fn title_actions() {
         let mut s = Settings::default();
         let mut m = MenuState::new(Screen::Title);
-        assert_eq!(
-            m.handle(press(|i| i.select = true), &mut s),
-            MenuAction::StartRace
-        );
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.screen, Screen::RaceSetup);
+        for action in [
+            MenuAction::StartRace,
+            MenuAction::StartTimeTrial,
+            MenuAction::StartElimination,
+        ] {
+            m.selected = 0;
+            assert_eq!(m.handle(press(|i| i.select = true), &mut s), action);
+            m.selected = 1;
+            m.handle(press(|i| i.right = true), &mut s);
+        }
+        m.go(Screen::Title);
         m.selected = 1;
-        assert_eq!(
-            m.handle(press(|i| i.select = true), &mut s),
-            MenuAction::StartTimeTrial
-        );
-        m.selected = 2;
-        assert_eq!(
-            m.handle(press(|i| i.select = true), &mut s),
-            MenuAction::StartElimination
-        );
-        m.selected = 3;
-        assert_eq!(
-            m.handle(press(|i| i.select = true), &mut s),
-            MenuAction::None
-        );
+        m.handle(press(|i| i.select = true), &mut s);
         assert_eq!(m.screen, Screen::Online);
         m.go(Screen::Title);
-        m.selected = 5;
+        m.selected = 4;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::None
@@ -544,25 +669,27 @@ mod tests {
     }
 
     #[test]
-    fn title_track_row_cycles_tracks() {
+    fn circuit_picker_applies_choice_and_returns_to_setup() {
         let mut s = Settings::default();
-        let mut m = MenuState::new(Screen::Title);
-        m.selected = TITLE_TRACK;
+        let mut m = MenuState::new(Screen::RaceSetup);
+        m.selected = 2;
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.screen, Screen::Circuits);
+        m.handle(press(|i| i.down = true), &mut s);
         assert_eq!(
-            m.handle(press(|i| i.right = true), &mut s),
+            m.handle(press(|i| i.select = true), &mut s),
             MenuAction::TrackChanged
         );
         assert_eq!(s.track, 1);
-        m.handle(press(|i| i.left = true), &mut s);
-        m.handle(press(|i| i.left = true), &mut s);
-        assert_eq!(s.track, crate::track::TRACKS.len() - 1, "wraps");
-        assert!(m.items(&s)[TITLE_TRACK].contains(crate::track::TRACKS[s.track].name));
+        m.handle(press(|i| i.back = true), &mut s);
+        assert_eq!((m.screen, m.selected), (Screen::RaceSetup, 2));
     }
 
     #[test]
     fn online_menu_hosts_and_joins_by_typed_address_or_tailnet_peer() {
         let mut s = Settings::default();
         let mut m = MenuState::new(Screen::Online);
+        m.selected = 3;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::HostGame
@@ -601,7 +728,45 @@ mod tests {
     }
 
     #[test]
-    fn private_race_actions_follow_peer_rows() {
+    fn name_editor_saves_only_a_nonempty_name_and_escape_cancels() {
+        let mut m = MenuState::new(Screen::Online);
+        let mut s = Settings::default();
+        m.selected = 2;
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.screen, Screen::DriverName);
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::None
+        );
+        m.type_text("DUST RIDER");
+        m.backspace();
+        m.type_text("R");
+        assert_eq!(m.name_entry, "DUST RIDER");
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::SaveName
+        );
+        m.selected = 2;
+        m.handle(press(|i| i.select = true), &mut s);
+        m.type_text("NEW NAME");
+        assert_eq!(m.handle(press(|i| i.back = true), &mut s), MenuAction::None);
+        assert_eq!(m.screen, Screen::Online);
+    }
+
+    #[test]
+    fn pause_controls_return_to_the_same_row() {
+        let mut m = MenuState::new(Screen::Paused);
+        let mut s = Settings::default();
+        m.selected = 3;
+        m.handle(press(|i| i.select = true), &mut s);
+        m.handle(press(|i| i.right = true), &mut s);
+        assert!(m.gamepad_guide);
+        m.handle(press(|i| i.back = true), &mut s);
+        assert_eq!((m.screen, m.selected), (Screen::Paused, 3));
+    }
+
+    #[test]
+    fn private_race_actions_stay_available_with_peers() {
         let mut menu = MenuState::new(Screen::Online);
         let mut settings = Settings::default();
         menu.peers.push(("Friend".into(), "100.64.0.1".into()));
@@ -639,7 +804,6 @@ mod tests {
         );
         assert!(m.lobby_elimination);
         assert!(m.items(&s)[1].contains("ELIMINATION"));
-        m.selected = 0;
         m.selected = 2;
         assert!(m.items(&s)[2].contains(crate::track::TRACKS[0].name));
         assert_eq!(
@@ -647,6 +811,10 @@ mod tests {
             MenuAction::TrackChanged
         );
         assert_eq!(s.track, 1);
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.screen, Screen::Circuits);
+        m.handle(press(|i| i.back = true), &mut s);
+        assert_eq!(m.screen, Screen::Lobby);
         m.selected = 0;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
@@ -740,7 +908,7 @@ mod tests {
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::Restart
         );
-        m.selected = 3;
+        m.selected = 4;
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::ToTitle

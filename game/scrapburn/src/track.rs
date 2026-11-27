@@ -872,6 +872,14 @@ pub fn build_graybox_loop() -> Track {
     build_track(&TRACKS[0])
 }
 
+/// Plan view sampled from the same spline as the road.
+pub fn route_preview(def: &TrackDef) -> Vec<Vec3> {
+    resampled_loop(def.points)
+        .into_iter()
+        .map(|p| Vec3::new(p.x, 0.0, p.y))
+        .collect()
+}
+
 pub fn build_track(def: &TrackDef) -> Track {
     let st = def.style;
     let flat = resampled_loop(def.points);

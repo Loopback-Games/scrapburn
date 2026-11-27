@@ -501,7 +501,27 @@ pub fn draw_wrong_way(o: &mut Overlay, w: f32, h: f32, t: f32) {
     );
 }
 
-/// The online lobby: who's in, where, and how to reach this host. Top left, under the title.
+const INK: [f32; 4] = [0.015, 0.029, 0.042, 0.95];
+const MINT: [f32; 4] = [0.40, 0.95, 0.80, 1.0];
+
+fn menu_scale(w: f32, h: f32) -> f32 {
+    (w / 1270.0).min(h / 800.0).min(2.5)
+}
+
+fn fit_label(
+    o: &mut Overlay,
+    x: f32,
+    cy: f32,
+    size: f32,
+    available: f32,
+    color: [f32; 4],
+    value: &str,
+) {
+    let size = size.min(available / width(value, 1.0).max(1.0));
+    o.label_centered(x, cy, size, color, value);
+}
+
+/// Network details and the eight starting positions share the right-hand side of the paddock.
 pub fn draw_lobby(
     o: &mut Overlay,
     w: f32,
@@ -510,34 +530,234 @@ pub fn draw_lobby(
     lines: &[String],
     names: &[String],
 ) {
-    let ui = (h / 900.0).clamp(0.6, 2.0);
-    let (x, y) = (36.0 * ui, h * 0.3);
-    let row = 30.0 * ui;
-    let pw = 380.0 * ui;
-    let ph = 70.0 * ui + (lines.len() + names.len()) as f32 * row;
-    o.rect(x, y, pw, ph, PANEL);
-    o.rect(x, y, 6.0 * ui, ph, ACCENT);
-    o.label(x + 24.0 * ui, y + 14.0 * ui, 2.0 * ui, ACCENT, heading);
-    let mut yy = y + 50.0 * ui;
-    for l in lines {
-        o.label(x + 24.0 * ui, yy, 1.4 * ui, DIM, l);
-        yy += row;
-    }
-    for (k, n) in names.iter().enumerate() {
-        let tag = if k == 0 { "HOST" } else { "" };
-        o.label(
-            x + 24.0 * ui,
-            yy,
-            1.9 * ui,
-            WHITE,
-            &format!("{}  {n}", k + 1),
+    let u = menu_scale(w, h);
+    let grid = heading != "ONLINE";
+    let pw = 530. * u;
+    let x = w - pw - 44. * u;
+    let y = h * 0.29;
+    let slots = crate::netplay::MAX_PEERS + 1;
+    let height = (64. + lines.len() as f32 * 30. + if grid { 232. } else { 8. }) * u;
+    o.rect(x, y, pw, height, INK);
+    o.rect(x, y, pw, 3. * u, MINT);
+    o.label_centered(x + 20. * u, y + 28. * u, 2.4 * u, WHITE, heading);
+    if grid {
+        o.label_centered(
+            x + pw - 145. * u,
+            y + 28. * u,
+            1.8 * u,
+            MINT,
+            &format!("{} / {} DRIVERS", names.len(), slots),
         );
-        if !tag.is_empty() {
-            o.label(x + pw - 80.0 * ui, yy + 2.0 * ui, 1.4 * ui, ACCENT, tag);
-        }
-        yy += row;
     }
-    let _ = w;
+    let mut cy = y + 65. * u;
+    for line in lines {
+        fit_label(o, x + 20. * u, cy, 1.85 * u, pw - 40. * u, DIM, line);
+        cy += 30. * u;
+    }
+    if grid {
+        for i in 0..slots {
+            let sx = x + (16. + (i % 2) as f32 * 250.) * u;
+            let sy = cy + (i / 2) as f32 * 52. * u;
+            let active = names.get(i);
+            o.rect(sx, sy, 240. * u, 43. * u, [0.09, 0.14, 0.16, 0.95]);
+            o.rect(
+                sx,
+                sy,
+                3. * u,
+                43. * u,
+                if active.is_some() { MINT } else { DIM },
+            );
+            o.label_centered(
+                sx + 10. * u,
+                sy + 22. * u,
+                1.6 * u,
+                MINT,
+                &format!("{:02}", i + 1),
+            );
+            let name = active.map(String::as_str).unwrap_or("OPEN SEAT");
+            fit_label(
+                o,
+                sx + 40. * u,
+                sy + 22. * u,
+                1.85 * u,
+                if i == 0 { 138. } else { 187. } * u,
+                if active.is_some() { WHITE } else { DIM },
+                name,
+            );
+            if i == 0 && active.is_some() {
+                o.label_centered(sx + 184. * u, sy + 22. * u, 1.3 * u, ACCENT, "HOST");
+            }
+        }
+    }
+}
+
+/// Seat numbers and colors stay with the driver as the running order changes.
+fn seat_color(seat: usize) -> [f32; 4] {
+    let [r, g, b] = crate::race::TINTS[seat % crate::race::TINTS.len()];
+    [r * 0.76, g * 0.76, b * 0.76, 1.]
+}
+
+pub fn driver_tag(o: &mut Overlay, (w, h): (f32, f32), clip: glam::Vec4, seat: usize, name: &str) {
+    if clip.w <= 0. || clip.z < 0. || clip.z > clip.w || clip.w > 100. {
+        return;
+    }
+    let p = clip.truncate() / clip.w;
+    if p.x.abs() > 1. || p.y.abs() > 1. {
+        return;
+    }
+    let u = menu_scale(w, h) * (1.2 - clip.w / 200.).clamp(0.75, 1.);
+    let x = (p.x + 1.) * 0.5 * w;
+    let y = (1. - p.y) * 0.5 * h;
+    let color = seat_color(seat);
+    let name_size = 2.05 * u;
+    let badge = 33. * u;
+    let tw = width(name, name_size) + badge + 18. * u;
+    let left = x - tw / 2.;
+    o.rect(left, y - 43. * u, tw, 31. * u, INK);
+    o.rect(left, y - 43. * u, badge, 31. * u, color);
+    o.rect(left + badge, y - 43. * u, tw - badge, 2. * u, color);
+    o.label_centered(
+        left + 5. * u,
+        y - 27. * u,
+        2.0 * u,
+        INK,
+        &format!("{:02}", seat + 1),
+    );
+    o.label_centered(left + badge + 8. * u, y - 27. * u, name_size, WHITE, name);
+    o.triangle(
+        [[x - 9. * u, y - 12. * u], [x + 9. * u, y - 12. * u], [x, y]],
+        color,
+    );
+}
+
+pub fn human_row(
+    o: &mut Overlay,
+    h: f32,
+    row: usize,
+    position: usize,
+    seat: usize,
+    kart: &crate::race::Racer,
+    me: bool,
+) {
+    let u = (h / 900.).clamp(0.6, 2.);
+    let x = 22. * u;
+    let y = (154. + row as f32 * 30.) * u;
+    if row == 0 {
+        o.rect(x, y - 28. * u, 210. * u, 28. * u, INK);
+        o.label_centered(x + 8. * u, y - 14. * u, 1.5 * u, MINT, "HUMAN DRIVERS");
+    }
+    o.rect(x, y, 210. * u, 28. * u, INK);
+    o.rect(x, y, 3. * u, 28. * u, seat_color(seat));
+    o.label_centered(
+        x + 8. * u,
+        y + 14. * u,
+        1.6 * u,
+        WHITE,
+        &format!("P{position}"),
+    );
+    let label = format!("{:02}  {}", seat + 1, kart.name);
+    fit_label(
+        o,
+        x + 42. * u,
+        y + 14. * u,
+        1.65 * u,
+        123. * u,
+        seat_color(seat),
+        &label,
+    );
+    let tag = if kart.out {
+        "OUT"
+    } else if kart.finish.is_some() {
+        "FIN"
+    } else if me {
+        "YOU"
+    } else {
+        ""
+    };
+    o.label_centered(x + 173. * u, y + 14. * u, 1.3 * u, WHITE, tag);
+}
+
+pub fn controls_card(o: &mut Overlay, w: f32, h: f32, pad: bool) {
+    let u = menu_scale(w, h);
+    let pw = 520. * u;
+    let x = w - pw - 44. * u;
+    let y = h * 0.28;
+    o.rect(x, y, pw, 386. * u, INK);
+    o.rect(x, y, pw, 3. * u, MINT);
+    o.label_centered(x + 20. * u, y + 34. * u, 2.8 * u, WHITE, "DRIVING CONTROLS");
+    for (i, (action, key, button)) in [
+        ("Accelerate", "W / Up", "RT / A"),
+        ("Brake / reverse", "S / Down", "LT"),
+        ("Steer", "A D / Left Right", "Left stick"),
+        ("Hop / drift", "Space / Shift", "LB / RB"),
+        ("Fire item", "E / Left Ctrl / J", "X"),
+        ("Recover kart", "R", "B"),
+        ("Pause", "Esc", "Start"),
+        ("FPS display", "F3", "Select"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let cy = y + (80. + i as f32 * 40.) * u;
+        o.rect(
+            x + 20. * u,
+            cy + 18. * u,
+            pw - 40. * u,
+            u,
+            [0.4, 0.65, 0.65, 0.28],
+        );
+        o.label_centered(x + 20. * u, cy, 2.15 * u, WHITE, action);
+        let val = if pad { button } else { key };
+        o.label_centered(
+            x + pw - 20. * u - width(val, 2.1 * u),
+            cy,
+            2.1 * u,
+            MINT,
+            val,
+        );
+    }
+}
+
+fn swatch_rect(w: f32, h: f32, index: usize) -> (f32, f32, f32, f32) {
+    let u = menu_scale(w, h);
+    (
+        w - (413. - 44. * index as f32) * u,
+        h - 101. * u,
+        37. * u,
+        25. * u,
+    )
+}
+
+pub fn garage_swatch_at(w: f32, h: f32, x: f32, y: f32) -> Option<usize> {
+    (0..crate::kart::FINISHES.len()).find(|&i| {
+        let (sx, sy, sw, sh) = swatch_rect(w, h, i);
+        (sx..sx + sw).contains(&x) && (sy..sy + sh).contains(&y)
+    })
+}
+
+pub fn garage_card(o: &mut Overlay, w: f32, h: f32, loadout: crate::kart::Loadout) {
+    let u = menu_scale(w, h);
+    let pw = 385. * u;
+    let x = w - pw - 44. * u;
+    let y = h - 153. * u;
+    o.rect(x, y, pw, 92. * u, INK);
+    let name = crate::kart::KARTS[loadout.design].name.to_ascii_uppercase();
+    o.label_centered(x + 16. * u, y + 27. * u, 2.8 * u, WHITE, &name);
+    let finish = crate::kart::FINISHES[loadout.finish];
+    o.label_centered(
+        x + pw - 16. * u - width(finish, 1.8 * u),
+        y + 27. * u,
+        1.8 * u,
+        MINT,
+        finish,
+    );
+    for (i, &[r, g, b]) in crate::race::TINTS.iter().enumerate() {
+        let (sx, sy, sw, _) = swatch_rect(w, h, i);
+        o.rect(sx, sy, sw, 17. * u, [r * 0.8, g * 0.8, b * 0.8, 1.]);
+        if i == loadout.finish {
+            o.rect(sx, y + 73. * u, 37. * u, 4. * u, WHITE);
+        }
+    }
 }
 
 /// A short network notice (joined, left, connection lost), fading out after a few seconds.
@@ -567,7 +787,7 @@ pub fn draw_toast(o: &mut Overlay, w: f32, h: f32, msg: &str, age: f32) {
     o.label(x, y, s, [1.0, 1.0, 1.0, a], msg);
 }
 
-/// The selected circuit on the title screen: number, name and tagline, bottom left.
+/// A live plan view of the highlighted circuit.
 pub fn draw_track_card(
     o: &mut Overlay,
     w: f32,
@@ -575,34 +795,58 @@ pub fn draw_track_card(
     index: usize,
     def: &crate::track::TrackDef,
     route: &[glam::Vec3],
+    time: f32,
 ) {
     let (name, tagline) = (def.name, def.tagline);
     let count = crate::track::TRACKS.len();
-    let ui = (h / 900.0).clamp(0.6, 2.0);
-    let ts = 1.5 * ui;
-    let cw = (width(tagline, ts) + 48.0 * ui)
-        .max(width(name, 3.4 * ui) + 48.0 * ui)
-        .min(w - 72.0 * ui);
-    // Bottom-right, clear of the title screen's menu column.
-    let (x, y) = (w - cw - 36.0 * ui, h - 350.0 * ui);
-    o.rect(x, y, cw, 278.0 * ui, [0.025, 0.035, 0.045, 0.94]);
-    o.rect(x, y, 6.0 * ui, 278.0 * ui, ACCENT);
+    let ui = menu_scale(w, h);
+    let ts = 1.7 * ui;
+    let cw = 520. * ui;
+    let (x, y) = (w - cw - 44. * ui, h * 0.30);
+    o.rect(x, y, cw, 318. * ui, INK);
+    o.rect(x, y, cw, 3. * ui, MINT);
+    for k in 1..10 {
+        o.rect(
+            x + cw * k as f32 / 10.,
+            y + 123. * ui,
+            ui,
+            174. * ui,
+            [0.4, 0.65, 0.65, 0.12],
+        );
+    }
+    for k in 0..7 {
+        o.rect(
+            x + 18. * ui,
+            y + (123. + 28. * k as f32) * ui,
+            cw - 36. * ui,
+            ui,
+            [0.4, 0.65, 0.65, 0.12],
+        );
+    }
     let map = Minimap::fit(
         route,
-        (x + 24.0 * ui, y + 128.0 * ui, cw - 48.0 * ui, 125.0 * ui),
+        (x + 24.0 * ui, y + 128.0 * ui, cw - 48.0 * ui, 161.0 * ui),
     );
     for point in route {
         let (px, py) = map.project(*point);
         o.rect(px, py, 3.0 * ui, 3.0 * ui, WHITE);
     }
-    if let Some(start) = route.first() {
+    if let Some(start) = route.get((time * 22.) as usize % route.len().max(1)) {
         let (px, py) = map.project(*start);
         o.rect(px - 2.0 * ui, py - 2.0 * ui, 7.0 * ui, 7.0 * ui, ACCENT);
     }
     let head = format!("CIRCUIT {} / {}", index + 1, count);
     o.label(x + 24.0 * ui, y + 14.0 * ui, 1.5 * ui, ACCENT, &head);
     o.label(x + 24.0 * ui, y + 38.0 * ui, 3.4 * ui, WHITE, name);
-    o.label(x + 24.0 * ui, y + 90.0 * ui, ts, DIM, tagline);
+    fit_label(
+        o,
+        x + 24. * ui,
+        y + 99. * ui,
+        ts,
+        cw - 48. * ui,
+        DIM,
+        tagline,
+    );
 }
 
 /// Splits a menu row like `"TRACK  < CASTLE GRINDSTONE >"` into its label, value, and
@@ -624,13 +868,14 @@ pub struct MenuRows {
     y: f32,
     width: f32,
     height: f32,
+    first: usize,
     previous: Vec<Option<std::ops::Range<f32>>>,
 }
 
 impl MenuRows {
     pub fn previous_at(&self, row: usize, x: f32) -> bool {
         self.previous
-            .get(row)
+            .get(row.wrapping_sub(self.first))
             .and_then(Option::as_ref)
             .is_some_and(|range| range.contains(&x))
     }
@@ -640,132 +885,182 @@ impl MenuRows {
             && x < self.x + self.width
             && index >= 0.0
             && index < self.previous.len() as f32)
-            .then_some(index as usize)
+            .then_some(self.first + index.max(0.) as usize)
     }
 }
 
-/// Menus. The title screen has the logo top-left with the menu column beneath it; every other
-/// screen is a centered panel under a heading. Rows are a left-aligned label and, for options,
-/// a right-aligned value between arrows, all centered on their cap height.
+/// The navigation rail shares its row window with keyboard focus and pointer hit testing.
 pub fn draw_menu(
     o: &mut Overlay,
     w: f32,
     h: f32,
-    title: Option<&str>,
-    subtitle: &str,
+    menu: &crate::menu::MenuState,
     items: &[String],
-    selected: usize,
+    time: f32,
 ) -> MenuRows {
-    let ui = (h / 900.0).clamp(0.6, 2.0);
-    let row = 54.0 * ui;
-    let pad = 28.0 * ui;
-    let s = 2.7 * ui;
-    let arrow = width("<", s) + 12.0 * ui;
-    let rows: Vec<(&str, Option<&str>, bool)> = items.iter().map(|i| split_row(i)).collect();
-    let label_w = rows.iter().map(|r| width(r.0, s)).fold(0.0, f32::max);
-    let value_w = rows
-        .iter()
-        .filter_map(|r| r.1.map(|v| width(v, s)))
-        .fold(0.0, f32::max);
-    let values = if value_w > 0.0 {
-        value_w + 2.0 * arrow + 48.0 * ui
-    } else {
-        0.0
+    use crate::menu::Screen;
+    let u = menu_scale(w, h);
+    let (heading, section, help) = match menu.screen {
+        Screen::Title => (
+            "SCRAPBURN",
+            "MAIN MENU",
+            [
+                "Choose a mode and circuit.",
+                "Host a race or join friends.",
+                "Choose your chassis and paint.",
+                "Keyboard and gamepad bindings.",
+                "Graphics and race preferences.",
+                "Exit to desktop.",
+            ][menu.selected.min(5)],
+        ),
+        Screen::RaceSetup => ("Race setup", "SOLO RACE", menu.mode.description()),
+        Screen::Circuits => (
+            "Circuits",
+            "CIRCUIT SELECT",
+            "Browse the routes. Select a circuit to equip it.",
+        ),
+        Screen::Garage => ("Garage", "MOTOR POOL", "Choose a chassis and paint finish."),
+        Screen::Online => (
+            "Multiplayer",
+            "RACE NETWORK",
+            "Create a private invite or join a host.",
+        ),
+        Screen::DriverName => (
+            "Racer name",
+            "MULTIPLAYER / PROFILE",
+            "Type your new name, then press Enter to save.",
+        ),
+        Screen::Lobby => (
+            "Race lobby",
+            "MULTIPLAYER",
+            "Gather your drivers on the starting grid.",
+        ),
+        Screen::Controls => (
+            "Controls",
+            "DRIVER GUIDE",
+            "Switch devices to see the racing controls.",
+        ),
+        Screen::Settings => (
+            "Settings",
+            "PREFERENCES",
+            "Use the arrows to adjust an option.",
+        ),
+        Screen::Paused => ("Paused", "RACE MENU", ""),
+        Screen::Results | Screen::Playing => ("", "", ""),
     };
-    let pw = (label_w + values + 2.0 * pad).max(420.0 * ui);
-    let ph = rows.len() as f32 * row + 24.0 * ui;
-
-    let (x, top) = if let Some(t) = title {
-        // Logo, top-left: shadow, accent text, underline, tagline.
-        let x0 = 64.0 * ui;
-        let ls = 10.0 * ui;
-        let ly = 48.0 * ui;
-        o.label(x0 + 5.0 * ui, ly + 5.0 * ui, ls, [0.0, 0.0, 0.0, 0.55], t);
-        o.label(x0, ly, ls, ACCENT, t);
-        let lw = width(t, ls);
-        let under = ly + ls * 12.0 * 0.92;
-        o.rect(x0, under, lw, 5.0 * ui, ACCENT);
-        o.label(x0 + 2.0 * ui, under + 16.0 * ui, 1.9 * ui, WHITE, subtitle);
-        (x0, h * 0.4)
-    } else {
-        let top = if subtitle.is_empty() {
-            h - ph - 64.0 * ui
-        } else {
-            (h * 0.5 - ph * 0.5).max(150.0 * ui)
-        };
-        if !subtitle.is_empty() {
-            let hs = 5.0 * ui;
-            o.label_centered(
-                w * 0.5 - width(subtitle, hs) * 0.5,
-                top - 52.0 * ui,
-                hs,
+    let results = menu.screen == Screen::Results;
+    let x = 38. * u;
+    let pw = 535. * u;
+    let row = 53. * u;
+    let top = if results { h - 166. * u } else { h * 0.32 };
+    let visible = (((h - 65. * u - top) / row).floor() as usize)
+        .max(1)
+        .min(items.len());
+    let first = (menu.selected + 1)
+        .saturating_sub(visible)
+        .min(items.len().saturating_sub(visible));
+    if !results {
+        let rail = pw + 76. * u;
+        o.rect(0., 0., rail, h, [0.016, 0.03, 0.044, 0.90]);
+        o.triangle(
+            [[rail, 0.], [rail + 62. * u, 0.], [rail, h]],
+            [0.016, 0.03, 0.044, 0.90],
+        );
+        let cy = top - 184. * u;
+        for i in 0..3 {
+            let sx = x + i as f32 * 12. * u;
+            o.triangle(
+                [
+                    [sx, cy + 6. * u],
+                    [sx + 9. * u, cy - 7. * u],
+                    [sx + 15. * u, cy - 7. * u],
+                ],
                 ACCENT,
-                subtitle,
             );
         }
-        (w * 0.5 - pw * 0.5, top)
-    };
-
-    o.rect(x, top, pw, ph, [0.025, 0.035, 0.045, 0.92]);
-    o.rect(x, top, pw, 3.0 * ui, [ACCENT[0], ACCENT[1], ACCENT[2], 0.8]);
-    let mut previous = vec![None; rows.len()];
-    for (k, &(label, value, option)) in rows.iter().enumerate() {
-        let y0 = top + 12.0 * ui + k as f32 * row;
-        let cy = y0 + row * 0.5;
-        let sel = k == selected;
+        o.label_centered(x + 52. * u, cy, 1.85 * u, MINT, section);
+        fit_label(o, x, top - 109. * u, 8.5 * u, pw, WHITE, heading);
+        fit_label(o, x, top - 36. * u, 1.95 * u, pw, DIM, help);
+    }
+    let mut previous = vec![None; visible];
+    for (j, item) in items.iter().skip(first).take(visible).enumerate() {
+        let (label, value, option) = split_row(item);
+        let sel = j + first == menu.selected;
+        let y = top + j as f32 * row;
+        let cy = y + row * 0.47;
+        let active = [1., 0.63, 0.18, 1.];
+        let fg = if sel {
+            [0.035, 0.043, 0.048, 1.]
+        } else {
+            WHITE
+        };
         o.rect(
-            x + pad,
-            y0 + row - ui,
-            pw - 2.0 * pad,
-            ui,
-            [0.55, 0.64, 0.68, 0.22],
+            x,
+            y,
+            pw,
+            row - 4. * u,
+            if sel {
+                active
+            } else {
+                [0.09, 0.135, 0.155, 0.96]
+            },
         );
         if sel {
-            o.rect(
-                x + 8.0 * ui,
-                y0 + 5.0 * ui,
-                pw - 16.0 * ui,
-                row - 10.0 * ui,
-                [1.0, 0.55, 0.12, 0.9],
-            );
-            o.rect(
-                x + 8.0 * ui,
-                y0 + 5.0 * ui,
-                6.0 * ui,
-                row - 10.0 * ui,
-                [1.0, 0.92, 0.75, 1.0],
-            );
-        }
-        let c = if sel { [0.08, 0.05, 0.02, 1.0] } else { WHITE };
-        let dim = if sel { [0.15, 0.08, 0.02, 0.8] } else { DIM };
-        o.label_centered(x + pad, cy, s, c, label);
-        if let Some(v) = value {
-            let right = x + pw - pad;
-            if option {
-                o.label_centered(right - width(">", s), cy, s, dim, ">");
-                let vx = right - arrow - width(v, s);
-                o.label_centered(vx, cy, s, c, v);
-                previous[k] = Some(vx - arrow - 6.0 * ui..vx);
-                o.label_centered(vx - arrow, cy, s, dim, "<");
-            } else {
-                o.label_centered(right - width(v, s), cy, s, c, v);
+            let offset = (time * 85.).rem_euclid(95.);
+            for i in 0..3 {
+                let px = x + pw - (offset + i as f32 * 29.) * u;
+                o.triangle(
+                    [[px, y], [px + 10. * u, y], [px - 16. * u, y + row - 4. * u]],
+                    [0.85, 0.35, 0.07, 0.21],
+                );
             }
         }
+        let label_space = if value.is_some() {
+            pw * 0.46
+        } else {
+            pw - 64. * u
+        };
+        fit_label(o, x + 18. * u, cy, 2.7 * u, label_space, fg, label);
+        if let Some(value) = value {
+            let left = x + pw * 0.51;
+            let right = x + pw - 14. * u;
+            let arrow = if option { 30. * u } else { 0. };
+            let val_s = (2.35 * u).min((right - left - 2. * arrow) / width(value, 1.).max(1.));
+            let vx = right - arrow - width(value, val_s);
+            o.label_centered(vx, cy, val_s, fg, value);
+            if option {
+                previous[j] = Some(vx - arrow..vx);
+                o.label_centered(vx - arrow + 4. * u, cy, 2.4 * u, fg, "<");
+                o.label_centered(right - 16. * u, cy, 2.4 * u, fg, ">");
+            }
+        } else if sel {
+            o.label_centered(x + pw - 34. * u, cy, 2.5 * u, fg, ">");
+        }
     }
-    let hint = "CLICK OR ENTER/A  SELECT    LEFT/RIGHT  CHANGE    ESC/B  BACK";
-    let hs = 1.4 * ui;
+    o.rect(0., h - 43. * u, w, 43. * u, INK);
     o.label_centered(
-        w * 0.5 - width(hint, hs) * 0.5,
-        h - 34.0 * ui,
-        hs,
-        DIM,
-        hint,
+        x,
+        h - 22. * u,
+        1.65 * u,
+        MINT,
+        "ENTER / A   SELECT      ESC / B   BACK",
     );
+    if items.len() > visible {
+        let page = format!("{} / {}", menu.selected + 1, items.len());
+        o.label_centered(
+            x + pw - width(&page, 1.65 * u),
+            h - 22. * u,
+            1.65 * u,
+            WHITE,
+            &page,
+        );
+    }
     MenuRows {
         x,
-        y: top + 12.0 * ui,
+        y: top,
         width: pw,
         height: row,
+        first,
         previous,
     }
 }

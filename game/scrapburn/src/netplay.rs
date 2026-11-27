@@ -364,6 +364,7 @@ pub struct Snapshot {
     pub setup: RaceSetup,
     pub you: u8,
     pub names: Vec<String>,
+    pub human_seats: u16,
     /// Countdown seconds left, or 0 once racing.
     pub countdown: f32,
     pub time: f64,
@@ -443,7 +444,7 @@ impl Snapshot {
         let orbs = if extras { c.orbs.len().min(4) } else { 0 };
         let hooks = if extras { c.hooks.len().min(8) } else { 0 };
         // Room left after orbs, hooks, the counts and at least a few events.
-        let fixed = orbs * 13 + hooks * 15 + 3 + 4 + 1 + 4 * MAX_EVENT_BYTES;
+        let fixed = orbs * 13 + hooks * 15 + 3 + 4 + 1 + 2 + 4 * MAX_EVENT_BYTES;
         let room = MAX_PAYLOAD.saturating_sub(w.len() + fixed);
         let nails = if extras {
             c.nails.len().min(room / 24).min(255)
@@ -467,7 +468,7 @@ impl Snapshot {
             w.u8(t.map_or(255, |t| t as u8));
             w.u8(0);
         }
-        let room = MAX_PAYLOAD.saturating_sub(w.len() + 5);
+        let room = MAX_PAYLOAD.saturating_sub(w.len() + 7);
         let events = if extras {
             self.events.len().min(room / MAX_EVENT_BYTES).min(255)
         } else {
@@ -477,6 +478,7 @@ impl Snapshot {
         for e in self.events.iter().take(events) {
             put_event(&mut w, e);
         }
+        w.u16(self.human_seats);
         w.finish()
     }
 
@@ -557,6 +559,11 @@ impl Snapshot {
             setup,
             you,
             names,
+            human_seats: if r.is_empty() {
+                1 | (1 << you)
+            } else {
+                r.u16()?
+            },
             countdown,
             time,
             racers,
@@ -795,6 +802,9 @@ pub fn snapshot(
         race_id,
         setup,
         you,
+        human_seats: race.racers.iter().enumerate().fold(0, |mask, (i, kart)| {
+            mask | (u16::from(kart.remote || race.player == Some(i)) << i)
+        }),
         names: race.racers.iter().map(|r| r.name.to_string()).collect(),
         countdown: match race.phase {
             Phase::Countdown(left) => left.max(0.001),
@@ -833,6 +843,7 @@ pub fn snapshot(
 pub struct ClientView {
     pub you: usize,
     pub race_id: u32,
+    pub human_seats: u16,
     /// Newest event applied.
     pub last_event: u32,
     /// Last snapshot position per kart, extrapolated each tick.
@@ -849,6 +860,7 @@ impl ClientView {
         Self {
             you,
             race_id,
+            human_seats: 0,
             last_event: 0,
             base: vec![Vec3::ZERO; racers],
             err: vec![Vec3::ZERO; racers],
@@ -861,6 +873,7 @@ impl ClientView {
     /// before, oldest first.
     pub fn apply(&mut self, race: &mut Race, snap: &Snapshot) -> Vec<RaceEvent> {
         let n = race.racers.len().min(snap.racers.len());
+        self.human_seats = snap.human_seats;
         race.time = snap.time;
         race.phase = if snap.countdown > 0.0 {
             Phase::Countdown(snap.countdown)
@@ -1289,6 +1302,13 @@ mod tests {
         let snap = snap.unwrap();
         assert_eq!(snap.you, 1);
         assert_eq!(snap.names[1], "Guest");
+        assert_eq!(snap.human_seats, 0b11);
+        let mut legacy = snap.encode();
+        legacy.truncate(legacy.len() - 2);
+        let ToClient::Snapshot(old) = ToClient::decode(&legacy).unwrap() else {
+            panic!("expected snapshot")
+        };
+        assert_eq!(old.human_seats, 0b11);
 
         // The guest drives; the host sees the kart where the guest says it is, and a fire press.
         let mut client_race = Race::new(&t, snap.racers.len(), true, 3);

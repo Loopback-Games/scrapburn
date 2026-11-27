@@ -193,6 +193,8 @@ struct Game {
     timer: Option<GpuTimer>,
     track: Track,
     track_meshes: [GpuMesh; 3],
+    service_bay: GpuMesh,
+    route_previews: Vec<Vec<Vec3>>,
     /// Loaded kart designs (index into `kart::KARTS` order; missing ones are skipped).
     karts: Vec<KartGpu>,
     /// Design each racer drives (index into `karts`).
@@ -464,6 +466,7 @@ impl Game {
             scenery::track_features(&track)
         };
         let g = |m: MeshData| GpuMesh::new(&ctx.device, &m);
+        let service_bay = g(crate::garage::service_bay());
         let fx_meshes = FxMeshes {
             shell: g(fx_meshes::item_shell()),
             core: g(fx_meshes::item_core()),
@@ -500,6 +503,7 @@ impl Game {
             shading_table,
             prop_gpu,
             flame_points: flame_points(&track, &placements),
+            route_previews: TRACKS.iter().map(scrapburn::track::route_preview).collect(),
             placements,
             overlay,
             timer,
@@ -509,6 +513,7 @@ impl Game {
             karts,
             wheel_spin: vec![[0.0; 4]; n],
             ghost_mesh,
+            service_bay,
             fx_meshes,
             combat_fx: ParticleSystem::new(2500),
             race,
@@ -552,12 +557,21 @@ impl Game {
                 args.join.clone().map(LaunchNet::Join)
             },
             // A generated name unless the player picks one (the OS account name stays private).
-            player_name: rivet_net::clean_name(&args.name.clone().unwrap_or_else(|| {
-                let t = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.subsec_nanos());
-                format!("RACER {:02X}", (t >> 8) & 0xff)
-            }))
+            player_name: rivet_net::clean_name(
+                &args
+                    .name
+                    .clone()
+                    .or_else(|| {
+                        std::fs::read_to_string(scrapburn::ghost::data_dir()?.join("racer-name"))
+                            .ok()
+                    })
+                    .unwrap_or_else(|| {
+                        let t = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.subsec_nanos());
+                        format!("RACER {:02X}", (t >> 8) & 0xff)
+                    }),
+            )
             .to_ascii_uppercase(),
             toast: None,
             peers_rx: None,
@@ -601,6 +615,8 @@ impl Game {
             Screen::Playing
         });
         // Online choices survive a restart.
+        menu.mode = self.menu.mode;
+        menu.gamepad_guide = self.menu.gamepad_guide;
         menu.join_addr = std::mem::take(&mut self.menu.join_addr);
         menu.peers = std::mem::take(&mut self.menu.peers);
         menu.lobby_host = self.menu.lobby_host;
@@ -984,13 +1000,11 @@ impl Game {
             .map(|d| scrapburn::ghost::ghost_path(&d, self.track.id.key()));
         self.best_ghost =
             BestGhost::from_ghost(self.ghost_file.as_deref().and_then(scrapburn::ghost::load));
-        let screen = self.menu.screen;
-        let selected = self.menu.selected;
+        // Rebuilding the attract race must preserve the browser and its return destination.
+        let browser = matches!(self.session, Session::Attract).then(|| self.menu.clone());
         self.start(self.session);
-        // Stay on the title row the player was adjusting.
-        if matches!(self.session, Session::Attract) {
-            self.menu.go(screen);
-            self.menu.selected = selected;
+        if let Some(menu) = browser {
+            self.menu = menu;
         }
     }
 
@@ -1059,6 +1073,10 @@ impl Game {
                 }
             }
             Screen::Title
+            | Screen::RaceSetup
+            | Screen::Circuits
+            | Screen::Controls
+            | Screen::DriverName
             | Screen::Garage
             | Screen::Settings
             | Screen::Paused
@@ -1071,8 +1089,9 @@ impl Game {
                     && self.menu.screen != Screen::Results
                     && !online;
                 simulate = !paused_game && self.menu.screen != Screen::Garage;
-                let typing = self.menu.screen == Screen::Online
-                    && self.menu.selected == scrapburn::menu::ONLINE_ADDRESS;
+                let typing = (self.menu.screen == Screen::DriverName && self.menu.selected == 0)
+                    || self.menu.screen == Screen::Online
+                        && self.menu.selected == scrapburn::menu::ONLINE_ADDRESS;
                 let mut input = if typing {
                     menu_input_typing(&self.keys, pad)
                 } else {
@@ -1083,9 +1102,11 @@ impl Game {
                     && row < self.menu.items(&self.settings).len()
                 {
                     self.menu.selected = row;
+                    // Clicking the name field focuses it; Enter or SAVE NAME submits.
+                    let text_field = screen == Screen::DriverName && row == 0;
                     input = scrapburn::menu::MenuInput {
-                        left: previous,
-                        select: !previous,
+                        left: previous && !text_field,
+                        select: !previous && !text_field,
                         ..Default::default()
                     };
                 }
@@ -1116,6 +1137,20 @@ impl Game {
                     MenuAction::PresetChanged => {
                         self.tuner.stop();
                         self.rebuild_renderer();
+                    }
+                    MenuAction::SaveName => {
+                        self.player_name =
+                            rivet_net::clean_name(&self.menu.name_entry).to_ascii_uppercase();
+                        if let Some(dir) = scrapburn::ghost::data_dir() {
+                            let tmp = dir.join(format!("racer-name.{}.tmp", std::process::id()));
+                            if std::fs::create_dir_all(&dir)
+                                .and_then(|_| std::fs::write(&tmp, &self.player_name))
+                                .and_then(|_| std::fs::rename(&tmp, dir.join("racer-name")))
+                                .is_err()
+                            {
+                                self.show_toast("NAME SET FOR THIS SESSION");
+                            }
+                        }
                     }
                     MenuAction::SaveGarage => {
                         if let Some(dir) = scrapburn::ghost::data_dir()
@@ -1566,7 +1601,7 @@ impl Game {
             focus: fpos,
             time: self.attract_t,
         };
-        self.draw_hud(w as f32, h as f32, focus);
+        self.draw_hud(w as f32, h as f32, focus, view.proj * view.view, &models);
         self.overlay
             .prepare(&self.ctx.device, &self.ctx.queue, w, h);
 
@@ -1579,9 +1614,18 @@ impl Game {
         let mut draws: Vec<Draw> = self
             .track_meshes
             .iter()
-            .take(shown)
+            .take(if garage { 0 } else { shown })
             .map(|m| Draw::new(m, Mat4::IDENTITY))
             .collect();
+        if garage {
+            draws.push(Draw::new(
+                &self.service_bay,
+                Mat4::from_rotation_translation(
+                    glam::Quat::from_rotation_y(self.track.spawn.1),
+                    self.track.spawn.0,
+                ),
+            ));
+        }
         for (i, (pos, rot, model)) in models.iter().enumerate() {
             // Knocked-out rivals leave the track (the player's own wreck stays in view).
             if (garage || self.race.racers[i].out) && i != focus {
@@ -1631,189 +1675,197 @@ impl Game {
                 });
             }
         }
-        if let (Session::Play(Mode::TimeTrial), Some(p)) = (self.session, self.race.player) {
-            let lap_t = (self.race.time - self.race.racers[p].laps.lap_start()) as f32;
-            if let Some((gp, gr)) = self.best_ghost.ghost().and_then(|g| g.sample(lap_t)) {
+        let mut additive: Vec<ParticleInstance> = Vec::new();
+        let mut alpha_p: Vec<ParticleInstance> = Vec::new();
+        if !garage {
+            if let (Session::Play(Mode::TimeTrial), Some(p)) = (self.session, self.race.player) {
+                let lap_t = (self.race.time - self.race.racers[p].laps.lap_start()) as f32;
+                if let Some((gp, gr)) = self.best_ghost.ghost().and_then(|g| g.sample(lap_t)) {
+                    draws.push(Draw {
+                        mesh: &self.ghost_mesh,
+                        model: Mat4::from_rotation_translation(gr, gp),
+                        casts_shadow: false,
+                        tint: [1.0; 3],
+                    });
+                }
+            }
+            // Scenery: frustum-culled; small props dropped far away; shadows only near the focus.
+            let frustum = rivet_render::Frustum::from_view_proj(&(view.proj * view.view));
+            for p in &self.placements {
+                let Some(mesh) = self.prop_gpu[p.kind].as_ref() else {
+                    continue;
+                };
+                let d = p.pos.distance(fpos);
+                if (p.size < 7.0 && d > 300.0)
+                    || !frustum.sphere_visible(p.pos + Vec3::Y * p.size * 0.4, p.size * 0.7)
+                {
+                    continue;
+                }
                 draws.push(Draw {
-                    mesh: &self.ghost_mesh,
-                    model: Mat4::from_rotation_translation(gr, gp),
+                    mesh,
+                    model: p.model(),
+                    casts_shadow: d < 110.0 + p.size,
+                    tint: [1.0; 3],
+                });
+            }
+
+            // Items and weapons.
+            let spin = Mat4::from_rotation_y(self.attract_t * 1.6)
+                * Mat4::from_rotation_x(self.attract_t * 0.9);
+            for b in self
+                .race
+                .combat
+                .boxes
+                .iter()
+                .filter(|b| b.active() && self.race.combat_on)
+            {
+                let bob = Vec3::Y * (self.attract_t * 2.0 + b.pos.x).sin() * 0.15;
+                let at = Mat4::from_translation(b.pos + bob);
+                draws.push(Draw {
+                    mesh: &self.fx_meshes.core,
+                    model: at * spin,
+                    casts_shadow: false,
+                    tint: [1.0; 3],
+                });
+                draws.push(Draw {
+                    mesh: &self.fx_meshes.shell,
+                    model: at * Mat4::from_rotation_y(-self.attract_t),
+                    casts_shadow: true,
+                    tint: [1.0; 3],
+                });
+            }
+            for n in &self.race.combat.nails {
+                let dir = n.vel.normalize_or(Vec3::Z);
+                let m = Mat4::from_rotation_translation(
+                    glam::Quat::from_rotation_arc(Vec3::Z, dir),
+                    n.pos,
+                );
+                draws.push(Draw {
+                    mesh: &self.fx_meshes.nail,
+                    model: m,
                     casts_shadow: false,
                     tint: [1.0; 3],
                 });
             }
-        }
-        // Scenery: frustum-culled; small props dropped far away; shadows only near the focus.
-        let frustum = rivet_render::Frustum::from_view_proj(&(view.proj * view.view));
-        for p in &self.placements {
-            let Some(mesh) = self.prop_gpu[p.kind].as_ref() else {
-                continue;
-            };
-            let d = p.pos.distance(fpos);
-            if (p.size < 7.0 && d > 300.0)
-                || !frustum.sphere_visible(p.pos + Vec3::Y * p.size * 0.4, p.size * 0.7)
-            {
-                continue;
-            }
-            draws.push(Draw {
-                mesh,
-                model: p.model(),
-                casts_shadow: d < 110.0 + p.size,
-                tint: [1.0; 3],
-            });
-        }
-
-        // Items and weapons.
-        let spin = Mat4::from_rotation_y(self.attract_t * 1.6)
-            * Mat4::from_rotation_x(self.attract_t * 0.9);
-        for b in self
-            .race
-            .combat
-            .boxes
-            .iter()
-            .filter(|b| b.active() && self.race.combat_on)
-        {
-            let bob = Vec3::Y * (self.attract_t * 2.0 + b.pos.x).sin() * 0.15;
-            let at = Mat4::from_translation(b.pos + bob);
-            draws.push(Draw {
-                mesh: &self.fx_meshes.core,
-                model: at * spin,
-                casts_shadow: false,
-                tint: [1.0; 3],
-            });
-            draws.push(Draw {
-                mesh: &self.fx_meshes.shell,
-                model: at * Mat4::from_rotation_y(-self.attract_t),
-                casts_shadow: true,
-                tint: [1.0; 3],
-            });
-        }
-        for n in &self.race.combat.nails {
-            let dir = n.vel.normalize_or(Vec3::Z);
-            let m =
-                Mat4::from_rotation_translation(glam::Quat::from_rotation_arc(Vec3::Z, dir), n.pos);
-            draws.push(Draw {
-                mesh: &self.fx_meshes.nail,
-                model: m,
-                casts_shadow: false,
-                tint: [1.0; 3],
-            });
-        }
-        for (from, to) in self.race.combat.chains(&self.race.racers) {
-            // The cable arcs over the track in short links instead of one straight bar.
-            let pts = scrapburn::combat::cable_points(from, to, 10);
-            for w in pts.windows(2) {
-                let d = w[1] - w[0];
-                let len = d.length().max(0.01);
-                let rot = glam::Quat::from_rotation_arc(Vec3::Z, d / len);
+            for (from, to) in self.race.combat.chains(&self.race.racers) {
+                // The cable arcs over the track in short links instead of one straight bar.
+                let pts = scrapburn::combat::cable_points(from, to, 10);
+                for w in pts.windows(2) {
+                    let d = w[1] - w[0];
+                    let len = d.length().max(0.01);
+                    let rot = glam::Quat::from_rotation_arc(Vec3::Z, d / len);
+                    draws.push(Draw {
+                        mesh: &self.fx_meshes.chain,
+                        model: Mat4::from_scale_rotation_translation(
+                            Vec3::new(1.0, 1.0, len),
+                            rot,
+                            w[0] + d * 0.5,
+                        ),
+                        casts_shadow: false,
+                        tint: [1.0; 3],
+                    });
+                }
+                let n = pts.len();
+                let head = (pts[n - 1] - pts[n - 2]).normalize_or(Vec3::Z);
                 draws.push(Draw {
-                    mesh: &self.fx_meshes.chain,
+                    mesh: &self.fx_meshes.hook,
+                    model: Mat4::from_rotation_translation(
+                        glam::Quat::from_rotation_arc(Vec3::Z, head),
+                        to,
+                    ),
+                    casts_shadow: true,
+                    tint: [1.0; 3],
+                });
+            }
+            for orb in &self.race.combat.orbs {
+                let pulse = 1.0 + (self.attract_t * 9.0).sin() * 0.08;
+                draws.push(Draw {
+                    mesh: &self.fx_meshes.orb,
                     model: Mat4::from_scale_rotation_translation(
-                        Vec3::new(1.0, 1.0, len),
-                        rot,
-                        w[0] + d * 0.5,
+                        Vec3::splat(0.9 * pulse),
+                        glam::Quat::IDENTITY,
+                        orb.pos,
                     ),
                     casts_shadow: false,
                     tint: [1.0; 3],
                 });
-            }
-            let n = pts.len();
-            let head = (pts[n - 1] - pts[n - 2]).normalize_or(Vec3::Z);
-            draws.push(Draw {
-                mesh: &self.fx_meshes.hook,
-                model: Mat4::from_rotation_translation(
-                    glam::Quat::from_rotation_arc(Vec3::Z, head),
-                    to,
-                ),
-                casts_shadow: true,
-                tint: [1.0; 3],
-            });
-        }
-        for orb in &self.race.combat.orbs {
-            let pulse = 1.0 + (self.attract_t * 9.0).sin() * 0.08;
-            draws.push(Draw {
-                mesh: &self.fx_meshes.orb,
-                model: Mat4::from_scale_rotation_translation(
-                    Vec3::splat(0.9 * pulse),
-                    glam::Quat::IDENTITY,
-                    orb.pos,
-                ),
-                casts_shadow: false,
-                tint: [1.0; 3],
-            });
-            draws.push(Draw {
-                mesh: &self.fx_meshes.orb_glow,
-                model: Mat4::from_scale_rotation_translation(
-                    Vec3::splat(1.5 / pulse),
-                    glam::Quat::from_rotation_y(self.attract_t * 3.0),
-                    orb.pos,
-                ),
-                casts_shadow: false,
-                tint: [1.0; 3],
-            });
-            // A trail of green motes behind the orb (only while the race runs).
-            if fx_dt > 0.0 {
-                self.combat_fx.spawn(Particle {
-                    pos: orb.pos,
-                    vel: Vec3::Y * 1.5,
-                    age: 0.0,
-                    life: 0.6,
-                    size: (0.9, 0.1),
-                    color: ([1.5, 5.0, 2.0, 1.0], [0.2, 1.0, 0.4, 0.0]),
-                    gravity: 0.0,
-                    drag: 1.0,
-                    blend: Blend::Additive,
+                draws.push(Draw {
+                    mesh: &self.fx_meshes.orb_glow,
+                    model: Mat4::from_scale_rotation_translation(
+                        Vec3::splat(1.5 / pulse),
+                        glam::Quat::from_rotation_y(self.attract_t * 3.0),
+                        orb.pos,
+                    ),
+                    casts_shadow: false,
+                    tint: [1.0; 3],
                 });
-            }
-        }
-        self.combat_fx.update(fx_dt);
-        // Live fire on torches and braziers near the camera.
-        self.flame_acc += fx_dt * 28.0;
-        let per = self.flame_acc.floor() as u32;
-        self.flame_acc -= per as f32;
-        if per > 0 {
-            let mut rng = Lcg((self.attract_t * 977.0) as u32 | 1);
-            for &f in &self.flame_points {
-                if f.distance_squared(eye) > 90.0 * 90.0 {
-                    continue;
-                }
-                for _ in 0..per {
-                    let jitter = Vec3::new(rng.next() - 0.5, 0.0, rng.next() - 0.5) * 0.22;
-                    self.flame_fx.spawn(Particle {
-                        pos: f + jitter,
-                        vel: Vec3::new(
-                            (rng.next() - 0.5) * 0.5,
-                            1.3 + rng.next() * 1.1,
-                            (rng.next() - 0.5) * 0.5,
-                        ),
+                // A trail of green motes behind the orb (only while the race runs).
+                if fx_dt > 0.0 {
+                    self.combat_fx.spawn(Particle {
+                        pos: orb.pos,
+                        vel: Vec3::Y * 1.5,
                         age: 0.0,
-                        life: 0.3 + rng.next() * 0.3,
-                        size: (0.45, 0.05),
-                        color: ([5.0, 1.8, 0.4, 1.0], [1.2, 0.2, 0.04, 0.0]),
-                        gravity: -1.0,
-                        drag: 0.6,
+                        life: 0.6,
+                        size: (0.9, 0.1),
+                        color: ([1.5, 5.0, 2.0, 1.0], [0.2, 1.0, 0.4, 0.0]),
+                        gravity: 0.0,
+                        drag: 1.0,
                         blend: Blend::Additive,
                     });
                 }
             }
-        }
-        self.flame_fx.update(fx_dt);
-        let mut additive: Vec<ParticleInstance> = Vec::new();
-        let mut alpha_p: Vec<ParticleInstance> = Vec::new();
-        for sys in [&mut self.combat_fx, &mut self.flame_fx] {
-            let (a, b) = sys.instances();
-            additive.extend_from_slice(a);
-            alpha_p.extend_from_slice(b);
-        }
-        for fx in &mut self.effects {
-            let (a, b) = fx.particles.instances();
-            additive.extend_from_slice(a);
-            alpha_p.extend_from_slice(b);
+            self.combat_fx.update(fx_dt);
+            // Live fire on torches and braziers near the camera.
+            self.flame_acc += fx_dt * 28.0;
+            let per = self.flame_acc.floor() as u32;
+            self.flame_acc -= per as f32;
+            if per > 0 {
+                let mut rng = Lcg((self.attract_t * 977.0) as u32 | 1);
+                for &f in &self.flame_points {
+                    if f.distance_squared(eye) > 90.0 * 90.0 {
+                        continue;
+                    }
+                    for _ in 0..per {
+                        let jitter = Vec3::new(rng.next() - 0.5, 0.0, rng.next() - 0.5) * 0.22;
+                        self.flame_fx.spawn(Particle {
+                            pos: f + jitter,
+                            vel: Vec3::new(
+                                (rng.next() - 0.5) * 0.5,
+                                1.3 + rng.next() * 1.1,
+                                (rng.next() - 0.5) * 0.5,
+                            ),
+                            age: 0.0,
+                            life: 0.3 + rng.next() * 0.3,
+                            size: (0.45, 0.05),
+                            color: ([5.0, 1.8, 0.4, 1.0], [1.2, 0.2, 0.04, 0.0]),
+                            gravity: -1.0,
+                            drag: 0.6,
+                            blend: Blend::Additive,
+                        });
+                    }
+                }
+            }
+            self.flame_fx.update(fx_dt);
+            for sys in [&mut self.combat_fx, &mut self.flame_fx] {
+                let (a, b) = sys.instances();
+                additive.extend_from_slice(a);
+                alpha_p.extend_from_slice(b);
+            }
+            for fx in &mut self.effects {
+                let (a, b) = fx.particles.instances();
+                additive.extend_from_slice(a);
+                alpha_p.extend_from_slice(b);
+            }
         }
         let content = FrameContent {
             draws: &draws,
             additive: &additive,
             alpha: &alpha_p,
         };
+        let track_lighting = self.scene.lighting;
+        if garage {
+            self.scene.lighting = crate::garage::lighting();
+        }
         self.scene.render(
             &self.ctx.device,
             &self.ctx.queue,
@@ -1823,6 +1875,7 @@ impl Game {
             &content,
             self.timer.as_mut(),
         );
+        self.scene.lighting = track_lighting;
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hud"),
@@ -1852,29 +1905,28 @@ impl Game {
         self.ctx.present(frame);
     }
 
-    fn draw_hud(&mut self, w: f32, h: f32, focus: usize) {
+    fn draw_hud(
+        &mut self,
+        w: f32,
+        h: f32,
+        focus: usize,
+        view_proj: Mat4,
+        models: &[(Vec3, glam::Quat, Mat4)],
+    ) {
         let race = &self.race;
         let r = &race.racers[focus];
         let o = &mut self.overlay;
         if matches!(self.session, Session::Attract) {
             let items = self.menu.items(&self.settings);
-            let on_title = self.menu.screen == Screen::Title;
-            let title = match self.menu.screen {
-                Screen::Garage => Some("GARAGE"),
-                Screen::Title => Some("SCRAPBURN"),
-                _ => None,
-            };
-            let sub = match self.menu.screen {
-                Screen::Garage => "CHOOSE YOUR CHASSIS AND FINISH",
-                Screen::Title => "COMBAT KART RACING IN THE WASTES",
-                Screen::Online => "PLAY ONLINE",
-                Screen::Lobby => "LOBBY",
-                _ => "SETTINGS",
-            };
             self.menu_rows = Some((
                 self.menu.screen,
-                hud::draw_menu(o, w, h, title, sub, &items, self.menu.selected),
+                hud::draw_menu(o, w, h, &self.menu, &items, self.attract_t),
             ));
+            match self.menu.screen {
+                Screen::Garage => hud::garage_card(o, w, h, self.settings.loadout),
+                Screen::Controls => hud::controls_card(o, w, h, self.menu.gamepad_guide),
+                _ => {}
+            }
             let n_tracks = scrapburn::track::TRACKS.len();
             match (&self.net, self.menu.screen) {
                 (_, Screen::Online) => {
@@ -1912,12 +1964,12 @@ impl Game {
                         },
                         def.name.to_string(),
                         format!(
-                            "{} PLAYERS  {} RACERS",
-                            host.player_count(),
-                            host.racer_count()
+                            "{} RACERS ON THE GRID    {} BOTS",
+                            host.racer_count(),
+                            host.racer_count() - host.player_count()
                         ),
                     ];
-                    hud::draw_lobby(o, w, h, "YOUR LOBBY", &lines, &host.names());
+                    hud::draw_lobby(o, w, h, "STARTING GRID", &lines, &host.names());
                 }
                 (Net::Client { link, lobby, .. }, Screen::Lobby) => {
                     let (lines, names) = match lobby {
@@ -1938,20 +1990,25 @@ impl Game {
                         ),
                         None => (vec![format!("CONNECTING TO {}", link.server())], Vec::new()),
                     };
-                    hud::draw_lobby(o, w, h, "LOBBY", &lines, &names);
+                    hud::draw_lobby(o, w, h, "STARTING GRID", &lines, &names);
                 }
                 _ => {}
             }
-            if on_title {
-                let n = scrapburn::track::TRACKS.len();
-                let def = &scrapburn::track::TRACKS[self.settings.track % n];
+            if matches!(self.menu.screen, Screen::Circuits | Screen::RaceSetup) {
+                let preview =
+                    if self.menu.screen == Screen::Circuits && self.menu.selected < TRACKS.len() {
+                        self.menu.selected
+                    } else {
+                        self.settings.track
+                    };
                 hud::draw_track_card(
                     o,
                     w,
                     h,
-                    self.settings.track % n,
-                    def,
-                    &self.track.centerline,
+                    preview,
+                    &TRACKS[preview],
+                    &self.route_previews[preview],
+                    self.attract_t,
                 );
             }
         } else {
@@ -2006,6 +2063,28 @@ impl Game {
                     .collect(),
             };
             hud::draw_race(o, w, h, &race_hud);
+            if self.menu.screen == Screen::Playing && !matches!(self.net, Net::Off) {
+                let humans = standings
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, &seat)| {
+                        let kart = &race.racers[seat];
+                        let human = match &self.net {
+                            Net::Client {
+                                view: Some(view), ..
+                            } => view.human_seats & (1 << seat) != 0,
+                            _ => seat == focus || kart.remote,
+                        };
+                        human.then_some((position + 1, seat, kart))
+                    });
+                for (row, (position, seat, kart)) in humans.enumerate() {
+                    hud::human_row(o, h, row, position, seat, kart, seat == focus);
+                    if seat != focus && !kart.out {
+                        let clip = view_proj * (models[seat].0 + Vec3::Y * 1.22).extend(1.0);
+                        hud::driver_tag(o, (w, h), clip, seat, &kart.name);
+                    }
+                }
+            }
             if race.phase == Phase::Racing && r.finish.is_none() && race.wrong_way(focus) {
                 hud::draw_wrong_way(o, w, h, self.attract_t);
             }
@@ -2031,27 +2110,22 @@ impl Game {
             }
             let items = self.menu.items(&self.settings);
             match self.menu.screen {
-                Screen::Paused => {
-                    hud::dim(o, w, h);
+                Screen::Paused | Screen::Settings | Screen::Controls | Screen::Results => {
+                    if self.menu.screen != Screen::Results {
+                        hud::dim(o, w, h);
+                    }
                     self.menu_rows = Some((
                         self.menu.screen,
-                        hud::draw_menu(o, w, h, None, "PAUSED", &items, self.menu.selected),
+                        hud::draw_menu(o, w, h, &self.menu, &items, self.attract_t),
                     ));
-                }
-                Screen::Settings => {
-                    hud::dim(o, w, h);
-                    self.menu_rows = Some((
-                        self.menu.screen,
-                        hud::draw_menu(o, w, h, None, "SETTINGS", &items, self.menu.selected),
-                    ));
-                }
-                Screen::Results => {
-                    self.menu_rows = Some((
-                        self.menu.screen,
-                        hud::draw_menu(o, w, h, None, "", &items, self.menu.selected),
-                    ));
+                    if self.menu.screen == Screen::Controls {
+                        hud::controls_card(o, w, h, self.menu.gamepad_guide);
+                    }
                 }
                 Screen::Garage
+                | Screen::RaceSetup
+                | Screen::Circuits
+                | Screen::DriverName
                 | Screen::Title
                 | Screen::Playing
                 | Screen::Online
@@ -2065,7 +2139,11 @@ impl Game {
                     &self.stats,
                     &self.ctx.adapter_info.name,
                     w - 270.0,
-                    200.0,
+                    if self.menu.screen == Screen::Playing {
+                        200.0
+                    } else {
+                        14.0
+                    },
                 );
             }
             (FpsDisplay::Counter, false) => {
@@ -2121,12 +2199,34 @@ impl ApplicationHandler for App {
                     game.menu.selected = row;
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } if game.menu.screen != Screen::Playing => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, v) => v,
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
+                };
+                let last = game.menu.items(&game.settings).len().saturating_sub(1);
+                if dy < 0. {
+                    game.menu.selected = (game.menu.selected + 1).min(last);
+                }
+                if dy > 0. {
+                    game.menu.selected = game.menu.selected.saturating_sub(1);
+                }
+            }
             WindowEvent::CursorLeft { .. } => game.pointer = None,
             WindowEvent::MouseInput {
                 state,
                 button: winit::event::MouseButton::Left,
                 ..
             } if state.is_pressed() => {
+                if game.menu.screen == Screen::Garage
+                    && let Some((x, y)) = game.pointer
+                {
+                    let (w, h) = game.ctx.size();
+                    if let Some(finish) = hud::garage_swatch_at(w as f32, h as f32, x, y) {
+                        game.settings.loadout.finish = finish;
+                        game.menu.selected = 1;
+                    }
+                }
                 if let Some((screen, rows)) = &game.menu_rows
                     && *screen == game.menu.screen
                     && let Some((x, y)) = game.pointer
@@ -2138,7 +2238,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     game.keys.on_key(code, event.state.is_pressed());
-                    // Text entry (the join address).
+                    // Route printable keys to the active text field.
                     if event.state.is_pressed() {
                         if code == winit::keyboard::KeyCode::Backspace {
                             game.menu.backspace();

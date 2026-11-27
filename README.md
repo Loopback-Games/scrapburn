@@ -13,14 +13,12 @@ just setup   # installs the pinned toolchain via mise
 just run     # title screen
 ```
 
-From the title screen:
+Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Open **Circuit** to preview a route, select it to equip it, then choose **Done** and **Start Race**.
 
-- **Race**: three laps against seven rivals, with weapons.
-- **Time Trial**: solo laps against your best-lap ghost.
-- **Elimination**: last place is knocked out every lap until one survivor wins.
-- **Online**: host a game, or join a friend by address or Tailscale name.
-- **Track**: pick a circuit (left/right).
-- **Garage** lets you preview three chassis and eight finishes. Choose Done to equip your kart and save it for next time.
+- **Multiplayer** opens private invites, direct hosting and joining, and your racer name.
+- **Garage** previews three chassis and eight finishes on your kart. Click a paint swatch or cycle finishes, then choose **Done** to save.
+- **Controls** shows keyboard and gamepad bindings and is also available in the pause menu.
+- **Settings** adjusts graphics, lap count, and rivals.
 
 ### The circuits
 
@@ -61,12 +59,14 @@ mark the three boost tiers. Orange pads boost you too, and sand slows you down.
 One player hosts and the others join. The host's machine runs the race, the bots and the
 weapons; each player drives their own kart locally, so steering feels immediate at any ping.
 
-- **Host:** Online, then Host Game. Share your IP address or Tailscale name. The game uses
+- **Host:** Multiplayer, then Host Game. Share your IP address or Tailscale name. The game uses
   UDP port 27960.
-- **Join:** Online, then type the address (`100.64.0.2`, `my-desktop`, `host:port`), or pick
+- **Join:** Multiplayer, then type the address (`100.64.0.2`, `my-desktop`, `host:port`), or pick
   one of your online Tailscale peers from the list.
 - On the command line: `just run --host` or `just run --join 100.64.0.2`. Add
-  `--name RUSTY` to set your name; otherwise you get a generated one like `RACER 4F`.
+  `--name RUSTY` to override your saved name. First-time drivers receive a name like `RACER 4F`.
+
+Choose **Multiplayer → Change Racer Name** to save the name friends see. In a race, a pointer above each nearby human opponent shows their name and seat number. Match it to the live human standings to see their overall race position.
 
 For direct Internet play, the host needs a reachable UDP port. Friends on the same
 Tailscale network can join using their tailnet addresses. Up to eight racers can play, and bots fill the empty seats.
@@ -77,7 +77,7 @@ Online play is meant for friends. Clients are trusted to report their own kart h
 ### Private Tailcat invites
 
 Extract the full distribution and launch **scrapburn**. Private multiplayer is built
-into **Online**. Players do not need a Tailscale account, Go, Tailcat, or just installed.
+into **Multiplayer**. Players do not need a Tailscale account, Go, Tailcat, or just installed.
 
 - **Host Private Race** opens a file picker. Choose where to save the invite, then send
   the saved file to your friends. Start the race when everyone appears in the lobby.
