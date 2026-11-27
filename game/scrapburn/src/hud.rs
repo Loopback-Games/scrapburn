@@ -573,19 +573,32 @@ pub fn draw_track_card(
     w: f32,
     h: f32,
     index: usize,
-    count: usize,
-    name: &str,
-    tagline: &str,
+    def: &crate::track::TrackDef,
+    route: &[glam::Vec3],
 ) {
+    let (name, tagline) = (def.name, def.tagline);
+    let count = crate::track::TRACKS.len();
     let ui = (h / 900.0).clamp(0.6, 2.0);
     let ts = 1.5 * ui;
     let cw = (width(tagline, ts) + 48.0 * ui)
         .max(width(name, 3.4 * ui) + 48.0 * ui)
         .min(w - 72.0 * ui);
     // Bottom-right, clear of the title screen's menu column.
-    let (x, y) = (w - cw - 36.0 * ui, h - 200.0 * ui);
-    o.rect(x, y, cw, 128.0 * ui, PANEL);
-    o.rect(x, y, 6.0 * ui, 128.0 * ui, ACCENT);
+    let (x, y) = (w - cw - 36.0 * ui, h - 350.0 * ui);
+    o.rect(x, y, cw, 278.0 * ui, [0.025, 0.035, 0.045, 0.94]);
+    o.rect(x, y, 6.0 * ui, 278.0 * ui, ACCENT);
+    let map = Minimap::fit(
+        route,
+        (x + 24.0 * ui, y + 128.0 * ui, cw - 48.0 * ui, 125.0 * ui),
+    );
+    for point in route {
+        let (px, py) = map.project(*point);
+        o.rect(px, py, 3.0 * ui, 3.0 * ui, WHITE);
+    }
+    if let Some(start) = route.first() {
+        let (px, py) = map.project(*start);
+        o.rect(px - 2.0 * ui, py - 2.0 * ui, 7.0 * ui, 7.0 * ui, ACCENT);
+    }
     let head = format!("CIRCUIT {} / {}", index + 1, count);
     o.label(x + 24.0 * ui, y + 14.0 * ui, 1.5 * ui, ACCENT, &head);
     o.label(x + 24.0 * ui, y + 38.0 * ui, 3.4 * ui, WHITE, name);
@@ -606,6 +619,31 @@ fn split_row(item: &str) -> (&str, Option<&str>, bool) {
     }
 }
 
+pub struct MenuRows {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    previous: Vec<Option<std::ops::Range<f32>>>,
+}
+
+impl MenuRows {
+    pub fn previous_at(&self, row: usize, x: f32) -> bool {
+        self.previous
+            .get(row)
+            .and_then(Option::as_ref)
+            .is_some_and(|range| range.contains(&x))
+    }
+    pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
+        let index = ((y - self.y) / self.height).floor();
+        (x >= self.x
+            && x < self.x + self.width
+            && index >= 0.0
+            && index < self.previous.len() as f32)
+            .then_some(index as usize)
+    }
+}
+
 /// Menus. The title screen has the logo top-left with the menu column beneath it; every other
 /// screen is a centered panel under a heading. Rows are a left-aligned label and, for options,
 /// a right-aligned value between arrows, all centered on their cap height.
@@ -617,7 +655,7 @@ pub fn draw_menu(
     subtitle: &str,
     items: &[String],
     selected: usize,
-) {
+) -> MenuRows {
     let ui = (h / 900.0).clamp(0.6, 2.0);
     let row = 54.0 * ui;
     let pad = 28.0 * ui;
@@ -650,7 +688,11 @@ pub fn draw_menu(
         o.label(x0 + 2.0 * ui, under + 16.0 * ui, 1.9 * ui, WHITE, subtitle);
         (x0, h * 0.4)
     } else {
-        let top = (h * 0.5 - ph * 0.5).max(150.0 * ui);
+        let top = if subtitle.is_empty() {
+            h - ph - 64.0 * ui
+        } else {
+            (h * 0.5 - ph * 0.5).max(150.0 * ui)
+        };
         if !subtitle.is_empty() {
             let hs = 5.0 * ui;
             o.label_centered(
@@ -664,12 +706,20 @@ pub fn draw_menu(
         (w * 0.5 - pw * 0.5, top)
     };
 
-    o.rect(x, top, pw, ph, PANEL);
+    o.rect(x, top, pw, ph, [0.025, 0.035, 0.045, 0.92]);
     o.rect(x, top, pw, 3.0 * ui, [ACCENT[0], ACCENT[1], ACCENT[2], 0.8]);
+    let mut previous = vec![None; rows.len()];
     for (k, &(label, value, option)) in rows.iter().enumerate() {
         let y0 = top + 12.0 * ui + k as f32 * row;
         let cy = y0 + row * 0.5;
         let sel = k == selected;
+        o.rect(
+            x + pad,
+            y0 + row - ui,
+            pw - 2.0 * pad,
+            ui,
+            [0.55, 0.64, 0.68, 0.22],
+        );
         if sel {
             o.rect(
                 x + 8.0 * ui,
@@ -695,13 +745,14 @@ pub fn draw_menu(
                 o.label_centered(right - width(">", s), cy, s, dim, ">");
                 let vx = right - arrow - width(v, s);
                 o.label_centered(vx, cy, s, c, v);
+                previous[k] = Some(vx - arrow - 6.0 * ui..vx);
                 o.label_centered(vx - arrow, cy, s, dim, "<");
             } else {
                 o.label_centered(right - width(v, s), cy, s, c, v);
             }
         }
     }
-    let hint = "ARROWS/D-PAD  MOVE    ENTER/A  SELECT    ESC/B  BACK";
+    let hint = "CLICK OR ENTER/A  SELECT    LEFT/RIGHT  CHANGE    ESC/B  BACK";
     let hs = 1.4 * ui;
     o.label_centered(
         w * 0.5 - width(hint, hs) * 0.5,
@@ -710,6 +761,13 @@ pub fn draw_menu(
         DIM,
         hint,
     );
+    MenuRows {
+        x,
+        y: top + 12.0 * ui,
+        width: pw,
+        height: row,
+        previous,
+    }
 }
 
 pub fn dim(o: &mut Overlay, w: f32, h: f32) {
@@ -753,10 +811,10 @@ pub fn draw_item_slot(
         );
         return;
     };
-    let (color, glyph) = match item {
-        ItemKind::Nailer => ([1.0, 0.82, 0.35, 1.0], "///"),
-        ItemKind::Harpoon => ([0.75, 0.8, 0.85, 1.0], "-->"),
-        ItemKind::PlasmaOrb => ([0.4, 1.0, 0.45, 1.0], "( )"),
+    let color = match item {
+        ItemKind::Nailer => [1.0, 0.65, 0.25, 1.0],
+        ItemKind::Harpoon => [0.25, 0.86, 1.0, 1.0],
+        ItemKind::PlasmaOrb => [0.50, 1.0, 0.35, 1.0],
     };
     let pulse = 0.85 + 0.15 * (time * 6.0).sin();
     o.rect(
@@ -767,14 +825,41 @@ pub fn draw_item_slot(
         [color[0] * 0.25, color[1] * 0.25, color[2] * 0.25, 0.8],
     );
     let c = [color[0] * pulse, color[1] * pulse, color[2] * pulse, 1.0];
-    text(
-        o,
-        x + size * 0.5 - width(glyph, 4.5 * ui) * 0.5,
-        y + size * 0.3,
-        4.5 * ui,
-        c,
-        glyph,
-    );
+    let mut shard = |points: [[f32; 2]; 3], color| {
+        o.triangle(points.map(|[u, v]| [x + u * size, y + v * size]), color);
+    };
+    match item {
+        ItemKind::Nailer => {
+            for shift in [0.0, 0.13, 0.26] {
+                shard(
+                    [
+                        [0.16 + shift, 0.77],
+                        [0.29 + shift, 0.46],
+                        [0.50 + shift, 0.22],
+                    ],
+                    c,
+                );
+                shard(
+                    [
+                        [0.29 + shift, 0.46],
+                        [0.36 + shift, 0.51],
+                        [0.50 + shift, 0.22],
+                    ],
+                    WHITE,
+                );
+            }
+        }
+        ItemKind::Harpoon => {
+            shard([[0.2, 0.79], [0.28, 0.80], [0.74, 0.25]], c);
+            shard([[0.34, 0.43], [0.77, 0.22], [0.67, 0.65]], c);
+            shard([[0.46, 0.46], [0.77, 0.22], [0.58, 0.49]], WHITE);
+        }
+        ItemKind::PlasmaOrb => {
+            shard([[0.18, 0.50], [0.50, 0.18], [0.80, 0.50]], c);
+            shard([[0.18, 0.50], [0.80, 0.50], [0.50, 0.82]], c);
+            shard([[0.35, 0.50], [0.52, 0.31], [0.68, 0.50]], WHITE);
+        }
+    }
     let name = item.name();
     text(
         o,

@@ -97,8 +97,15 @@ fn height_with_distance(x: f32, z: f32, d: f32) -> f32 {
     // Mesa walls: a steep rise with terraced ledges, so rock shows on the faces.
     let rise = smoothstep(CANYON_START, CANYON_FULL, d);
     let terraced = (rise * 4.0).floor() / 4.0 * 0.35 + rise * 0.65;
-    let canyon = terraced * (55.0 + ridge * 50.0);
-    FLAT_Y + hills + canyon
+    let plateau = smoothstep(0.46, 0.60, value_noise(x / 110.0, z / 110.0));
+    let canyon = terraced * (43.0 + ridge * 39.0 + plateau * 47.0);
+    // Eroded shelves leave occasional windows onto the distant mesas.
+    let fault = fbm(x + 67.0, z - 28.0, 105.0);
+    let foot = 21.0 + 27.0 * fault;
+    let wall = smoothstep(foot, foot + 10.0, d);
+    let cap = smoothstep(0.32, 0.61, fault);
+    let needles = smoothstep(0.57, 0.73, fault);
+    FLAT_Y + hills + canyon + wall * (cap * 24.0 + needles * 26.0)
 }
 
 /// Terrain height at `(x, z)`.
@@ -160,6 +167,8 @@ pub fn build_kind(
             // Dusty, slightly darker ochre near the road; gentle large-scale color variation.
             let near = 1.0 - smoothstep(FLAT_RADIUS - 6.0, FLAT_RADIUS + 20.0, d);
             let var = 0.92 + 0.16 * fbm(x - 51.0, z + 17.0, 40.0);
+            // Iron-rich sediment bands follow the cliff face and disappear beneath loose sand.
+            let band = rock * (0.5 + 0.5 * (y * 0.29 + x * 0.009 + z * 0.006).sin());
             let tint = match kind {
                 // Dusky, muted meadow grass, worn to earth near the road.
                 TerrainKind::Hills => [
@@ -171,8 +180,8 @@ pub fn build_kind(
                 // Warm ochre sand, a little dustier and darker near the road.
                 _ => [
                     var * 0.92 * (1.0 - 0.10 * near),
-                    var * 0.74 * (1.0 - 0.14 * near),
-                    var * 0.54 * (1.0 - 0.18 * near),
+                    var * (0.74 - 0.19 * band) * (1.0 - 0.14 * near),
+                    var * (0.54 - 0.18 * band) * (1.0 - 0.18 * near),
                     rock,
                 ],
             };

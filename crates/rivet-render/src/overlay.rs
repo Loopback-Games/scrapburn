@@ -204,6 +204,15 @@ impl Overlay {
         })
     }
 
+    /// Solid triangle in screen pixels.
+    pub fn triangle(&mut self, points: [[f32; 2]; 3], color: [f32; 4]) {
+        self.vertices.extend(points.map(|pos| OverlayVertex {
+            pos,
+            uv: [-1.0, -1.0],
+            color,
+        }));
+    }
+
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
         if w <= 0.0 || h <= 0.0 {
             return;

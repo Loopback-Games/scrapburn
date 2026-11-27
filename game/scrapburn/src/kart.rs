@@ -98,6 +98,46 @@ pub const KARTS: [KartModel; 3] = [
     },
 ];
 
+/// Garage finishes use the same tint palette as the race renderer.
+pub const FINISHES: [&str; crate::race::TINTS.len()] = [
+    "FACTORY", "GLACIER", "OXIDE", "MOSS", "BRASS", "VIOLET", "GRAPHITE", "EMBER",
+];
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Loadout {
+    pub design: usize,
+    pub finish: usize,
+}
+
+impl Loadout {
+    pub fn read(dir: &Path) -> Self {
+        let Ok(data) = std::fs::read_to_string(dir.join("garage")) else {
+            return Self::default();
+        };
+        let mut fields = data.split_whitespace();
+        let design = fields
+            .next()
+            .and_then(|v| KARTS.iter().position(|k| k.name == v));
+        let finish = fields
+            .next()
+            .and_then(|v| FINISHES.iter().position(|&name| name == v));
+        Self {
+            design: design.unwrap_or_default(),
+            finish: finish.unwrap_or_default(),
+        }
+    }
+
+    pub fn save(self, dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join(format!("garage.{}.tmp", std::process::id()));
+        std::fs::write(
+            &tmp,
+            format!("{} {}\n", KARTS[self.design].name, FINISHES[self.finish]),
+        )?;
+        std::fs::rename(tmp, dir.join("garage"))
+    }
+}
+
 /// Which design a racer drives: heavy rivals get the war-rig, light ones the speedster; the
 /// player and the middle of the field the scrapper.
 pub fn model_for(mass_ratio: f32, is_player: bool) -> usize {
@@ -131,6 +171,140 @@ pub fn load(
         v.material = mat;
     }
     Ok((m, tex))
+}
+
+/// Tubular steel fitted to the chassis in local space. UVs stay fixed as the car moves.
+fn chassis_tube(mesh: &mut MeshData, a: Vec3, b: Vec3, radius: f32, tint: [f32; 4]) {
+    let axis = (b - a).normalize();
+    let across = axis.any_orthonormal_vector();
+    let up = axis.cross(across);
+    let layer = crate::materials::Layer::MetalRust as u32;
+    for seg in 0..10 {
+        let base = mesh.vertices.len() as u32;
+        for (end, k) in [(false, seg), (false, seg + 1), (true, seg + 1), (true, seg)] {
+            let t = k as f32 / 10.0;
+            let (sin, cos) = (t * std::f32::consts::TAU).sin_cos();
+            let normal = across * cos + up * sin;
+            let pos = if end { b } else { a };
+            mesh.vertices.push(Vertex {
+                pos: (pos + normal * radius).to_array(),
+                normal: normal.to_array(),
+                uv: [t, if end { a.distance(b) } else { 0.0 }],
+                color: tint,
+                material: material(layer, layer, 0),
+            });
+        }
+        mesh.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+pub fn fit_buggy_frame(body: &mut MeshData, design: usize) {
+    let (lo, hi) = bounds(&body.vertices);
+    let steel = [0.65, 0.64, 0.62, 0.0];
+    let width = (hi[0] - lo[0]) * 0.5;
+    let roof = lo[1] + (hi[1] - lo[1]) * if design == 1 { 0.95 } else { 0.88 };
+    for nozzle in crate::effects::EXHAUSTS {
+        let mouth = nozzle + Vec3::Z * 0.025;
+        chassis_tube(body, nozzle + Vec3::Z * 0.45, mouth, 0.100, steel);
+        chassis_tube(
+            body,
+            mouth + Vec3::Z * 0.055,
+            nozzle,
+            0.115,
+            [0.78, 0.72, 0.66, 0.0],
+        );
+        // A recessed dark exhaust opening behind the lip.
+        let mut bore =
+            rivet_render::box_mesh(Vec3::new(0.076, 0.076, 0.012), [0.06, 0.06, 0.07, 0.0]);
+        for v in &mut bore.vertices {
+            v.pos = (Vec3::from_array(v.pos) + mouth + Vec3::Z * 0.06).to_array();
+        }
+        body.append(&bore);
+    }
+    if design == 2 {
+        return;
+    }
+    for side in [-1.0, 1.0] {
+        let rear = Vec3::new(side * width * 0.57, 0.14, -1.16);
+        let hoop = Vec3::new(side * width * 0.49, roof, -0.33);
+        let nose = Vec3::new(side * width * 0.52, 0.28, 0.82);
+        chassis_tube(body, rear, hoop, 0.043, steel);
+        chassis_tube(body, hoop, nose, 0.04, steel);
+        chassis_tube(
+            body,
+            rear,
+            Vec3::new(-side * width * 0.49, roof, -0.33),
+            0.032,
+            steel,
+        );
+    }
+    for (y, z, fraction) in [(roof, -0.33, 0.49), (0.14, -1.16, 0.57)] {
+        let side = width * fraction;
+        chassis_tube(
+            body,
+            Vec3::new(-side, y, z),
+            Vec3::new(side, y, z),
+            0.046,
+            steel,
+        );
+    }
+}
+
+/// Mount marker lamps on the actual front and rear bodywork of each chassis.
+pub fn add_marker_lamps(body: &mut MeshData) {
+    let (lo, hi) = bounds(&body.vertices);
+    let width = hi[0] - lo[0];
+    let height = hi[1] - lo[1];
+    let mut lamps = MeshData::default();
+    for front in [false, true] {
+        let z = if front { hi[2] } else { lo[2] };
+        let direction = if front { Vec3::Z } else { Vec3::NEG_Z };
+        let color = if front {
+            [0.94, 0.86, 0.55, 0.0]
+        } else {
+            [0.92, 0.11, 0.045, 0.0]
+        };
+        for side in [-1.0, 1.0] {
+            let target = Vec3::new(width * 0.30 * side, lo[1] + height * 0.43, z);
+            let score = |v: &Vertex| Vec3::from_array(v.pos).distance_squared(target);
+            if let Some(mount) = body
+                .vertices
+                .iter()
+                .filter(|v| Vec3::from_array(v.normal).dot(direction) > 0.6)
+                .min_by(|a, b| score(a).total_cmp(&score(b)))
+            {
+                let normal = Vec3::from_array(mount.normal).normalize();
+                let mount_pos = Vec3::from_array(mount.pos);
+                let rotation = glam::Quat::from_rotation_arc(direction, normal);
+                for (half, offset, tint, flags) in [
+                    (
+                        Vec3::new(0.115, 0.047, 0.034),
+                        0.0,
+                        [0.19, 0.21, 0.22, 0.0],
+                        0,
+                    ),
+                    (
+                        Vec3::new(0.090, 0.026, 0.010),
+                        0.038,
+                        color,
+                        rivet_render::EMISSIVE,
+                    ),
+                ] {
+                    let mut part = rivet_render::box_mesh(half, tint);
+                    for vertex in &mut part.vertices {
+                        vertex.pos =
+                            (mount_pos + normal * offset + rotation * Vec3::from_array(vertex.pos))
+                                .to_array();
+                        vertex.normal = (rotation * Vec3::from_array(vertex.normal)).to_array();
+                        vertex.material = material(0, 0, rivet_render::UNTEXTURED | flags);
+                    }
+                    lamps.append(&part);
+                }
+            }
+        }
+    }
+    body.append(&lamps);
 }
 
 /// Wheel radius relative to the kart's length (the scrap kart's chunky tires).

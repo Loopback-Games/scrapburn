@@ -86,7 +86,7 @@ fn triplanar(layer: i32, world: vec3<f32>, n: vec3<f32>, scale: f32, dwdx: vec3<
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let n = normalize(in.normal);
+    var n = normalize(in.normal);
     // Derivatives in uniform control flow, used by the gradient samples below.
     let duvdx = dpdx(in.uv);
     let duvdy = dpdy(in.uv);
@@ -116,6 +116,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         albedo = mix(a, b, in.color.a);
     }
+    // Reconstruct shallow relief from the filtered color texture in world space.
+    // The same mip level drives color and relief as a surface recedes.
+    let height = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let tx = cross(dwdy, n);
+    let ty = cross(n, dwdx);
+    let det = dot(dwdx, tx);
+    let gradient = (tx * dpdx(height) + ty * dpdy(height)) * sign(det) / max(abs(det), 0.000001);
+    n = normalize(n - gradient * min(0.034, 0.26 / max(length(gradient), 0.001)));
     albedo = albedo * in.color.rgb;
     if ((flags & FLAG_EMISSIVE) != 0u) {
         // Self-lit (boost pads, lights): bright enough to feed the bloom.
@@ -132,6 +140,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sky_ambient = mix(g.sky_horizon.rgb, g.sky_zenith.rgb, 0.5);
     let hemi = mix(g.ambient_ground.rgb, sky_ambient, n.y * 0.5 + 0.5);
     var color = albedo * (g.sun_color.rgb * ndl * sh + hemi) + g.sun_color.rgb * spec * sh;
+
+    let grazing = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
+    let reflection = mix(g.sky_horizon.rgb, g.sky_zenith.rgb, clamp(reflect(-v, n).y, 0.0, 1.0));
+    color += reflection * mp.x * grazing * 0.8;
 
     let d = length(g.eye.xyz - in.world);
     let height_term = exp(-max(in.world.y, 0.0) * g.fog_params.x);
@@ -177,6 +189,13 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
 
     // Stars: sparse hashed points, twinkling, fading toward the horizon.
     if (g.sky_zenith.w > 0.0 && up > 0.0) {
+        let longitude = atan2(dir.z, dir.x);
+        let wave = 0.23 + 0.09 * sin(3.0 * longitude) + 0.045 * sin(7.0 * longitude + g.eye.w * 0.045);
+        let band = up - wave;
+        let curtain = exp(-abs(band) * select(53.0, 13.0, band > 0.0));
+        let folds = 0.70 + 0.18 * sin(37.0 * longitude + 4.5 * sin(9.0 * longitude) + up * 19.0) + 0.12 * sin(83.0 * longitude - up * 33.0);
+        let aurora = mix(vec3<f32>(0.02, 0.45, 0.39), vec3<f32>(0.28, 0.08, 0.55), smoothstep(0.0, 0.13, band));
+        sky += 0.53 * aurora * curtain * folds * smoothstep(0.4, 1.0, g.sky_zenith.w);
         let cell = floor(dir * 420.0);
         let h = fract(sin(dot(cell, vec3<f32>(12.9898, 78.233, 37.719))) * 43758.5453);
         let twinkle = 0.7 + 0.3 * sin(g.eye.w * 3.0 + h * 40.0);
@@ -194,7 +213,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         let density = smoothstep(1.0 - coverage, 1.0 - coverage + 0.35, n) * smoothstep(0.0, 0.18, up);
         let lit = 0.75 + 0.35 * pow(max(cos_sun, 0.0), 4.0);
         let cloud = mix(vec3<f32>(0.62, 0.66, 0.74), vec3<f32>(1.0, 0.98, 0.95), n2) * lit * 1.35;
-        sky = mix(sky, cloud, density * 0.9);
+        sky = mix(sky, cloud * (0.32 * g.sun_color.rgb + 0.2 * g.sky_horizon.rgb), density * 0.9);
     }
     return vec4<f32>(sky, 1.0);
 }

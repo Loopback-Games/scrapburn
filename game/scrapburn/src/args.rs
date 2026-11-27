@@ -20,10 +20,14 @@ pub struct Args {
     pub mode: Mode,
     /// Benchmark the title screen (attract mode) instead of a race.
     pub attract: bool,
+    /// Open directly to the garage.
+    pub garage: bool,
     /// Index into `track::TRACKS`.
     pub track: usize,
     /// Host an online game at launch.
     pub host: bool,
+    /// Use a private ephemeral UDP socket for the Tailcat launcher.
+    pub host_loopback: bool,
     /// Join the online game at this address at launch.
     pub join: Option<String>,
     /// Player name shown to others online.
@@ -58,7 +62,7 @@ impl std::str::FromStr for Mode {
 }
 
 pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -75,8 +79,10 @@ pub fn parse(
     let mut preset = None;
     let mut mode = Mode::Race;
     let mut attract = false;
+    let mut garage = false;
     let mut track = 0;
     let mut host = false;
+    let mut host_loopback = false;
     let mut join = None;
     let mut name = None;
     while let Some(flag) = args.next() {
@@ -112,7 +118,12 @@ pub fn parse(
             "--offscreen" => offscreen = true,
             "--preset" => preset = Some(value()?.parse()?),
             "--mode" => mode = value()?.parse()?,
+            "--garage" => garage = true,
             "--attract" => attract = true,
+            "--host-loopback" => {
+                host = true;
+                host_loopback = true;
+            }
             "--host" => host = true,
             "--join" => join = Some(value()?),
             "--name" => name = Some(value()?),
@@ -151,8 +162,10 @@ pub fn parse(
         preset,
         mode,
         attract,
+        garage,
         track,
         host,
+        host_loopback,
         join,
         name,
     })

@@ -20,12 +20,13 @@ From the title screen:
 - **Elimination**: last place is knocked out every lap until one survivor wins.
 - **Online**: host a game, or join a friend by address or Tailscale name.
 - **Track**: pick a circuit (left/right).
+- **Garage** lets you preview three chassis and eight finishes. Choose Done to equip your kart and save it for next time.
 
 ### The circuits
 
 | | |
 |---|---|
-| ![Dustbowl Loop](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** A sun-blasted canyon circuit. A horned skull rock looms over a refinery, a downed cargo plane, wrecks, and a jump over the dunes. |
+| ![Dustbowl Loop](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** A sundown run between sandstone pillars and rusted checkpoints. Skull banners mark the gates, and twin flares light the approach to the refinery. |
 | ![Castle Grindstone](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** Torchlit ramparts at dusk. A tight, technical fortress circuit with towers, a gatehouse, stone guardians, and a drawbridge jump. |
 | ![Skyway Zero](docs/media/skyway-zero.jpg) | **Skyway Zero.** A neon ribbon 40 m above a sleeping city at night. Fast, banked by curvature, with four boost strips. Don't look down. |
 
@@ -67,11 +68,31 @@ weapons; each player drives their own kart locally, so steering feels immediate 
 - On the command line: `just run --host` or `just run --join 100.64.0.2`. Add
   `--name RUSTY` to set your name; otherwise you get a generated one like `RACER 4F`.
 
-Tailscale is the easy path: it works across networks with nothing to forward. Without it, the
-host must forward UDP 27960. Up to eight racers can play, and bots fill the empty seats.
+For direct Internet play, the host needs a reachable UDP port. Friends on the same
+Tailscale network can join using their tailnet addresses. Up to eight racers can play, and bots fill the empty seats.
 Online races can't be paused.
 
 Online play is meant for friends. Clients are trusted to report their own kart honestly.
+
+### Private Tailcat invites
+
+Extract the full distribution and launch **scrapburn**. Private multiplayer is built
+into **Online**. Players do not need a Tailscale account, Go, Tailcat, or just installed.
+
+- **Host Private Race** opens a file picker. Choose where to save the invite, then send
+  the saved file to your friends. Start the race when everyone appears in the lobby.
+- **Open Race Invite** lets a guest select the file they received and joins the lobby.
+- The invite contains a private connection key. Share it with your guests only.
+  Leaving the host session expires the invite.
+
+Keep the bundled `scrapburn-tailcat` helper next to the game executable. On Linux,
+the file picker uses the desktop's XDG file chooser portal. Tailcat uses an outbound
+relay to establish the tunnel and attempts a direct path between players.
+[Tailcat networking documentation](https://github.com/tailscale/tailcat#how-it-works)
+
+For source builds, `just tailcat-host` and `just tailcat-join` still support text invites
+in the terminal. Packaging builds the helper with the pinned toolchain in
+`tools/tailcat/mise.toml` (`mise -C tools/tailcat install`).
 
 ## Options
 

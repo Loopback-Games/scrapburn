@@ -17,7 +17,7 @@ use crate::combat::{CombatEvent, CombatNet, ItemKind};
 use crate::race::{Phase, Race, RaceEvent};
 
 /// Identifies Scrapburn and its network protocol version ("NAI" + 1).
-pub const GAME_ID: u32 = 0x4e41_4901;
+pub const GAME_ID: u32 = 0x4e41_4902;
 /// Default UDP port (a nod to the arena shooters of old).
 pub const DEFAULT_PORT: u16 = 27960;
 /// Remote players per host (the host makes eight).
@@ -617,7 +617,14 @@ pub struct NetHost {
 
 impl NetHost {
     pub fn bind(port: u16, setup: RaceSetup, host_name: &str) -> std::io::Result<Self> {
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        Self::bind_addr(SocketAddr::from(([0, 0, 0, 0], port)), setup, host_name)
+    }
+
+    pub fn is_loopback(&self) -> bool {
+        self.link.local_addr().is_ok_and(|a| a.ip().is_loopback())
+    }
+
+    pub fn bind_addr(addr: SocketAddr, setup: RaceSetup, host_name: &str) -> std::io::Result<Self> {
         Ok(Self {
             link: Host::bind(addr, MAX_PEERS, GAME_ID)?,
             setup,

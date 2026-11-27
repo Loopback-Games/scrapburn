@@ -2,19 +2,19 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-const BACK: f32 = 6.0;
-const HEIGHT: f32 = 2.2;
+const BACK: f32 = 4.15;
+const HEIGHT: f32 = 1.64;
 const LOOK_AHEAD: f32 = 3.0;
 const OMEGA: f32 = 8.0;
-const FOV_MIN: f32 = 70.0;
-const SPEED_PULLBACK: f32 = 0.025;
+const FOV_MIN: f32 = 61.0;
+const SPEED_PULLBACK: f32 = 0.012;
 const BOOST_FOV: f32 = 9.0;
 const SHAKE_MAX: f32 = 0.35;
 const SHAKE_DECAY: f32 = 7.0;
 /// Longest frame the spring integrates; longer hitches just catch up next frames.
 const MAX_FRAME_DT: f32 = 0.1;
 const SPRING_SUBSTEP: f32 = 1.0 / 120.0;
-const FOV_MAX: f32 = 82.0;
+const FOV_MAX: f32 = 72.0;
 /// Speed at which the FOV reaches its maximum (top speed + a tier-2 drift boost).
 const FOV_FULL_SPEED: f32 = 48.0;
 /// Height above the kart that the camera looks out from when checking for walls in the way.
@@ -306,6 +306,6 @@ mod tests {
         for _ in 0..120 {
             cam.update(Vec3::ZERO, Quat::IDENTITY, FOV_FULL_SPEED, 1.0 / 60.0);
         }
-        assert!((slow - 70.0).abs() < 0.5 && (cam.fov_degrees() - 82.0).abs() < 0.5);
+        assert!((slow - FOV_MIN).abs() < 0.5 && (cam.fov_degrees() - FOV_MAX).abs() < 0.5);
     }
 }

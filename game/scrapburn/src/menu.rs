@@ -5,6 +5,7 @@ use rivet_render::Preset;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Title,
+    Garage,
     Settings,
     Playing,
     Paused,
@@ -31,6 +32,7 @@ pub struct MenuInput {
 pub enum MenuAction {
     None,
     StartRace,
+    SaveGarage,
     StartTimeTrial,
     Resume,
     Restart,
@@ -46,6 +48,8 @@ pub enum MenuAction {
     SceneryChanged,
     /// Host an online game.
     HostGame,
+    PrivateHost,
+    PrivateJoin,
     /// Join the game at `MenuState::join_target`.
     JoinGame,
     /// The host starts the online race.
@@ -56,6 +60,7 @@ pub enum MenuAction {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
+    pub loadout: crate::kart::Loadout,
     pub preset: Preset,
     pub laps: u32,
     pub rivals: usize,
@@ -100,12 +105,13 @@ impl FpsDisplay {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            loadout: Default::default(),
             preset: Preset::Medium,
             laps: 3,
             rivals: 7,
             fps: FpsDisplay::Off,
             track: 0,
-            scenery: false,
+            scenery: true,
             auto_preset: false,
         }
     }
@@ -213,7 +219,18 @@ impl MenuState {
                     crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
                 ),
                 "SETTINGS".into(),
+                "GARAGE".into(),
                 "QUIT".into(),
+            ],
+            Screen::Garage => vec![
+                format!(
+                    "CHASSIS  < {} >",
+                    crate::kart::KARTS[s.loadout.design]
+                        .name
+                        .to_ascii_uppercase()
+                ),
+                format!("FINISH  < {} >", crate::kart::FINISHES[s.loadout.finish]),
+                "DONE".into(),
             ],
             Screen::Settings => vec![
                 if s.auto_preset {
@@ -245,7 +262,11 @@ impl MenuState {
                     },
                 ];
                 v.extend(self.peers.iter().map(|(n, _)| format!("JOIN  {n}")));
-                v.push("BACK".into());
+                v.extend([
+                    "HOST PRIVATE RACE".into(),
+                    "OPEN RACE INVITE".into(),
+                    "BACK".into(),
+                ]);
                 v
             }
             Screen::Lobby if self.lobby_host => vec![
@@ -297,6 +318,10 @@ impl MenuState {
                         self.go(Screen::Online);
                         MenuAction::None
                     }
+                    (true, 6) => {
+                        self.go(Screen::Garage);
+                        MenuAction::None
+                    }
                     (true, 5) => {
                         self.go(Screen::Settings);
                         MenuAction::None
@@ -304,6 +329,25 @@ impl MenuState {
                     (true, _) => MenuAction::Quit,
                     _ => MenuAction::None,
                 }
+            }
+            Screen::Garage => {
+                if input.back || (input.select && self.selected == 2) {
+                    self.go(Screen::Title);
+                    self.selected = 6;
+                    return MenuAction::SaveGarage;
+                }
+                let step = if dir != 0 {
+                    dir
+                } else {
+                    i32::from(input.select)
+                };
+                let (index, count) = match self.selected {
+                    0 => (&mut s.loadout.design, crate::kart::KARTS.len()),
+                    1 => (&mut s.loadout.finish, crate::kart::FINISHES.len()),
+                    _ => return MenuAction::None,
+                };
+                *index = (*index as i32 + step).rem_euclid(count as i32) as usize;
+                MenuAction::None
             }
             Screen::Settings => {
                 if input.back || (input.select && self.selected == n - 1) {
@@ -371,6 +415,8 @@ impl MenuState {
                 }
                 match self.selected {
                     0 => MenuAction::HostGame,
+                    k if k == n - 3 => MenuAction::PrivateHost,
+                    k if k == n - 2 => MenuAction::PrivateJoin,
                     ONLINE_ADDRESS if self.join_addr.is_empty() => MenuAction::None,
                     ONLINE_ADDRESS => {
                         self.join_choice = Some(self.join_addr.clone());
@@ -474,6 +520,30 @@ mod tests {
     }
 
     #[test]
+    fn garage_equips_chassis_and_finish() {
+        let mut menu = MenuState::new(Screen::Title);
+        let mut settings = Settings::default();
+        menu.selected = menu
+            .items(&settings)
+            .iter()
+            .position(|label| label == "GARAGE")
+            .unwrap();
+        menu.handle(press(|i| i.select = true), &mut settings);
+        assert_eq!(menu.screen, Screen::Garage);
+        menu.handle(press(|i| i.left = true), &mut settings);
+        assert!(menu.items(&settings)[0].contains("SPEEDSTER"));
+        menu.handle(press(|i| i.down = true), &mut settings);
+        menu.handle(press(|i| i.right = true), &mut settings);
+        assert!(menu.items(&settings)[1].contains("GLACIER"));
+        assert_eq!(
+            menu.handle(press(|i| i.back = true), &mut settings),
+            MenuAction::SaveGarage
+        );
+        assert_eq!(menu.items(&settings)[menu.selected], "GARAGE");
+        assert_eq!(settings.loadout.design, 2);
+    }
+
+    #[test]
     fn title_track_row_cycles_tracks() {
         let mut s = Settings::default();
         let mut m = MenuState::new(Screen::Title);
@@ -531,6 +601,24 @@ mod tests {
     }
 
     #[test]
+    fn private_race_actions_follow_peer_rows() {
+        let mut menu = MenuState::new(Screen::Online);
+        let mut settings = Settings::default();
+        menu.peers.push(("Friend".into(), "100.64.0.1".into()));
+        let rows = menu.items(&settings);
+        for (label, action) in [
+            ("HOST PRIVATE RACE", MenuAction::PrivateHost),
+            ("OPEN RACE INVITE", MenuAction::PrivateJoin),
+        ] {
+            menu.selected = rows.iter().position(|row| row == label).unwrap();
+            assert_eq!(
+                menu.handle(press(|i| i.select = true), &mut settings),
+                action
+            );
+        }
+    }
+
+    #[test]
     fn lobby_host_starts_and_picks_the_mode_guests_wait() {
         let mut s = Settings::default();
         let mut m = MenuState::new(Screen::Lobby);
@@ -584,17 +672,17 @@ mod tests {
     }
 
     #[test]
-    fn scenery_toggles_and_defaults_off() {
+    fn scenery_toggles_and_defaults_on() {
         let mut s = Settings::default();
-        assert!(!s.scenery);
+        assert!(s.scenery);
         let mut m = MenuState::new(Screen::Settings);
         m.selected = SETTING_SCENERY;
-        assert!(m.items(&s)[SETTING_SCENERY].contains("OFF"));
+        assert!(m.items(&s)[SETTING_SCENERY].contains("ON"));
         assert_eq!(
             m.handle(press(|i| i.right = true), &mut s),
             MenuAction::SceneryChanged
         );
-        assert!(s.scenery);
+        assert!(!s.scenery);
     }
 
     #[test]

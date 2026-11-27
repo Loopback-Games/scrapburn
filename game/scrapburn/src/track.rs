@@ -59,8 +59,8 @@ const GRINDSTONE_POINTS: [Vec2; 18] = [
     Vec2::new(240.0, 50.0),
     Vec2::new(235.0, 125.0),
     Vec2::new(150.0, 125.0),
-    Vec2::new(75.0, 118.0),
-    Vec2::new(35.0, 150.0),
+    Vec2::new(80.0, 108.0),
+    Vec2::new(16.0, 148.0),
     Vec2::new(75.0, 185.0),
     Vec2::new(150.0, 190.0),
     Vec2::new(220.0, 220.0),
@@ -74,8 +74,10 @@ const GRINDSTONE_POINTS: [Vec2; 18] = [
 
 /// Skyway: a long launch straight, then S-bends both ways around the towers: fast, with a few
 /// corners that need the brakes.
-const SKYWAY_POINTS: [Vec2; 15] = [
+const SKYWAY_POINTS: [Vec2; 17] = [
     Vec2::new(0.0, 0.0),
+    Vec2::new(115.0, -18.0),
+    Vec2::new(218.0, 16.0),
     Vec2::new(320.0, 0.0),
     Vec2::new(430.0, 70.0),
     Vec2::new(420.0, 180.0),
@@ -104,9 +106,9 @@ impl TrackId {
     /// Stable key for saved data (ghosts).
     pub fn key(self) -> &'static str {
         match self {
-            TrackId::Dustbowl => "dustbowl-loop",
-            TrackId::Grindstone => "castle-grindstone",
-            TrackId::Skyway => "skyway-zero",
+            TrackId::Dustbowl => "dustbowl-loop-v2",
+            TrackId::Grindstone => "castle-grindstone-v2",
+            TrackId::Skyway => "skyway-zero-v2",
         }
     }
 }
@@ -160,8 +162,9 @@ pub struct TrackDef {
     pub style: TrackStyle,
 }
 
-fn desert_height(p: Vec2, _t: f32) -> f32 {
-    jump_height(p)
+fn desert_height(p: Vec2, t: f32) -> f32 {
+    let climb = ((t - 0.77) / 0.075).clamp(-1.0, 1.0);
+    jump_height(p) + 2.3 * (1.0 + (std::f32::consts::PI * climb).cos())
 }
 
 fn grindstone_height(_p: Vec2, t: f32) -> f32 {
@@ -184,7 +187,7 @@ pub const TRACKS: [TrackDef; 3] = [
     TrackDef {
         id: TrackId::Dustbowl,
         name: "DUSTBOWL LOOP",
-        tagline: "SUN-BLASTED CANYON CIRCUIT. MIND THE REFINERY.",
+        tagline: "RED CANYON AT SUNDOWN. MIND THE REFINERY.",
         points: &DUSTBOWL_POINTS,
         height: desert_height,
         bank: Some(bank_weight),
@@ -193,11 +196,11 @@ pub const TRACKS: [TrackDef; 3] = [
         box_rows: &[0.27, 0.5, 0.78],
         style: TrackStyle {
             road: Layer::Dirt,
-            road_tint: [0.8, 0.68, 0.56, 0.0],
+            road_tint: [0.69, 0.78, 0.84, 0.0],
             road_tex: 9.0,
             road_edge: Some(Layer::Sand),
             groove: 0.78,
-            curbs: ([0.72, 0.26, 0.1, 0.0], [0.86, 0.8, 0.68, 0.0]),
+            curbs: ([0.52, 0.39, 0.30, 0.0], [0.66, 0.50, 0.36, 0.0]),
             curb_glow: false,
             barrier_low: Layer::Concrete,
             barrier_high: Layer::MetalRust,
@@ -259,7 +262,7 @@ pub const TRACKS: [TrackDef; 3] = [
             road_tex: 7.0,
             road_edge: None,
             groove: 0.9,
-            curbs: ([0.1, 0.9, 1.0, 0.0], [1.0, 0.15, 0.75, 0.0]),
+            curbs: ([0.07, 0.46, 0.59, 0.0], [0.59, 0.09, 0.37, 0.0]),
             curb_glow: true,
             barrier_low: Layer::MetalRust,
             barrier_high: Layer::TechPanel,
@@ -280,7 +283,18 @@ pub const TRACKS: [TrackDef; 3] = [
 pub fn lighting(id: TrackId) -> rivet_render::Lighting {
     let base = rivet_render::Lighting::default();
     match id {
-        TrackId::Dustbowl => base,
+        TrackId::Dustbowl => rivet_render::Lighting {
+            sun_dir: Vec3::new(-0.63, -0.39, 0.68).normalize(),
+            sun_color: Vec3::new(2.83, 2.37, 1.98),
+            sky_zenith: Vec3::new(0.21, 0.085, 0.20),
+            fog_color: Vec3::new(0.8, 0.54, 0.37),
+            sky_horizon: Vec3::new(0.98, 0.39, 0.28),
+            cloud_coverage: 0.66,
+            saturation: 0.92,
+            ambient_ground: Vec3::new(0.24, 0.18, 0.17),
+            fog_density: 0.0018,
+            ..base
+        },
         // Dusk over the castle: a low burning sun, violet sky, warm haze.
         TrackId::Grindstone => rivet_render::Lighting {
             sun_dir: Vec3::new(-0.75, -0.2, 0.62).normalize(),
@@ -495,6 +509,305 @@ fn emissive_box(m: &mut MeshData, half: Vec3, xf: Mat4, color: [f32; 3]) {
     m.append(&b);
 }
 
+/// Architecture along one sector of each circuit. All supports sit beyond the barriers.
+fn sector_structure(mesh: &mut MeshData, def: &TrackDef, frame: Mat4) {
+    let block = |m: &mut MeshData, a: Vec3, b: Vec3, width, depth, layer, color| {
+        let span = b - a;
+        let transform = Mat4::from_rotation_translation(
+            Quat::from_rotation_arc(Vec3::Y, span.normalize()),
+            (a + b) * 0.5,
+        );
+        textured_box(
+            m,
+            Vec3::new(width, span.length() * 0.5, depth),
+            frame * transform,
+            layer,
+            color,
+        );
+    };
+    let brick = [0.76, 0.73, 0.67];
+    for sign in [-1.0_f32, 1.0] {
+        let p = |x, y, z| Vec3::new(sign * x, y, z);
+        match def.id {
+            TrackId::Dustbowl => {
+                for z in [-1.5, 1.5] {
+                    block(
+                        mesh,
+                        p(9.0, -1.0, z),
+                        p(9.0, 9.0, z),
+                        0.21,
+                        0.21,
+                        Layer::MetalRust,
+                        brick,
+                    );
+                    block(
+                        mesh,
+                        p(9.0, 5.0, z),
+                        p(5.5, 8.4, z),
+                        0.14,
+                        0.14,
+                        Layer::MetalRust,
+                        brick,
+                    );
+                    block(
+                        mesh,
+                        p(9.0, 8.6, z),
+                        p(0.0, 8.6, z),
+                        0.24,
+                        0.24,
+                        Layer::MetalRust,
+                        brick,
+                    );
+                }
+                for x in [1.0, 4.0, 7.0] {
+                    block(
+                        mesh,
+                        p(x, 8.7, -1.5),
+                        p(x, 8.7, 1.5),
+                        0.12,
+                        0.12,
+                        Layer::MetalRust,
+                        brick,
+                    );
+                }
+            }
+            TrackId::Grindstone => {
+                block(
+                    mesh,
+                    p(9.6, -1.5, 0.0),
+                    p(9.6, 12.4, 0.0),
+                    1.6,
+                    1.9,
+                    Layer::StoneWall,
+                    brick,
+                );
+                block(
+                    mesh,
+                    p(9.3, 5.0, 0.0),
+                    p(5.0, 9.3, 0.0),
+                    0.8,
+                    1.6,
+                    Layer::Flagstone,
+                    brick,
+                );
+                block(
+                    mesh,
+                    p(9.6, 10.4, 0.0),
+                    p(0.0, 10.4, 0.0),
+                    1.1,
+                    1.7,
+                    Layer::StoneWall,
+                    brick,
+                );
+                for x in [1.2, 3.8, 6.4, 9.0] {
+                    textured_box(
+                        mesh,
+                        Vec3::new(0.65, 0.7, 1.6),
+                        frame * Mat4::from_translation(p(x, 12.0, 0.0)),
+                        Layer::StoneWall,
+                        brick,
+                    );
+                }
+            }
+            TrackId::Skyway => {
+                let a = p(9.0, -2.0, 0.0);
+                let b = p(9.0, 5.5, 0.0);
+                let c = p(4.5, 10.0, -2.0);
+                block(mesh, a, b, 0.4, 0.52, Layer::TechPanel, brick);
+                block(mesh, b, c, 0.4, 0.52, Layer::TechPanel, brick);
+                let span = c - b;
+                let transform = Mat4::from_rotation_translation(
+                    Quat::from_rotation_arc(Vec3::Y, span.normalize()),
+                    (b + c) * 0.5 + Vec3::Z * 0.48,
+                );
+                emissive_box(
+                    mesh,
+                    Vec3::new(0.13, span.length() * 0.48, 0.11),
+                    frame * transform,
+                    if sign < 0.0 {
+                        [0.09, 0.81, 0.98]
+                    } else {
+                        [0.98, 0.12, 0.55]
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// A scrap-metal checkpoint built into the canyon. The cloth hangs in torn strips.
+fn canyon_gate(mesh: &mut MeshData, frame: Mat4) {
+    let steel = [0.67, 0.55, 0.46];
+    let girder = |m: &mut MeshData, a: Vec3, b: Vec3, r: f32| {
+        let axis = b - a;
+        textured_box(
+            m,
+            Vec3::new(r, axis.length() * 0.5, r),
+            frame
+                * Mat4::from_rotation_translation(
+                    Quat::from_rotation_arc(Vec3::Y, axis.normalize()),
+                    (a + b) * 0.5,
+                ),
+            Layer::MetalRust,
+            steel,
+        );
+    };
+    for x in [-10.0, 10.0] {
+        let mount = |y| frame * Mat4::from_translation(Vec3::new(x, y, 0.0));
+        textured_box(
+            mesh,
+            Vec3::new(2.5, 3.5, 3.0),
+            mount(2.5),
+            Layer::Rock,
+            [0.80, 0.57, 0.42],
+        );
+        textured_box(
+            mesh,
+            Vec3::new(1.8, 3.8, 2.15),
+            mount(8.3),
+            Layer::MetalRust,
+            steel,
+        );
+        for z in [-2.25, 2.25] {
+            for side in [-1.6, 1.6] {
+                girder(
+                    mesh,
+                    Vec3::new(x + side, 4.9, z),
+                    Vec3::new(x + side, 15.2, z),
+                    0.18,
+                );
+            }
+            girder(
+                mesh,
+                Vec3::new(x - 1.6, 10.0, z),
+                Vec3::new(x + 1.6, 14.7, z),
+                0.20,
+            );
+        }
+    }
+    for y in [12.7, 14.3] {
+        girder(
+            mesh,
+            Vec3::new(-11.8, y, 0.0),
+            Vec3::new(11.8, y, 0.0),
+            0.16,
+        );
+    }
+    for i in 0..12 {
+        let x = -11.4 + i as f32 * 1.9;
+        let (y0, y1) = if i % 2 == 0 {
+            (12.7, 14.3)
+        } else {
+            (14.3, 12.7)
+        };
+        girder(
+            mesh,
+            Vec3::new(x, y0, 0.0),
+            Vec3::new(x + 1.9, y1, 0.0),
+            0.11,
+        );
+    }
+    let cloth = material(
+        Layer::CanyonStandard as u32,
+        Layer::CanyonStandard as u32,
+        0,
+    );
+    let folds = 18;
+    for strip in 0..folds {
+        let u = strip as f32 / folds as f32;
+        let v = (strip + 1) as f32 / folds as f32;
+        let corner = |t: f32, bottom: bool| {
+            let hem = ((t * 91.0).sin() * 0.54 + (t * 39.0).cos() * 0.28).abs();
+            let y = if bottom { 7.35 + hem } else { 12.72 };
+            frame.transform_point3(Vec3::new(
+                (t - 0.5) * 8.1,
+                y,
+                -0.24 + 0.21 * (t * 28.0).sin() + if bottom { 0.36 } else { 0.0 },
+            ))
+        };
+        let points = [
+            corner(u, false),
+            corner(v, false),
+            corner(v, true),
+            corner(u, true),
+        ];
+        let uv = [[u, 0.0], [v, 0.0], [v, 1.0], [u, 1.0]];
+        quad(mesh, points, uv, [1.0, 1.0, 1.0, 0.0], cloth);
+        quad(
+            mesh,
+            [points[3], points[2], points[1], points[0]],
+            [uv[3], uv[2], uv[1], uv[0]],
+            [0.82, 0.78, 0.74, 0.0],
+            cloth,
+        );
+    }
+}
+
+/// Wind-cut sandstone pillars with overhanging caprock and irregular sediment ledges.
+fn sandstone_pillar(mesh: &mut MeshData, center: Vec3, radius: f32, height: f32, seed: u64) {
+    let mut rng = Rng(seed);
+    let rock = material(Layer::Rock as u32, Layer::Rock as u32, TRIPLANAR_B);
+    let mut outline = [Vec3::ZERO; 10];
+    for (i, p) in outline.iter_mut().enumerate() {
+        let angle = (i as f32 + 0.32 * rng.next()) * std::f32::consts::TAU / 10.0;
+        *p = Vec3::new(angle.cos(), 0.0, angle.sin()) * radius * (0.82 + 0.18 * rng.next());
+    }
+    let levels = [
+        (-0.36, 1.0),
+        (0.12, 0.96),
+        (0.22, 0.81),
+        (0.47, 0.78),
+        (0.49, 0.68),
+        (0.75, 0.61),
+        (0.80, 0.70),
+        (0.97, 0.64),
+        (1.0, 0.53),
+    ];
+    let ring = |i: usize, (y, r): (f32, f32)| {
+        center
+            + outline[i] * r
+            + Vec3::new(
+                y * radius * 0.11,
+                height * y + (i as f32 * 2.3).sin() * radius * 0.12,
+                0.0,
+            )
+    };
+    for (band, w) in levels.windows(2).enumerate() {
+        let tint = if band == 2 || band == 6 {
+            [0.86, 0.62, 0.52, 1.0]
+        } else {
+            [0.77, 0.60, 0.54, 1.0]
+        };
+        for i in 0..outline.len() {
+            let j = (i + 1) % outline.len();
+            quad(
+                mesh,
+                [ring(i, w[0]), ring(i, w[1]), ring(j, w[1]), ring(j, w[0])],
+                [[0.0; 2]; 4],
+                tint,
+                rock,
+            );
+        }
+    }
+    let top = levels[levels.len() - 1];
+    for i in 1..outline.len() - 1 {
+        let vertices = [ring(0, top), ring(i + 1, top), ring(i, top)];
+        let normal = (vertices[1] - vertices[0])
+            .cross(vertices[2] - vertices[0])
+            .normalize();
+        for p in vertices {
+            mesh.indices.push(mesh.vertices.len() as u32);
+            mesh.vertices.push(Vertex {
+                pos: p.to_array(),
+                normal: normal.to_array(),
+                uv: [0.0; 2],
+                color: [0.91, 0.73, 0.62, 1.0],
+                material: rock,
+            });
+        }
+    }
+}
+
 /// Deterministic pseudo-random sequence for scenery placement.
 struct Rng(u64);
 impl Rng {
@@ -633,12 +946,16 @@ pub fn build_track(def: &TrackDef) -> Track {
     // Lateral strips across the road (-1 = left edge, 1 = right edge): the edge material drifts
     // in at the sides and a worn groove darkens the middle.
     const STRIPS: [f32; 6] = [-1.0, -0.62, -0.22, 0.22, 0.62, 1.0];
-    let corner = |side: f32| -> [f32; 4] {
+    let corner = |side: f32, sample: usize| -> [f32; 4] {
         let edge_mix = match st.road_edge {
             Some(_) => ((side.abs() - 0.45) / 0.55).clamp(0.0, 1.0).powf(1.4) * 0.9,
             None => 0.0,
         };
-        let dark = if side.abs() < 0.5 { st.groove } else { 1.0 };
+        let p = frames[sample % n].0;
+        let drift = (p.x * 0.065 + p.z * 0.042).sin();
+        let groove = (1.0 - (side - 0.20 * drift).abs()).clamp(0.0, 1.0);
+        let dark = 1.0 - groove * (1.0 - st.groove);
+        let edge_mix = edge_mix * (0.75 + 0.25 * (p.x * 0.13 - p.z * 0.09 + side).sin());
         let t = st.road_tint;
         [t[0] * dark, t[1] * dark, t[2] * dark, edge_mix]
     };
@@ -662,7 +979,12 @@ pub fn build_track(def: &TrackDef) -> Track {
                 &mut road,
                 v,
                 [[ua, v0], [ub, v0], [ub, v1], [ua, v1]],
-                [corner(a), corner(b), corner(b), corner(a)],
+                [
+                    corner(a, i),
+                    corner(b, i),
+                    corner(b, i + 1),
+                    corner(a, i + 1),
+                ],
                 road_mat,
             );
         }
@@ -710,6 +1032,23 @@ pub fn build_track(def: &TrackDef) -> Track {
                 quad(&mut road, [o0, i0, i1, o1], uv, curb, curb_mat);
             } else {
                 quad(&mut road, [i0, o0, o1, i1], uv, curb, curb_mat);
+            }
+
+            // Paint paired diagonal approach marks along the outside of upcoming bends.
+            let (_, _, lateral, _) = frames[i];
+            let turn = frames[(i + 8) % n].1.dot(lateral);
+            if turn * side < -0.20 && i % 6 < 2 {
+                let point = |sample, inset, up: Vec3| edge(sample, side, inset) + up * 0.025;
+                let mut stripe = [
+                    point(i, CURB_WIDTH + 0.25, u0),
+                    point(i, CURB_WIDTH + 0.55, u0),
+                    point(i + 1, CURB_WIDTH + 1.55, u1),
+                    point(i + 1, CURB_WIDTH + 1.25, u1),
+                ];
+                if side > 0.0 {
+                    stripe.reverse();
+                }
+                quad(&mut road, stripe, uv, st.curbs.1, curb_mat);
             }
 
             // Barrier: concrete base, rusty metal above; faces the road.
@@ -836,6 +1175,31 @@ pub fn build_track(def: &TrackDef) -> Track {
         }
     }
 
+    // A run of silhouettes marks the entry to a distinct sector at racing speed.
+    let (sector, spacing, repeats) = match def.id {
+        TrackId::Dustbowl => (0.16, 9, 3),
+        TrackId::Grindstone => (0.39, 15, 2),
+        TrackId::Skyway => (0.09, 8, 7),
+    };
+    for k in 0..repeats {
+        let (center, fwd, _, _) = frames[((n as f32 * sector) as usize + k * spacing) % n];
+        let frame =
+            Mat4::from_rotation_translation(Quat::from_rotation_y(fwd.x.atan2(fwd.z)), center);
+        sector_structure(&mut road, def, frame);
+    }
+
+    if def.id == TrackId::Dustbowl {
+        for at in [0.07, 0.46, 0.83] {
+            let (c, f, right, _) = frames[(n as f32 * at) as usize];
+            flames.push(c + right * 8.4 + Vec3::Y * 5.9);
+            flames.push(c - right * 8.4 + Vec3::Y * 5.9);
+            canyon_gate(
+                &mut road,
+                Mat4::from_rotation_translation(Quat::from_rotation_y(f.x.atan2(f.z)), c),
+            );
+        }
+    }
+
     // Checkered start line across the road at checkpoint 0.
     {
         let (c, f, r, u) = frames[0];
@@ -913,10 +1277,33 @@ pub fn build_track(def: &TrackDef) -> Track {
             quad(
                 &mut road,
                 v,
-                [[0.0; 2]; 4],
-                glow,
-                material(0, 0, UNTEXTURED | EMISSIVE),
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 0.5], [0.0, 0.5]],
+                [0.37, 0.40, 0.44, 0.0],
+                material(Layer::TechPanel as u32, Layer::TechPanel as u32, 0),
             );
+            let point = |side: f32, along: f32| {
+                let near = c0 + r0 * side + u0 * (PAD_LIFT + 0.018);
+                let far = c1 + r1 * side + u1 * (PAD_LIFT + 0.018);
+                near.lerp(far, along)
+            };
+            for sign in [-1.0, 1.0] {
+                let mut marks = [
+                    point(0.0, 0.67),
+                    point(sign * 2.18, 0.12),
+                    point(sign * 2.18, 0.32),
+                    point(0.0, 0.87),
+                ];
+                if sign < 0.0 {
+                    marks.reverse();
+                }
+                quad(
+                    &mut road,
+                    marks,
+                    [[0.0; 2]; 4],
+                    glow,
+                    material(0, 0, UNTEXTURED | EMISSIVE),
+                );
+            }
             col.quad(v, Surface::BoostPad);
         }
         let (c, _, _, u) = frames[(at + PAD_SEGMENTS / 2) % n];
@@ -994,6 +1381,78 @@ pub fn build_track(def: &TrackDef) -> Track {
             col.surfaces.push(Surface::Wall);
         }
         rocks.push(pos);
+    }
+
+    if def.id == TrackId::Dustbowl {
+        for (i, &(c, _, side, _)) in frames.iter().enumerate().step_by(12) {
+            for sign in [-1.0, 1.0] {
+                let radius = 4.0 + rng.next() * 6.0;
+                let p = c + side * sign * (ROAD_HALF_WIDTH + radius + 5.0 + 23.0 * rng.next());
+                if terrain::distance_to(&centerline, p.x, p.z) < ROAD_HALF_WIDTH + radius + 3.0 {
+                    continue;
+                }
+                let floor = terrain::height_at(&centerline, p.x, p.z);
+                let height = radius * (1.4 + 2.1 * rng.next());
+                sandstone_pillar(
+                    &mut props,
+                    Vec3::new(p.x, floor, p.z),
+                    radius,
+                    height,
+                    i as u64 + u64::from(sign > 0.0) + 11,
+                );
+            }
+        }
+    }
+
+    // Fan-shaped clumps break up the flat shoulder between the barriers and larger scenery.
+    if st.terrain != TerrainKind::Void {
+        for &(c, _, right, _) in frames.iter().step_by(5) {
+            let sign = if rng.next() < 0.5 { -1.0 } else { 1.0 };
+            let p = c + right * sign * (ROAD_HALF_WIDTH + 3.0 + rng.next() * 29.0);
+            if terrain::distance_to(&centerline, p.x, p.z) < ROAD_HALF_WIDTH + 2.0 {
+                continue;
+            }
+            let root = Vec3::new(
+                p.x,
+                terrain::height_for(st.terrain, &centerline, p.x, p.z) - 0.18,
+                p.z,
+            );
+            let tint = if st.terrain == TerrainKind::Desert {
+                [0.50, 0.47, 0.28, 0.0]
+            } else {
+                [0.23, 0.39, 0.19, 0.0]
+            };
+            let scale = 0.65 + rng.next() * 1.2;
+            for blade in 0..9 {
+                let angle = blade as f32 * 2.4 + rng.next() * 0.3;
+                let outward = Vec3::new(angle.cos(), 0.0, angle.sin());
+                let across = outward.cross(Vec3::Y) * 0.10 * scale;
+                let base = root + outward * scale * 0.16;
+                let tip = base
+                    + (outward * (0.22 + rng.next() * 0.55) + Vec3::Y * (0.54 + rng.next()))
+                        * scale;
+                let pts = [
+                    base - across,
+                    base + across,
+                    tip + across * 0.055,
+                    tip - across * 0.055,
+                ];
+                quad(
+                    &mut props,
+                    pts,
+                    [[0.0; 2]; 4],
+                    tint,
+                    material(0, 0, UNTEXTURED),
+                );
+                quad(
+                    &mut props,
+                    [pts[3], pts[2], pts[1], pts[0]],
+                    [[0.0; 2]; 4],
+                    tint,
+                    material(0, 0, UNTEXTURED),
+                );
+            }
+        }
     }
 
     // The skyway rides on slender pylons down into the haze.
@@ -1359,10 +1818,11 @@ mod tests {
     }
 
     #[test]
-    fn castle_torches_burn() {
+    fn castle_torches_and_canyon_gate_flares_burn() {
         let c = build_track(&TRACKS[1]);
         assert!(c.flames.len() >= 20, "{} torches", c.flames.len());
-        assert!(build_track(&TRACKS[0]).flames.is_empty());
+        assert_eq!(build_track(&TRACKS[0]).flames.len(), 6);
+        assert!(build_track(&TRACKS[2]).flames.is_empty());
     }
 
     #[test]

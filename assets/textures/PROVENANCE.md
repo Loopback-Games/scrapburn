@@ -22,3 +22,7 @@ image generation), then resized to 1024×1024 with ImageMagick. Common prompt fr
 | tech_panel.png | futuristic dark metal track deck panels with glowing cyan seams |
 | city_facade.png | night skyscraper facade, grid of lit and unlit windows |
 | wood_planks.png | weathered dark wooden planks with iron nails |
+
+The canyon standard was generated with the built-in imagegen tool for Dustbowl's gates.
+
+> A square, edge-to-edge game texture atlas tile depicting a single battered oxblood-red canvas battle standard, laid completely flat, facing square-on. A large, original ivory skull insignia is hand-stenciled in flaking paint at the center. Thick off-white bold silhouette, black eye sockets, chipped teeth, subtly asymmetric jaw. Red oxide canvas surrounds it all the way to every edge. Subtle sun-bleached vertical streaks, grime, woven fibers and seams. No poles, background, text, lettering, border, or light gradient. Flat diffuse albedo map for a rusty canyon racing game; the skull must read clearly from a distance.

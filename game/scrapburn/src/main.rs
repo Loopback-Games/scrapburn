@@ -2,6 +2,7 @@
 //! Scrapburn: drive the gray-box loop.
 
 mod app;
+mod tailcat;
 
 use std::process::ExitCode;
 

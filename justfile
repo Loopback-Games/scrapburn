@@ -26,26 +26,19 @@ build:
 run *ARGS:
     cargo run -p scrapburn --release -- {{ARGS}}
 
-# Release build plus the committed assets, as a tarball to hand to someone:
-# target/dist/scrapburn-<version>-linux-x86_64.tar.gz
-[unix]
-package:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo build -p scrapburn --release
-    version="$(git describe --tags --always --dirty)"
-    name="scrapburn-${version}-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-    stage="target/dist/${name}"
-    rm -rf "${stage}" "${stage}.tar.gz"
-    mkdir -p "${stage}"
-    cp target/release/scrapburn "${stage}/"
-    strip "${stage}/scrapburn"
-    # Only committed assets: the game never reads the raw Tripo downloads.
-    git ls-files -z assets ':!assets/tripo-spend.tsv' | xargs -0 cp --parents -t "${stage}"
-    cp LICENSE-APACHE LICENSE-MIT "${stage}/"
-    tar -C target/dist -czf "${stage}.tar.gz" "${name}"
-    rm -rf "${stage}"
-    echo "${stage}.tar.gz"
+# Ship the game, private-race helper and assets together.
+package: build
+    {{ if os() == "windows" { "python" } else { "python3" } }} tools/package.py
+
+# Open a private lobby and print an invite.
+[working-directory: 'tools/tailcat']
+tailcat-host: build
+    mise exec -- go run . host ../../target/release/scrapburn
+
+# Paste a private invite and enter the host's lobby.
+[working-directory: 'tools/tailcat']
+tailcat-join: build
+    mise exec -- go run . join ../../target/release/scrapburn
 
 bench *ARGS:
     cargo run -p scrapburn --release -- --bench 30 {{ARGS}}

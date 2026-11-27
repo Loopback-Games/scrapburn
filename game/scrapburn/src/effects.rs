@@ -8,7 +8,7 @@ use crate::style::tier_color;
 
 /// Rear wheel contact points and exhaust, in kart space (+Z forward, +X left).
 const REAR_WHEELS: [Vec3; 2] = [Vec3::new(0.75, -0.42, -0.8), Vec3::new(-0.75, -0.42, -0.8)];
-const EXHAUST: Vec3 = Vec3::new(0.0, 0.25, -1.15);
+pub const EXHAUSTS: [Vec3; 2] = [Vec3::new(-0.38, 0.11, -1.37), Vec3::new(0.38, 0.11, -1.37)];
 const SPARK_RATE: f32 = 70.0;
 const FLAME_RATE: f32 = 140.0;
 const DUST_RATE: f32 = 40.0;
@@ -16,6 +16,7 @@ const DUST_RATE: f32 = 40.0;
 pub struct Effects {
     pub particles: ParticleSystem,
     rng: u64,
+    pub dusty_road: bool,
     was_grounded: bool,
     last_vy: f32,
     accum: [f32; 3],
@@ -32,6 +33,7 @@ impl Effects {
         Self {
             particles: ParticleSystem::new(1500),
             rng: 0x9e37_79b9_7f4a_7c15,
+            dusty_road: false,
             was_grounded: true,
             last_vy: 0.0,
             accum: [0.0; 3],
@@ -102,15 +104,16 @@ impl Effects {
             for _ in 0..self.take(1, FLAME_RATE, dt) {
                 let vel =
                     back * (6.0 + self.rand() * 4.0) + self.jitter(0.8) + state.velocity * 0.85;
-                let pos = at(EXHAUST) + self.jitter(0.08);
+                let nozzle = EXHAUSTS[usize::from(self.rand() > 0.5)];
+                let pos = at(nozzle) + self.jitter(0.035);
                 let life = 0.12 + self.rand() * 0.1;
                 self.particles.spawn(Particle {
                     pos,
                     vel,
                     age: 0.0,
                     life,
-                    size: (0.55, 0.15),
-                    color: ([6.0, 3.2, 1.0, 1.0], [2.0, 0.3, 0.05, 0.0]),
+                    size: (0.29, 0.09),
+                    color: ([1.45, 3.5, 8.5, 1.0], [0.31, 0.13, 3.8, 0.0]),
                     gravity: -2.0,
                     drag: 4.0,
                     blend: Blend::Additive,
@@ -120,8 +123,9 @@ impl Effects {
 
         // Dust when driving on sand or dirt.
         let speed = state.velocity.length();
-        if state.grounded && state.offroad > 0.2 && speed > 4.0 {
-            let rate = DUST_RATE * state.offroad * (speed / params.max_speed).min(1.5);
+        let dust = state.offroad.max(if self.dusty_road { 0.38 } else { 0.0 });
+        if state.grounded && dust > 0.2 && speed > 4.0 {
+            let rate = DUST_RATE * dust * (speed / params.max_speed).min(1.5);
             for _ in 0..self.take(2, rate, dt) {
                 let wheel = REAR_WHEELS[(self.rand() * 2.0) as usize % 2];
                 let vel = back * (1.0 + self.rand() * 2.0)

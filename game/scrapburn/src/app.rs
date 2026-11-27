@@ -92,11 +92,13 @@ impl KartGpu {
         tex: Option<&Rgba8Image>,
     ) -> Self {
         let k = &scrapburn::kart::KARTS[design];
-        let parts = scrapburn::kart::split_wheels_textured(
+        let mut parts = scrapburn::kart::split_wheels_textured(
             data,
             scrapburn::kart::KART_LENGTH * k.wheel_ratio,
             tex,
         );
+        scrapburn::kart::add_marker_lamps(&mut parts.body);
+        scrapburn::kart::fit_buggy_frame(&mut parts.body, design);
         Self {
             design,
             body: GpuMesh::new(device, &parts.body),
@@ -123,7 +125,7 @@ enum Net {
 
 /// What to do online right after launch (`--host` / `--join`).
 enum LaunchNet {
-    Host,
+    Host { loopback: bool },
     Join(String),
 }
 
@@ -202,6 +204,9 @@ struct Game {
     race: Race,
     session: Session,
     menu: MenuState,
+    menu_rows: Option<(Screen, hud::MenuRows)>,
+    pointer: Option<(f32, f32)>,
+    clicked: Option<(Screen, usize, bool)>,
     settings: Settings,
     clock: FixedTimestep,
     camera: ChaseCamera,
@@ -226,6 +231,7 @@ struct Game {
     /// The latest elimination knockout: racer and race time.
     knockout: Option<(usize, f64)>,
     net: Net,
+    tunnel: Option<crate::tailcat::Tunnel>,
     launch_net: Option<LaunchNet>,
     /// Name shown to other players online.
     player_name: String,
@@ -249,14 +255,18 @@ struct Game {
     flame_acc: f32,
 }
 
-/// Which loaded kart design each racer drives (by weight; the player keeps the scrapper).
-fn kart_assignment(race: &Race, karts: &[KartGpu]) -> Vec<usize> {
+/// Use the equipped chassis for the local driver and weight-based designs for bots.
+fn kart_assignment(race: &Race, karts: &[KartGpu], design: usize) -> Vec<usize> {
     race.racers
         .iter()
         .enumerate()
         .map(|(i, r)| {
             let human = race.player == Some(i) || r.remote;
-            let want = scrapburn::kart::model_for(r.mass / scrapburn::race::BASE_MASS, human);
+            let want = if race.player == Some(i) {
+                design
+            } else {
+                scrapburn::kart::model_for(r.mass / scrapburn::race::BASE_MASS, human)
+            };
             karts.iter().position(|k| k.design == want).unwrap_or(0)
         })
         .collect()
@@ -382,6 +392,9 @@ impl Game {
             }
         }
         let settings = Settings {
+            loadout: scrapburn::ghost::data_dir()
+                .map(|d| scrapburn::kart::Loadout::read(&d))
+                .unwrap_or_default(),
             // Explicit preset, Medium for benchmarks, otherwise start High and auto-tune.
             preset: args
                 .preset
@@ -445,7 +458,11 @@ impl Game {
             .iter()
             .map(|m| m.as_ref().map(|m| GpuMesh::new(&ctx.device, m)))
             .collect();
-        let placements = scenery::track_features(&track);
+        let placements = if settings.scenery {
+            scenery::placements(&track)
+        } else {
+            scenery::track_features(&track)
+        };
         let g = |m: MeshData| GpuMesh::new(&ctx.device, &m);
         let fx_meshes = FxMeshes {
             shell: g(fx_meshes::item_shell()),
@@ -458,11 +475,7 @@ impl Game {
                 [0.35, 1.0, 0.4, 0.0],
                 rivet_render::EMISSIVE,
             )),
-            orb_glow: g(fx_meshes::sphere(
-                2,
-                [0.15, 0.6, 0.2, 0.0],
-                rivet_render::EMISSIVE | rivet_render::DITHER,
-            )),
+            orb_glow: g(fx_meshes::plasma_halo()),
         };
         let ghost_file =
             scrapburn::ghost::data_dir().map(|d| scrapburn::ghost::ghost_path(&d, track.id.key()));
@@ -470,7 +483,9 @@ impl Game {
             BestGhost::from_ghost(ghost_file.as_deref().and_then(scrapburn::ghost::load));
 
         // Benchmarks skip the menus and race bots; otherwise start on the title screen.
-        let (session, screen) = if args.bench.is_some() && !args.attract {
+        let (session, screen) = if args.garage {
+            (Session::Attract, Screen::Garage)
+        } else if args.bench.is_some() && !args.attract {
             (Session::Play(args.mode), Screen::Playing)
         } else {
             (Session::Attract, Screen::Title)
@@ -490,7 +505,7 @@ impl Game {
             timer,
             track,
             track_meshes,
-            kart_of: kart_assignment(&race, &karts),
+            kart_of: kart_assignment(&race, &karts, settings.loadout.design),
             karts,
             wheel_spin: vec![[0.0; 4]; n],
             ghost_mesh,
@@ -499,6 +514,9 @@ impl Game {
             race,
             session,
             menu: MenuState::new(screen),
+            menu_rows: None,
+            pointer: None,
+            clicked: None,
             settings,
             clock: FixedTimestep::new(TICK_DT, MAX_STEPS),
             camera: ChaseCamera::default(),
@@ -525,8 +543,11 @@ impl Game {
             frame_events: Vec::new(),
             knockout: None,
             net: Net::Off,
+            tunnel: None,
             launch_net: if args.host {
-                Some(LaunchNet::Host)
+                Some(LaunchNet::Host {
+                    loopback: args.host_loopback,
+                })
             } else {
                 args.join.clone().map(LaunchNet::Join)
             },
@@ -615,7 +636,7 @@ impl Game {
 
     /// Per-kart effect buffers sized to the current race.
     fn fit_race_buffers(&mut self) {
-        self.kart_of = kart_assignment(&self.race, &self.karts);
+        self.kart_of = kart_assignment(&self.race, &self.karts, self.settings.loadout.design);
         let n = self.race.racers.len();
         self.effects = (0..n).map(|_| Effects::new()).collect();
         self.leans = vec![0.0; n];
@@ -627,21 +648,82 @@ impl Game {
     }
 
     /// Starts hosting and opens the lobby.
-    fn host_game(&mut self) {
+    fn host_game(&mut self, loopback: bool) {
         let setup = RaceSetup {
             track: self.settings.track as u8,
             elimination: self.menu.lobby_elimination,
             laps: self.settings.laps as u8,
             rivals: self.settings.rivals as u8,
         };
-        match NetHost::bind(netplay::DEFAULT_PORT, setup, &self.player_name) {
+        let addr = if loopback {
+            ([127, 0, 0, 1], 0)
+        } else {
+            ([0, 0, 0, 0], netplay::DEFAULT_PORT)
+        };
+        match NetHost::bind_addr(addr.into(), setup, &self.player_name) {
             Ok(h) => {
+                if loopback {
+                    println!("SCRAPBURN_HOST_PORT={}", h.port());
+                }
                 log::info!("hosting on UDP port {}", h.port());
                 self.net = Net::Host(Box::new(h));
                 self.menu.lobby_host = true;
                 self.menu.go(Screen::Lobby);
             }
-            Err(e) => self.show_toast(format!("COULDN'T HOST: {e}").to_ascii_uppercase()),
+            Err(e) => {
+                if loopback {
+                    println!("SCRAPBURN_HOST_CLOSED");
+                }
+                self.show_toast(format!("COULDN'T HOST: {e}").to_ascii_uppercase());
+            }
+        }
+    }
+
+    fn private_game(&mut self, host: bool) {
+        self.resolving = None;
+        let port = if host {
+            self.host_game(true);
+            let Net::Host(h) = &self.net else { return };
+            Some(h.port())
+        } else {
+            None
+        };
+        match crate::tailcat::Tunnel::start(port) {
+            Ok(tunnel) => self.tunnel = Some(tunnel),
+            Err(_) => self.close_private("BUNDLED TAILCAT HELPER COULD NOT START"),
+        }
+    }
+
+    fn close_private(&mut self, reason: &str) {
+        self.leave_online();
+        self.menu.go(Screen::Online);
+        if !reason.is_empty() {
+            self.show_toast(reason);
+        }
+    }
+
+    fn poll_private(&mut self) {
+        let Some(tunnel) = self.tunnel.as_mut() else {
+            return;
+        };
+        if !tunnel.ready && self.menu.screen == Screen::Title {
+            self.tunnel = None;
+            return;
+        }
+        match tunnel.poll() {
+            Some(crate::tailcat::Event::Hosted) => {
+                tunnel.ready = true;
+                self.show_toast("INVITE SAVED. SHARE THE FILE WITH YOUR GUESTS");
+            }
+            Some(crate::tailcat::Event::Join(port)) => {
+                tunnel.ready = true;
+                self.connect_to(([127, 0, 0, 1], port).into());
+                if !matches!(self.net, Net::Client { .. }) {
+                    self.tunnel = None;
+                }
+            }
+            Some(crate::tailcat::Event::Closed(reason)) => self.close_private(&reason),
+            None => {}
         }
     }
 
@@ -713,6 +795,12 @@ impl Game {
 
     /// Leaves any online game and returns to the title.
     fn leave_online(&mut self) {
+        self.tunnel = None;
+        if let Net::Host(h) = &self.net
+            && h.is_loopback()
+        {
+            println!("SCRAPBURN_HOST_CLOSED");
+        }
         self.net = Net::Off;
         self.start(Session::Attract);
     }
@@ -802,6 +890,7 @@ impl Game {
         match note {
             ClientNote::Connected => self.show_toast("CONNECTED"),
             ClientNote::Rejected(reason) => {
+                self.tunnel = None;
                 self.net = Net::Off;
                 self.start(Session::Attract);
                 self.menu.go(Screen::Online);
@@ -922,10 +1011,11 @@ impl Game {
     /// Returns `Some(exit code)` when the app should quit.
     fn frame(&mut self, since_launch: f64) -> Option<ExitCode> {
         match self.launch_net.take() {
-            Some(LaunchNet::Host) => self.host_game(),
+            Some(LaunchNet::Host { loopback }) => self.host_game(loopback),
             Some(LaunchNet::Join(addr)) => self.join_game(&addr),
             None => {}
         }
+        self.poll_private();
         self.poll_peers();
         self.poll_resolve();
         let now = Instant::now();
@@ -969,6 +1059,7 @@ impl Game {
                 }
             }
             Screen::Title
+            | Screen::Garage
             | Screen::Settings
             | Screen::Paused
             | Screen::Results
@@ -979,14 +1070,32 @@ impl Game {
                 let paused_game = matches!(self.session, Session::Play(_))
                     && self.menu.screen != Screen::Results
                     && !online;
-                simulate = !paused_game;
+                simulate = !paused_game && self.menu.screen != Screen::Garage;
                 let typing = self.menu.screen == Screen::Online
                     && self.menu.selected == scrapburn::menu::ONLINE_ADDRESS;
-                let input = if typing {
+                let mut input = if typing {
                     menu_input_typing(&self.keys, pad)
                 } else {
                     menu_input(&self.keys, pad)
                 };
+                if let Some((screen, row, previous)) = self.clicked.take()
+                    && screen == self.menu.screen
+                    && row < self.menu.items(&self.settings).len()
+                {
+                    self.menu.selected = row;
+                    input = scrapburn::menu::MenuInput {
+                        left: previous,
+                        select: !previous,
+                        ..Default::default()
+                    };
+                }
+                let pending = self.tunnel.as_ref().is_some_and(|t| !t.ready);
+                if pending && input.back {
+                    self.close_private("");
+                    input = Default::default();
+                } else if pending {
+                    input = Default::default();
+                }
                 match self.menu.handle(input, &mut self.settings) {
                     MenuAction::None => {}
                     MenuAction::StartRace => self.start(Session::Play(Mode::Race)),
@@ -1008,12 +1117,22 @@ impl Game {
                         self.tuner.stop();
                         self.rebuild_renderer();
                     }
+                    MenuAction::SaveGarage => {
+                        if let Some(dir) = scrapburn::ghost::data_dir()
+                            && let Err(e) = self.settings.loadout.save(&dir)
+                        {
+                            log::warn!("saving garage: {e}");
+                            self.show_toast("GARAGE EQUIPPED FOR THIS SESSION");
+                        }
+                    }
                     MenuAction::TrackChanged => self.load_track(),
                     MenuAction::SceneryChanged => {
                         self.placements = self.scenery_for(&self.track);
                         self.flame_points = flame_points(&self.track, &self.placements);
                     }
-                    MenuAction::HostGame => self.host_game(),
+                    MenuAction::PrivateHost => self.private_game(true),
+                    MenuAction::PrivateJoin => self.private_game(false),
+                    MenuAction::HostGame => self.host_game(false),
                     MenuAction::JoinGame => {
                         if let Some(addr) = self.menu.join_target() {
                             self.join_game(&addr);
@@ -1362,6 +1481,7 @@ impl Game {
         let mut models = Vec::with_capacity(self.race.racers.len());
         for (i, r) in self.race.racers.iter().enumerate() {
             let (pos, rot) = VehicleState::lerp(&r.prev, &r.state, alpha);
+            self.effects[i].dusty_road = self.track.id == scrapburn::track::TrackId::Dustbowl;
             let shake = self.effects[i].update(&r.state, &r.params, fx_dt);
             if i == focus {
                 self.camera.kick(shake);
@@ -1376,8 +1496,13 @@ impl Game {
             self.leans[i] += (target - self.leans[i]) * (1.0 - (-8.0 * frame_dt).exp());
             // Each tire rolls at its own rate, so big and small ones both keep pace with the road.
             let radii = self.karts[self.kart_of[i]].radii;
-            for (spin, radius) in self.wheel_spin[i].iter_mut().zip(radii) {
-                *spin = (*spin + r.state.speed() * fx_dt / radius) % std::f32::consts::TAU;
+            for ((spin, radius), hub) in self.wheel_spin[i]
+                .iter_mut()
+                .zip(radii)
+                .zip(self.karts[self.kart_of[i]].hubs)
+            {
+                let tire_speed = r.state.speed() - r.state.angular_yaw * hub.x;
+                *spin = (*spin + tire_speed * fx_dt / radius) % std::f32::consts::TAU;
             }
             models.push((
                 pos,
@@ -1385,7 +1510,17 @@ impl Game {
                 Mat4::from_rotation_translation(rot, pos) * Mat4::from_rotation_z(self.leans[i]),
             ));
         }
-        let (fpos, frot, _) = models[focus];
+        let garage = self.menu.screen == Screen::Garage;
+        let (mut fpos, frot, _) = models[focus];
+        if garage {
+            fpos = self.track.spawn.0 + Vec3::Y * scrapburn::kart::GROUND_OFFSET;
+            let rotation = glam::Quat::from_rotation_y(self.track.spawn.1 + self.attract_t * 0.45);
+            models[focus] = (
+                fpos,
+                rotation,
+                Mat4::from_rotation_translation(rotation, fpos),
+            );
+        }
         let fstate = &self.race.racers[focus].state;
         self.camera.set_boost(fstate.boost_timer > 0.0);
         self.camera.update(fpos, frot, fstate.speed(), frame_dt);
@@ -1395,7 +1530,12 @@ impl Game {
             frame_dt,
         );
         let (w, h) = self.ctx.size();
-        let (view_m, eye) = if matches!(self.session, Session::Attract) {
+        let (view_m, eye) = if garage {
+            let offset = glam::Quat::from_rotation_y(self.track.spawn.1);
+            let eye = fpos + offset * Vec3::new(2.2, 1.15, 3.5);
+            let aim = fpos + Vec3::Y * 0.3 + (fpos - eye).cross(Vec3::Y).normalize() * -1.0;
+            (glam::camera::rh::view::look_at_mat4(eye, aim, Vec3::Y), eye)
+        } else if matches!(self.session, Session::Attract) {
             // Cinematic orbit around the featured kart.
             let a = self.attract_t * 0.22;
             let mut eye =
@@ -1442,13 +1582,24 @@ impl Game {
             .take(shown)
             .map(|m| Draw::new(m, Mat4::IDENTITY))
             .collect();
-        for (i, (_, _, model)) in models.iter().enumerate() {
+        for (i, (pos, rot, model)) in models.iter().enumerate() {
             // Knocked-out rivals leave the track (the player's own wreck stays in view).
-            if self.race.racers[i].out && i != focus {
+            if (garage || self.race.racers[i].out) && i != focus {
                 continue;
             }
-            let tint = self.race.racers[i].tint;
-            let kart = &self.karts[self.kart_of[i]];
+            let tint = if garage || self.race.player == Some(i) {
+                scrapburn::race::TINTS[self.settings.loadout.finish]
+            } else {
+                self.race.racers[i].tint
+            };
+            let kart = if garage {
+                self.karts
+                    .iter()
+                    .find(|k| k.design == self.settings.loadout.design)
+                    .unwrap_or(&self.karts[0])
+            } else {
+                &self.karts[self.kart_of[i]]
+            };
             draws.push(Draw {
                 mesh: &kart.body,
                 model: *model,
@@ -1458,18 +1609,25 @@ impl Game {
             // Wheels roll with speed; the front pair steers with the turn rate.
             let steer = (self.race.racers[i].state.angular_yaw * 0.3).clamp(-0.45, 0.45);
             for (k, mesh) in kart.wheels.iter().enumerate() {
-                let roll = Mat4::from_rotation_x(self.wheel_spin[i][k]);
-                let yaw = if k < 2 {
+                let roll = if garage {
+                    Mat4::IDENTITY
+                } else {
+                    Mat4::from_rotation_x(self.wheel_spin[i][k])
+                };
+                let yaw = if !garage && k < 2 {
                     Mat4::from_rotation_y(steer)
                 } else {
                     Mat4::IDENTITY
                 };
-                let m = *model * Mat4::from_translation(kart.hubs[k]) * yaw * roll;
+                let m = Mat4::from_rotation_translation(*rot, *pos)
+                    * Mat4::from_translation(kart.hubs[k])
+                    * yaw
+                    * roll;
                 draws.push(Draw {
                     mesh,
                     model: m,
                     casts_shadow: true,
-                    tint,
+                    tint: [1.0; 3],
                 });
             }
         }
@@ -1585,8 +1743,8 @@ impl Game {
             draws.push(Draw {
                 mesh: &self.fx_meshes.orb_glow,
                 model: Mat4::from_scale_rotation_translation(
-                    Vec3::splat(1.6 / pulse),
-                    glam::Quat::IDENTITY,
+                    Vec3::splat(1.5 / pulse),
+                    glam::Quat::from_rotation_y(self.attract_t * 3.0),
                     orb.pos,
                 ),
                 casts_shadow: false,
@@ -1701,20 +1859,33 @@ impl Game {
         if matches!(self.session, Session::Attract) {
             let items = self.menu.items(&self.settings);
             let on_title = self.menu.screen == Screen::Title;
-            let title = on_title.then_some("SCRAPBURN");
+            let title = match self.menu.screen {
+                Screen::Garage => Some("GARAGE"),
+                Screen::Title => Some("SCRAPBURN"),
+                _ => None,
+            };
             let sub = match self.menu.screen {
+                Screen::Garage => "CHOOSE YOUR CHASSIS AND FINISH",
                 Screen::Title => "COMBAT KART RACING IN THE WASTES",
                 Screen::Online => "PLAY ONLINE",
                 Screen::Lobby => "LOBBY",
                 _ => "SETTINGS",
             };
-            hud::draw_menu(o, w, h, title, sub, &items, self.menu.selected);
+            self.menu_rows = Some((
+                self.menu.screen,
+                hud::draw_menu(o, w, h, title, sub, &items, self.menu.selected),
+            ));
             let n_tracks = scrapburn::track::TRACKS.len();
             match (&self.net, self.menu.screen) {
                 (_, Screen::Online) => {
                     let lines = [
                         format!("YOUR NAME  {}", self.player_name),
-                        "HOST, THEN SHARE YOUR IP OR TAILSCALE NAME".to_string(),
+                        if self.tunnel.is_some() {
+                            "OPEN YOUR INVITE FILE. ESC TO CANCEL"
+                        } else {
+                            "PRIVATE RACE INVITES WORK ACROSS NETWORKS"
+                        }
+                        .to_string(),
                         format!("UDP PORT {}", netplay::DEFAULT_PORT),
                         if self.menu.peers.is_empty() {
                             "NO TAILSCALE PEERS FOUND".to_string()
@@ -1727,7 +1898,18 @@ impl Game {
                 (Net::Host(host), Screen::Lobby) => {
                     let def = &scrapburn::track::TRACKS[self.settings.track % n_tracks];
                     let lines = [
-                        format!("HOSTING ON PORT {}", host.port()),
+                        if let Some(tunnel) = &self.tunnel {
+                            if tunnel.ready {
+                                "SHARE YOUR SAVED INVITE FILE"
+                            } else {
+                                "SAVE YOUR PRIVATE INVITE. ESC TO CANCEL"
+                            }
+                            .into()
+                        } else if host.is_loopback() {
+                            "PRIVATE INVITE IN THE HOST TERMINAL".into()
+                        } else {
+                            format!("HOSTING ON PORT {}", host.port())
+                        },
                         def.name.to_string(),
                         format!(
                             "{} PLAYERS  {} RACERS",
@@ -1763,7 +1945,14 @@ impl Game {
             if on_title {
                 let n = scrapburn::track::TRACKS.len();
                 let def = &scrapburn::track::TRACKS[self.settings.track % n];
-                hud::draw_track_card(o, w, h, self.settings.track % n, n, def.name, def.tagline);
+                hud::draw_track_card(
+                    o,
+                    w,
+                    h,
+                    self.settings.track % n,
+                    def,
+                    &self.track.centerline,
+                );
             }
         } else {
             let in_race = matches!(self.session, Session::Play(Mode::Race | Mode::Elimination));
@@ -1844,16 +2033,29 @@ impl Game {
             match self.menu.screen {
                 Screen::Paused => {
                     hud::dim(o, w, h);
-                    hud::draw_menu(o, w, h, None, "PAUSED", &items, self.menu.selected);
+                    self.menu_rows = Some((
+                        self.menu.screen,
+                        hud::draw_menu(o, w, h, None, "PAUSED", &items, self.menu.selected),
+                    ));
                 }
                 Screen::Settings => {
                     hud::dim(o, w, h);
-                    hud::draw_menu(o, w, h, None, "SETTINGS", &items, self.menu.selected);
+                    self.menu_rows = Some((
+                        self.menu.screen,
+                        hud::draw_menu(o, w, h, None, "SETTINGS", &items, self.menu.selected),
+                    ));
                 }
                 Screen::Results => {
-                    hud::draw_menu(o, w, h * 1.6, None, "", &items, self.menu.selected)
+                    self.menu_rows = Some((
+                        self.menu.screen,
+                        hud::draw_menu(o, w, h, None, "", &items, self.menu.selected),
+                    ));
                 }
-                Screen::Title | Screen::Playing | Screen::Online | Screen::Lobby => {}
+                Screen::Garage
+                | Screen::Title
+                | Screen::Playing
+                | Screen::Online
+                | Screen::Lobby => {}
             }
         }
         match (self.settings.fps, self.bench.is_some()) {
@@ -1907,6 +2109,30 @@ impl ApplicationHandler for App {
                 game.keys.clear();
                 if game.menu.screen == Screen::Playing && game.bench.is_none() {
                     game.menu.go(Screen::Paused);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let (x, y) = (position.x as f32, position.y as f32);
+                game.pointer = Some((x, y));
+                if let Some((screen, rows)) = &game.menu_rows
+                    && *screen == game.menu.screen
+                    && let Some(row) = rows.hit(x, y)
+                {
+                    game.menu.selected = row;
+                }
+            }
+            WindowEvent::CursorLeft { .. } => game.pointer = None,
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } if state.is_pressed() => {
+                if let Some((screen, rows)) = &game.menu_rows
+                    && *screen == game.menu.screen
+                    && let Some((x, y)) = game.pointer
+                    && let Some(row) = rows.hit(x, y)
+                {
+                    game.clicked = Some((*screen, row, rows.previous_at(row, x)));
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
