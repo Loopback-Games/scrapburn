@@ -826,8 +826,10 @@ mod tests {
 
     #[test]
     fn nails_stop_at_barriers() {
-        let t = track();
-        let mut r = duel(16.0);
+        let t = &crate::track::build_track(&crate::track::TRACKS[1]);
+        let mut r = Race::new(t, 2, true, 3);
+        r.phase = crate::race::Phase::Racing;
+        r.racers[1].bot = None;
         // Aim racer 0 straight at the left barrier, racer 1 just beyond it (other side).
         let c = t.centerline[40];
         let f = (t.centerline[41] - t.centerline[39]).normalize();

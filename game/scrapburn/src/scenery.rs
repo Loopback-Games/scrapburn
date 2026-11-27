@@ -22,7 +22,7 @@ pub struct PropKind {
     pub glow: f32,
 }
 
-pub const PROPS: [PropKind; 19] = [
+pub const PROPS: [PropKind; 24] = [
     PropKind {
         name: "skull_rock",
         size: 55.0,
@@ -156,6 +156,41 @@ pub const PROPS: [PropKind; 19] = [
         specular: 0.3,
         glow: 0.3,
     },
+    PropKind {
+        name: "solar_relay",
+        size: 42.0,
+        footprint: 0.5,
+        specular: 0.45,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "sky_freighter",
+        size: 58.0,
+        footprint: 0.5,
+        specular: 0.25,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "great_hall",
+        size: 42.0,
+        footprint: 0.5,
+        specular: 0.08,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "sail_mill",
+        size: 32.0,
+        footprint: 0.5,
+        specular: 0.07,
+        glow: 0.0,
+    },
+    PropKind {
+        name: "sandstone_window",
+        size: 39.0,
+        footprint: 0.5,
+        specular: 0.04,
+        glow: 0.0,
+    },
 ];
 
 fn kind(name: &str) -> usize {
@@ -231,7 +266,7 @@ pub fn track_features(track: &Track) -> Vec<Placement> {
     }
     let cl = &track.centerline;
     let n = cl.len() - 1;
-    [0.12, 0.3, 0.45, 0.62, 0.75, 0.9]
+    [0.12, 0.45, 0.75, 0.9]
         .into_iter()
         .map(|at: f32| {
             let i = (at * n as f32) as usize % n;
@@ -332,17 +367,17 @@ fn grindstone(track: &Track) -> Vec<Placement> {
         let face = yaw.unwrap_or_else(|| yaw_to(-r * lateral.signum()));
         out.push(place(name, p, face, scale));
     };
-    // Towers on the outside of the corners (the loop runs counter-clockwise: left is outside).
-    for (at, lat, sc) in [
-        (0.1, -30.0, 1.0),
-        (0.24, -32.0, 1.15),
-        (0.43, 30.0, 0.9),
-        (0.58, -30.0, 1.1),
-        (0.8, -31.0, 1.0),
-        (0.93, 30.0, 0.85),
-    ] {
-        put(&mut out, "castle_tower", at, lat, Some(at * 9.0), sc);
-    }
+    put(
+        &mut out,
+        "sail_mill",
+        0.075,
+        -35.0,
+        Some(yaw_to(frame(track, 0.075).1) - 0.85),
+        1.0,
+    );
+    put(&mut out, "great_hall", 0.43, 42.0, None, 1.0);
+    put(&mut out, "castle_tower", 0.24, -32.0, None, 1.15);
+    put(&mut out, "castle_tower", 0.80, -31.0, None, 0.85);
     // The gatehouse, looming over the drawbridge jump.
     put(&mut out, "gatehouse", 0.7, -36.0, None, 1.0);
     // Guardians flanking the start line.
@@ -382,10 +417,7 @@ fn grindstone(track: &Track) -> Vec<Placement> {
 /// Skyway Zero: neon arches over the deck, holo billboards, and pylons rising out of the haze.
 fn skyway(track: &Track) -> Vec<Placement> {
     let mut out = track_features(track);
-    for (k, at) in [0.06, 0.2, 0.37, 0.52, 0.68, 0.83, 0.95]
-        .into_iter()
-        .enumerate()
-    {
+    for (k, at) in [0.2, 0.37, 0.68, 0.95].into_iter().enumerate() {
         let side = if k % 2 == 0 { 1.0 } else { -1.0 };
         let (c, r) = frame(track, at);
         out.push(place(
@@ -395,9 +427,22 @@ fn skyway(track: &Track) -> Vec<Placement> {
             1.0,
         ));
     }
+    // Cruise above the launch straight. The relay hangs lower beside the far S-bends.
+    for (name, at, lateral, altitude) in [
+        ("sky_freighter", 0.065, -47.0, 8.0),
+        ("solar_relay", 0.52, 44.0, 1.0),
+    ] {
+        let (c, right) = frame(track, at);
+        out.push(place(
+            name,
+            c + right * lateral + Vec3::Y * altitude,
+            yaw_to(right) + 0.85,
+            1.0,
+        ));
+    }
     let mut rng = Rng(0x05c7_e1e0);
-    for k in 0..18 {
-        let at = k as f32 / 18.0 + rng.next() * 0.03;
+    for k in 0..6 {
+        let at = k as f32 / 6.0 + rng.next() * 0.03;
         let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
         let (c, r) = frame(track, at);
         let lat = side * (45.0 + rng.next() * 80.0);
@@ -435,6 +480,12 @@ fn dustbowl(track: &Track) -> Vec<Placement> {
         "skull_rock",
         Vec3::new(center.x - 10.0, 0.0, center.z + 25.0),
         3.6,
+        1.0,
+    );
+    put(
+        "sandstone_window",
+        beside(track, 0.09, -52.0),
+        yaw_to(frame(track, 0.09).1) - 1.05,
         1.0,
     );
     // Refinery outside the banked turn: tanks, pumpjacks nodding, barrels.
@@ -570,6 +621,8 @@ mod tests {
         let castle = names(1);
         for n in [
             "castle_tower",
+            "sail_mill",
+            "great_hall",
             "gatehouse",
             "guardian_statue",
             "siege_wagon",
@@ -580,7 +633,13 @@ mod tests {
         }
         assert!(!castle.contains(&"cactus"), "no cacti at the castle");
         let sky = names(2);
-        for n in ["neon_arch", "antenna_pylon", "billboard_frame"] {
+        for n in [
+            "neon_arch",
+            "antenna_pylon",
+            "billboard_frame",
+            "sky_freighter",
+            "solar_relay",
+        ] {
             assert!(sky.contains(&n), "skyway lacks {n}");
         }
         assert!(!sky.contains(&"skull_rock"));

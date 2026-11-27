@@ -22,6 +22,7 @@ const BANK_SMOOTHING: usize = 12;
 /// Texture repeat lengths (m).
 const WALL_TEX: f32 = 3.0;
 const CURB_WIDTH: f32 = 1.1;
+const SAND_SHOULDER_WIDTH: f32 = 8.0;
 const CURB_LIFT: f32 = 0.02;
 const WALL_BASE: f32 = 0.5;
 const PAD_LIFT: f32 = 0.04;
@@ -130,7 +131,7 @@ pub struct TrackStyle {
     pub barrier_low: Layer,
     pub barrier_high: Layer,
     pub barrier_tint: [f32; 4],
-    /// Visible barrier height (collision is always tall).
+    /// Visible barrier height. Zero opens the road onto a sandy shoulder.
     pub barrier_height: f32,
     /// Castle merlons along the barrier tops.
     pub crenellations: bool,
@@ -205,7 +206,7 @@ pub const TRACKS: [TrackDef; 3] = [
             barrier_low: Layer::Concrete,
             barrier_high: Layer::MetalRust,
             barrier_tint: [1.0, 0.95, 0.9, 0.0],
-            barrier_height: WALL_HEIGHT,
+            barrier_height: 0.0,
             crenellations: false,
             rail_glow: None,
             torches: false,
@@ -1016,7 +1017,7 @@ pub fn build_track(def: &TrackDef) -> Track {
         material(Layer::Concrete as u32, Layer::Concrete as u32, 0)
     };
     let wall_h = st.barrier_height;
-    let base_h = (WALL_BASE / WALL_HEIGHT) * wall_h;
+
     for i in 0..n {
         let (s0, s1) = (i as f32 * SAMPLE_SPACING, (i + 1) as f32 * SAMPLE_SPACING);
         let (_, _, _, u0) = frames[i];
@@ -1059,12 +1060,51 @@ pub fn build_track(def: &TrackDef) -> Track {
                 quad(&mut road, stripe, uv, st.curbs.1, curb_mat);
             }
 
+            if wall_h == 0.0 {
+                // Feather the bank and jump into the drivable valley floor.
+                let shoulder = |sample| {
+                    let mut p = edge(sample, side, -SAND_SHOULDER_WIDTH);
+                    p.y = terrain::FLAT_Y - 0.05;
+                    p
+                };
+                let mut v = [
+                    edge(i, side, 0.0),
+                    shoulder(i),
+                    shoulder(i + 1),
+                    edge(i + 1, side, 0.0),
+                ];
+                if side < 0.0 {
+                    v.reverse();
+                }
+                let uv = v.map(|p| [p.x / road_tex, p.z / road_tex]);
+                quad(
+                    &mut road,
+                    v,
+                    uv,
+                    [0.88, 0.73, 0.55, 0.0],
+                    material(Layer::Sand as u32, Layer::Sand as u32, 0),
+                );
+                col.quad(v, Surface::Offroad);
+                continue;
+            }
+
             // Barrier: concrete base, rusty metal above; faces the road.
             let (e0, e1) = (edge(i, side, 0.0), edge(i + 1, side, 0.0));
-            let (b0, b1) = (e0 + u0 * base_h, e1 + u1 * base_h);
-            let (t0, t1) = (e0 + u0 * wall_h, e1 + u1 * wall_h);
+            // Lower the parapet along the mill field and the great hall approach.
+            let parapet = |sample: usize| {
+                if def.id != TrackId::Grindstone {
+                    return wall_h;
+                }
+                let landmark = if side < 0.0 { 0.075 } else { 0.43 };
+                let distance = (sample as f32 / n as f32 - landmark).abs();
+                1.0 + (wall_h - 1.0) * ((distance - 0.035) / 0.025).clamp(0.0, 1.0)
+            };
+            let (h0, h1) = (parapet(i), parapet((i + 1) % n));
+            let ratio = WALL_BASE / WALL_HEIGHT;
+            let (b0, b1) = (e0 + u0 * (h0 * ratio), e1 + u1 * (h1 * ratio));
+            let (t0, t1) = (e0 + u0 * h0, e1 + u1 * h1);
             let (ua, ub) = (s0 / WALL_TEX, s1 / WALL_TEX);
-            let hb = base_h / WALL_TEX;
+            let hb = wall_h * ratio / WALL_TEX;
             let ht = wall_h / WALL_TEX;
             if side < 0.0 {
                 quad(
@@ -1126,7 +1166,7 @@ pub fn build_track(def: &TrackDef) -> Track {
                 quad(&mut road, [t0, c0, c1, t1], cap_uv, st.barrier_tint, metal);
             }
             // Castle merlons: a stone block every other segment on the wall top.
-            if st.crenellations && i % 2 == 0 {
+            if st.crenellations && h0 == wall_h && i % 2 == 0 {
                 let mid = (t0 + t1) * 0.5 + (r0 + r1) * 0.5 * side * 0.2 + (u0 + u1) * 0.25 * 0.55;
                 let f = (t1 - t0).normalize_or(Vec3::Z);
                 let rot = Quat::from_rotation_y(f.x.atan2(f.z));
@@ -1187,7 +1227,7 @@ pub fn build_track(def: &TrackDef) -> Track {
     let (sector, spacing, repeats) = match def.id {
         TrackId::Dustbowl => (0.16, 9, 3),
         TrackId::Grindstone => (0.39, 15, 2),
-        TrackId::Skyway => (0.09, 8, 7),
+        TrackId::Skyway => (0.09, 8, 3),
     };
     for k in 0..repeats {
         let (center, fwd, _, _) = frames[((n as f32 * sector) as usize + k * spacing) % n];
@@ -1392,23 +1432,22 @@ pub fn build_track(def: &TrackDef) -> Track {
     }
 
     if def.id == TrackId::Dustbowl {
-        for (i, &(c, _, side, _)) in frames.iter().enumerate().step_by(12) {
-            for sign in [-1.0, 1.0] {
-                let radius = 4.0 + rng.next() * 6.0;
-                let p = c + side * sign * (ROAD_HALF_WIDTH + radius + 5.0 + 23.0 * rng.next());
-                if terrain::distance_to(&centerline, p.x, p.z) < ROAD_HALF_WIDTH + radius + 3.0 {
-                    continue;
-                }
-                let floor = terrain::height_at(&centerline, p.x, p.z);
-                let height = radius * (1.4 + 2.1 * rng.next());
-                sandstone_pillar(
-                    &mut props,
-                    Vec3::new(p.x, floor, p.z),
-                    radius,
-                    height,
-                    i as u64 + u64::from(sign > 0.0) + 11,
-                );
+        for (i, &(c, _, side, _)) in frames.iter().enumerate().step_by(39) {
+            let sign = if (i / 39) % 2 == 0 { -1.0 } else { 1.0 };
+            let radius = 4.0 + rng.next() * 6.0;
+            let p = c + side * sign * (ROAD_HALF_WIDTH + radius + 36.0 + 41.0 * rng.next());
+            if terrain::distance_to(&centerline, p.x, p.z) < ROAD_HALF_WIDTH + radius + 3.0 {
+                continue;
             }
+            let floor = terrain::height_at(&centerline, p.x, p.z);
+            let height = radius * (1.4 + 2.1 * rng.next());
+            sandstone_pillar(
+                &mut props,
+                Vec3::new(p.x, floor, p.z),
+                radius,
+                height,
+                i as u64 + u64::from(sign > 0.0) + 11,
+            );
         }
     }
 
@@ -1537,7 +1576,12 @@ pub fn build_track(def: &TrackDef) -> Track {
         .map(|i| Checkpoint {
             center: frames[i].0,
             forward: frames[i].1,
-            half_width: ROAD_HALF_WIDTH + 0.5,
+            half_width: ROAD_HALF_WIDTH
+                + if wall_h == 0.0 {
+                    SAND_SHOULDER_WIDTH
+                } else {
+                    0.5
+                },
         })
         .collect();
 
@@ -1599,8 +1643,8 @@ mod tests {
     }
 
     #[test]
-    fn walls_present() {
-        let t = build_graybox_loop();
+    fn castle_walls_present() {
+        let t = build_track(&TRACKS[1]);
         // On the first straight, look sideways from the centerline toward both edges.
         let c = t.centerline[20];
         let fwd = (t.centerline[21] - t.centerline[19]).normalize();
@@ -1616,7 +1660,7 @@ mod tests {
 
     #[test]
     fn render_faces_point_up_and_inward() {
-        let t = build_graybox_loop();
+        let t = build_track(&TRACKS[1]);
         let center =
             t.centerline.iter().fold(Vec3::ZERO, |a, p| a + *p) / t.centerline.len() as f32;
         let m = &t.road;
@@ -1651,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn surfaces_road_offroad_wall() {
+    fn dustbowl_has_open_drivable_shoulders() {
         use rivet_physics::Surface;
         let t = build_graybox_loop();
         let c = t.centerline[20];
@@ -1675,8 +1719,14 @@ mod tests {
         );
         let fwd = (t.centerline[21] - t.centerline[19]).normalize();
         let right = fwd.cross(Vec3::Y).normalize();
-        let wall = t.collision.raycast(c + Vec3::Y * 0.5, right, 20.0).unwrap();
-        assert_eq!(wall.surface, Surface::Wall);
+        for side in [-right, right] {
+            assert!(
+                t.collision
+                    .raycast(c + Vec3::Y * 0.5, side, ROAD_HALF_WIDTH + 2.0)
+                    .is_none()
+            );
+            assert_eq!(down(c + side * (ROAD_HALF_WIDTH + 2.0)), Surface::Offroad);
+        }
     }
 
     #[test]
@@ -1749,7 +1799,7 @@ mod tests {
 
     #[test]
     fn barrier_collision_reaches_well_above_the_visible_wall() {
-        let t = build_graybox_loop();
+        let t = build_track(&TRACKS[2]);
         let c = t.centerline[20];
         let fwd = (t.centerline[21] - t.centerline[19]).normalize();
         let right = fwd.cross(Vec3::Y).normalize();
