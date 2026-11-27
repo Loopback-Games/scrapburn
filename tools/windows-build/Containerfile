@@ -1,0 +1,14 @@
+# Cross-compiles the Windows game binary (x86_64-pc-windows-gnu) with the MinGW-w64
+# toolchain (plus native gcc for build scripts). Used by `just package-windows` on Linux.
+FROM registry.fedoraproject.org/fedora:44@sha256:c2311603edaa76512f78e9edbb2b5b3903b3ad5bbc43a94ecb2e6c5c501d5f0c
+
+RUN dnf -y install gcc mingw64-gcc && dnf clean all
+
+ARG RUST
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH \
+    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST}" \
+        --target x86_64-pc-windows-gnu
+
+WORKDIR /src

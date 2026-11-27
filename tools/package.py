@@ -1,6 +1,9 @@
 """Build a native Scrapburn distribution. Run from the repository root.
 
-Usage: package.py [RELEASE_DIR]  (default: target/release)
+Usage: package.py [RELEASE_DIR] [--windows]
+
+RELEASE_DIR defaults to target/release. --windows packages a game binary that was
+cross-compiled for x86_64 Windows, building the helper for Windows to match.
 """
 
 import os
@@ -14,23 +17,32 @@ from pathlib import Path
 
 def main() -> None:
     root = Path.cwd()
-    release = root / (sys.argv[1] if len(sys.argv) > 1 else "target/release")
+    args = [a for a in sys.argv[1:] if a != "--windows"]
+    cross = "--windows" in sys.argv[1:]
+    windows = cross or os.name == "nt"
+    release = root / (args[0] if args else "target/release")
     dist = root / "target" / "dist"
     helper = root / "tools" / "tailcat"
     dist.mkdir(parents=True, exist_ok=True)
-    suffix = ".exe" if os.name == "nt" else ""
+    suffix = ".exe" if windows else ""
+    system = "windows" if cross else platform.system().lower()
+    machine = "x86_64" if cross else platform.machine().lower()
+    machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
+    # A pure-Go static binary has no glibc dependency at all.
+    go_env = {**os.environ, "CGO_ENABLED": "0"}
+    if cross:
+        go_env |= {"GOOS": "windows", "GOARCH": "amd64"}
     version = subprocess.check_output(
         ["git", "describe", "--tags", "--always", "--dirty"], text=True
     ).strip()
-    name = (
-        f"scrapburn-{version}-{platform.system().lower()}-{platform.machine().lower()}"
-    )
+    name = f"scrapburn-{version}-{system}-{machine}"
     with tempfile.TemporaryDirectory(dir=dist) as temporary:
         stage = Path(temporary) / name
         stage.mkdir()
         game = stage / f"scrapburn{suffix}"
         shutil.copy2(release / game.name, game)
-        if os.name != "nt" and shutil.which("strip"):
+        # The Windows cross build is already stripped by cargo.
+        if not windows and shutil.which("strip"):
             subprocess.run(["strip", game], check=True)
         go = ["mise", "exec", "--", "go"]
         subprocess.run(
@@ -45,8 +57,7 @@ def main() -> None:
             ],
             cwd=helper,
             check=True,
-            # A pure-Go static binary has no glibc dependency at all.
-            env={**os.environ, "CGO_ENABLED": "0"},
+            env=go_env,
         )
         assets = subprocess.check_output(
             [
@@ -81,6 +92,7 @@ def main() -> None:
             ],
             cwd=helper,
             text=True,
+            env=go_env,
         )
         goroot = subprocess.check_output(
             [*go, "env", "GOROOT"], cwd=helper, text=True
@@ -99,7 +111,7 @@ def main() -> None:
         archive = Path(
             shutil.make_archive(
                 str(Path(temporary) / name),
-                "zip" if os.name == "nt" else "gztar",
+                "zip" if windows else "gztar",
                 temporary,
                 name,
             )

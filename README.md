@@ -127,9 +127,13 @@ On Linux, `just package` compiles the game in a rootless podman container on Alm
 so the release needs only glibc 2.28 (Debian 10, Ubuntu 20.04, RHEL 8, any current Fedora)
 rather than the build host's glibc. The bundled helper is a static Go binary.
 
+`just package-windows` cross-compiles a Windows x86_64 `.zip` from Linux the same way,
+with MinGW-w64 in a podman container. On Windows itself, `just package` builds natively.
+
 ```sh
-just package # release build + assets as target/dist/scrapburn-<version>-linux-x86_64.tar.gz
-just ci      # fmt check, clippy, tests, cargo-audit and cargo-deny, release build
+just package         # target/dist/scrapburn-<version>-linux-x86_64.tar.gz
+just package-windows # target/dist/scrapburn-<version>-windows-x86_64.zip
+just ci              # fmt check, clippy, tests, cargo-audit and cargo-deny, release build
 ```
 
 ## The engine
