@@ -27,8 +27,32 @@ run *ARGS:
     cargo run -p scrapburn --release -- {{ARGS}}
 
 # Ship the game, private-race helper and assets together.
+[linux]
+package: build-portable
+    python3 tools/package.py target/portable/release
+
+# Ship the game, private-race helper and assets together.
+[macos]
 package: build
-    {{ if os() == "windows" { "python" } else { "python3" } }} tools/package.py
+    python3 tools/package.py
+
+# Ship the game, private-race helper and assets together.
+[windows]
+package: build
+    python tools/package.py
+
+# Release build against glibc 2.28 (AlmaLinux 8) in rootless podman, so the binary
+# runs on older distributions than the build host.
+[linux]
+build-portable:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rust="$(mise current rust)"
+    image="localhost/scrapburn-linux-build:${rust}"
+    podman build -q --build-arg RUST="${rust}" -t "${image}" tools/linux-build >/dev/null
+    podman volume exists scrapburn-cargo-registry || podman volume create scrapburn-cargo-registry >/dev/null
+    podman run --rm -v "$PWD":/src:z -v scrapburn-cargo-registry:/opt/cargo/registry \
+        "${image}" cargo build -p scrapburn --release --target-dir target/portable
 
 # Open a private lobby and print an invite.
 [working-directory: 'tools/tailcat']

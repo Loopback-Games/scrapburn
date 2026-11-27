@@ -1,0 +1,14 @@
+# Builds the Linux game binary against glibc 2.28 (AlmaLinux 8), so the release runs on
+# distributions back to Debian 10, Ubuntu 20.04 and RHEL 8 instead of only on the
+# build host's glibc. Used by `just package` on Linux.
+FROM docker.io/library/almalinux:8@sha256:768bedc30fe0a536adb0a65d2eddb7caad364e514fbddd0ae9e026975f590342
+
+RUN dnf -y install gcc alsa-lib-devel systemd-devel pkgconf-pkg-config \
+    && dnf clean all
+
+ARG RUST
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST}"
+
+WORKDIR /src

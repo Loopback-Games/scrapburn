@@ -123,6 +123,10 @@ Linux builds need libudev and ALSA headers (`libudev-dev` and `libasound2-dev`, 
 `systemd-devel` and `alsa-lib-devel`, or Homebrew `systemd` and `alsa-lib`). The workspace
 also type-checks for Windows (`cargo check --target x86_64-pc-windows-gnu`).
 
+On Linux, `just package` compiles the game in a rootless podman container on AlmaLinux 8,
+so the release needs only glibc 2.28 (Debian 10, Ubuntu 20.04, RHEL 8, any current Fedora)
+rather than the build host's glibc. The bundled helper is a static Go binary.
+
 ```sh
 just package # release build + assets as target/dist/scrapburn-<version>-linux-x86_64.tar.gz
 just ci      # fmt check, clippy, tests, cargo-audit and cargo-deny, release build

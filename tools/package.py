@@ -1,16 +1,20 @@
-"""Build a native Scrapburn distribution. Run from the repository root."""
+"""Build a native Scrapburn distribution. Run from the repository root.
+
+Usage: package.py [RELEASE_DIR]  (default: target/release)
+"""
 
 import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 
 def main() -> None:
     root = Path.cwd()
-    release = root / "target" / "release"
+    release = root / (sys.argv[1] if len(sys.argv) > 1 else "target/release")
     dist = root / "target" / "dist"
     helper = root / "tools" / "tailcat"
     dist.mkdir(parents=True, exist_ok=True)
@@ -41,6 +45,8 @@ def main() -> None:
             ],
             cwd=helper,
             check=True,
+            # A pure-Go static binary has no glibc dependency at all.
+            env={**os.environ, "CGO_ENABLED": "0"},
         )
         assets = subprocess.check_output(
             [
