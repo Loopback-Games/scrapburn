@@ -346,6 +346,9 @@ pub struct Checkpoint {
     pub center: Vec3,
     pub forward: Vec3,
     pub half_width: f32,
+    /// Index of `center` in `Track::centerline` (race order between checkpoints follows the
+    /// centerline, not straight-line distance).
+    pub line: usize,
 }
 
 pub struct Track {
@@ -354,6 +357,9 @@ pub struct Track {
     pub name: &'static str,
     pub box_rows: Vec<f32>,
     pub terrain_kind: TerrainKind,
+    /// Barriers line the whole road, so nothing beyond them can be reached. When false (the
+    /// Dustbowl's open sand), karts can drive out to any prop.
+    pub walled: bool,
     /// Below this height a kart has fallen off and respawns.
     pub fall_y: f32,
     /// Where live fire burns (torch tops), for flame particles.
@@ -373,6 +379,8 @@ pub struct Track {
     pub spawn: (Vec3, f32),
     pub rocks: Vec<Vec3>,
     pub boost_pads: Vec<Vec3>,
+    /// Solid props and structures (walled into `collision`; rocks are in it as meshes).
+    pub solids: Vec<Solid>,
 }
 
 fn catmull_rom(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t: f32) -> Vec2 {
@@ -450,6 +458,63 @@ impl Collision {
         self.indices.extend([[b, b + 1, b + 2], [b, b + 2, b + 3]]);
         self.surfaces.extend([surface, surface]);
     }
+
+    /// Walls around a solid obstacle, sunk into the ground so uneven terrain leaves no gap
+    /// underneath. No cap: nothing should land on top, and a cap would read as ground.
+    fn solid(&mut self, s: &Solid) {
+        let sink = s.up * SOLID_SINK;
+        let rise = s.up * (s.height + SOLID_SINK);
+        for (k, a) in s.base.iter().enumerate() {
+            let b = s.base[(k + 1) % s.base.len()];
+            let (a, b) = (*a - sink, b - sink);
+            self.quad([a, b, b + rise, a + rise], Surface::Wall);
+        }
+    }
+}
+
+/// How far below its base a solid obstacle's walls reach (m): a wide prop on a dune can stand
+/// meters above the sand at its edges.
+const SOLID_SINK: f32 = 6.0;
+
+/// A solid obstacle karts bump off like a barrier: walls raised `height` along `up` from the
+/// closed outline `base`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Solid {
+    pub base: Vec<Vec3>,
+    pub up: Vec3,
+    pub height: f32,
+}
+
+impl Solid {
+    /// Horizontal distance from `p` to the outline's edges (zero or more; inside counts as
+    /// the distance to the nearest edge too).
+    pub fn edge_distance_xz(&self, p: Vec3) -> f32 {
+        let q = Vec2::new(p.x, p.z);
+        let n = self.base.len();
+        (0..n)
+            .map(|k| {
+                let (a, b) = (self.base[k], self.base[(k + 1) % n]);
+                let (a, b) = (Vec2::new(a.x, a.z), Vec2::new(b.x, b.z));
+                let ab = b - a;
+                let t = ((q - a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+                (a + ab * t).distance(q)
+            })
+            .fold(f32::MAX, f32::min)
+    }
+
+    /// An upright box standing on `xf`'s origin plane: `center` and `half` (x, z) in `xf`'s
+    /// space, `height` along its Y axis.
+    fn upright_box(xf: Mat4, center: Vec3, half: Vec2, height: f32) -> Self {
+        let base = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+            .map(|(sx, sz)| xf.transform_point3(center + Vec3::new(sx * half.x, 0.0, sz * half.y)))
+            .to_vec();
+        let rise = xf.transform_vector3(Vec3::Y * height);
+        Self {
+            base,
+            up: rise.normalize_or(Vec3::Y),
+            height: rise.length(),
+        }
+    }
 }
 
 /// Appends a quad with per-corner UVs and colors.
@@ -514,8 +579,198 @@ fn emissive_box(m: &mut MeshData, half: Vec3, xf: Mat4, color: [f32; 3]) {
     m.append(&b);
 }
 
-/// Architecture along one sector of each circuit. All supports sit beyond the barriers.
-fn sector_structure(mesh: &mut MeshData, def: &TrackDef, frame: Mat4) {
+/// How far below Skyway's lowest deck the cloud sheet's base lies (m); the billows rise at
+/// most 85 m (in practice about 70) from there.
+const CLOUD_DEPTH: f32 = 112.0;
+
+/// Smooth value noise in 0..1 at `(x, z)` (cells one unit wide).
+fn value_noise(x: f32, z: f32, seed: u32) -> f32 {
+    let hash = |i: i32, j: i32| {
+        let mut h = (i as u32).wrapping_mul(0x8da6_b343) ^ (j as u32).wrapping_mul(0xd816_3841);
+        h = (h ^ seed).wrapping_mul(0x9e37_79b9);
+        h ^= h >> 15;
+        (h & 0xffff) as f32 / 65535.0
+    };
+    let (i, j) = (x.floor() as i32, z.floor() as i32);
+    let (fx, fz) = (x - x.floor(), z - z.floor());
+    let (sx, sz) = (fx * fx * (3.0 - 2.0 * fx), fz * fz * (3.0 - 2.0 * fz));
+    let top = hash(i, j) + (hash(i + 1, j) - hash(i, j)) * sx;
+    let bottom = hash(i, j + 1) + (hash(i + 1, j + 1) - hash(i, j + 1)) * sx;
+    top + (bottom - top) * sz
+}
+
+/// Height (m above the cloud base) of the billowing cloud tops at `(x, z)`.
+fn cloud_height(x: f32, z: f32) -> f32 {
+    let n = value_noise(x / 300.0, z / 300.0, 1) * 0.5
+        + value_noise(x / 110.0, z / 110.0, 2) * 0.32
+        + value_noise(x / 46.0, z / 46.0, 3) * 0.18;
+    // Rounded billows: flat-ish valleys, swelling tops.
+    n * n * n * 85.0
+}
+
+/// A lumpy sheet of cloud reaching far past the circuit, lit by the moon and fading into the
+/// fog at the horizon. Its tops are at most `base` + 85 m (in practice about 70).
+fn cloud_sea(m: &mut MeshData, lo: Vec2, hi: Vec2, base: f32) {
+    const CELL: f32 = 24.0;
+    const MARGIN: f32 = 1900.0;
+    let (x0, z0) = (lo.x - MARGIN, lo.y - MARGIN);
+    let nx = ((hi.x - lo.x + 2.0 * MARGIN) / CELL) as usize + 1;
+    let nz = ((hi.y - lo.y + 2.0 * MARGIN) / CELL) as usize + 1;
+    let mat = material(0, 0, UNTEXTURED);
+    let first = m.vertices.len() as u32;
+    for j in 0..=nz {
+        for i in 0..=nx {
+            let (x, z) = (x0 + i as f32 * CELL, z0 + j as f32 * CELL);
+            let h = cloud_height(x, z);
+            let dx = cloud_height(x + 2.0, z) - cloud_height(x - 2.0, z);
+            let dz = cloud_height(x, z + 2.0) - cloud_height(x, z - 2.0);
+            let normal = Vec3::new(-dx, 4.0, -dz).normalize();
+            // Deep indigo in the hollows, moonlit lavender on the tops, a touch of magenta
+            // between.
+            let t = (h / 26.0).clamp(0.0, 1.0);
+            let c = if t < 0.5 {
+                Vec3::new(0.1, 0.08, 0.24).lerp(Vec3::new(0.34, 0.2, 0.46), t * 2.0)
+            } else {
+                Vec3::new(0.34, 0.2, 0.46).lerp(Vec3::new(0.7, 0.68, 0.9), t * 2.0 - 1.0)
+            };
+            m.vertices.push(Vertex {
+                pos: [x, base + h, z],
+                normal: normal.to_array(),
+                uv: [0.0, 0.0],
+                color: [c.x, c.y, c.z, 1.0],
+                material: mat,
+            });
+        }
+    }
+    let row = nx as u32 + 1;
+    for j in 0..nz as u32 {
+        for i in 0..nx as u32 {
+            let a = first + j * row + i;
+            m.indices
+                .extend([a, a + row, a + 1, a + 1, a + row, a + row + 1]);
+        }
+    }
+}
+
+/// Where along the lap Skyway's billboards stand.
+const BILLBOARD_AT: [f32; crate::posters::COUNT] = [0.04, 0.16, 0.28, 0.4, 0.52, 0.64, 0.76, 0.88];
+
+/// Skyway's billboards: the posters, self-lit in neon frames on legs down into the clouds,
+/// beside the deck on the outside of each bend and angled toward oncoming karts.
+fn skyway_billboards(m: &mut MeshData, frames: &[(Vec3, Vec3, Vec3, Vec3)], centerline: &[Vec3]) {
+    const HALF: Vec2 = Vec2::new(6.0, 3.0);
+    let n = frames.len();
+    for (k, &at) in BILLBOARD_AT.iter().enumerate() {
+        let i = (at * n as f32) as usize % n;
+        let (c, f, _, _) = frames[i];
+        let ahead = frames[(i + 12) % n].1;
+        let flat_f = Vec3::new(f.x, 0.0, f.z).normalize();
+        let right = flat_f.cross(Vec3::Y).normalize();
+        // The outside of the coming bend; the other side if that one is crowded.
+        let turn = flat_f.cross(ahead).y;
+        let preferred = if turn > 0.0 { 1.0 } else { -1.0 };
+        let Some((side, center)) = [preferred, -preferred].into_iter().find_map(|side| {
+            let center = c + right * side * 16.0 + Vec3::Y * (HALF.y + 4.0);
+            let clear = (-1..=1).all(|e| {
+                let p = center + flat_f * (e as f32 * HALF.x);
+                terrain::distance_to(centerline, p.x, p.z) > ROAD_HALF_WIDTH + 5.0
+            });
+            clear.then_some((side, center))
+        }) else {
+            continue;
+        };
+        // Face back down the road, turned 35 degrees in toward it.
+        let toward_road = -right * side;
+        let normal = (-flat_f * 35f32.to_radians().cos() + toward_road * 35f32.to_radians().sin())
+            .normalize();
+        let xf = Mat4::from_rotation_translation(
+            Quat::from_rotation_y(normal.x.atan2(normal.z)),
+            center,
+        );
+        let neon = if k % 2 == 0 {
+            [0.09, 0.81, 0.98]
+        } else {
+            [0.98, 0.12, 0.55]
+        };
+        let steel = [0.26, 0.28, 0.38];
+        // The board's back and its legs, down into the clouds.
+        textured_box(
+            m,
+            Vec3::new(HALF.x + 0.4, HALF.y + 0.4, 0.25),
+            xf * Mat4::from_translation(Vec3::new(0.0, 0.0, -0.3)),
+            Layer::TechPanel,
+            steel,
+        );
+        let depth = center.y - HALF.y + 140.0;
+        for x in [-HALF.x * 0.6, HALF.x * 0.6] {
+            textured_box(
+                m,
+                Vec3::new(0.35, depth * 0.5, 0.35),
+                xf * Mat4::from_translation(Vec3::new(x, -HALF.y - depth * 0.5, -0.3)),
+                Layer::TechPanel,
+                steel,
+            );
+        }
+        // The poster, self-lit.
+        let [u0, v0, u1, v1] = crate::posters::uv_rect(k);
+        let corner = |x: f32, y: f32| xf.transform_point3(Vec3::new(x, y, -0.02));
+        quad(
+            m,
+            [
+                corner(-HALF.x, -HALF.y),
+                corner(HALF.x, -HALF.y),
+                corner(HALF.x, HALF.y),
+                corner(-HALF.x, HALF.y),
+            ],
+            [[u0, v1], [u1, v1], [u1, v0], [u0, v0]],
+            // Dimmed a little: self-lit art blooms out to white at full brightness.
+            [0.62, 0.62, 0.62, 0.0],
+            material(Layer::Posters as u32, Layer::Posters as u32, EMISSIVE),
+        );
+        // A neon frame.
+        for (half, at) in [
+            (
+                Vec3::new(HALF.x + 0.3, 0.09, 0.09),
+                Vec3::new(0.0, HALF.y + 0.2, 0.0),
+            ),
+            (
+                Vec3::new(HALF.x + 0.3, 0.09, 0.09),
+                Vec3::new(0.0, -HALF.y - 0.2, 0.0),
+            ),
+            (
+                Vec3::new(0.09, HALF.y + 0.3, 0.09),
+                Vec3::new(HALF.x + 0.2, 0.0, 0.0),
+            ),
+            (
+                Vec3::new(0.09, HALF.y + 0.3, 0.09),
+                Vec3::new(-HALF.x - 0.2, 0.0, 0.0),
+            ),
+        ] {
+            emissive_box(m, half, xf * Mat4::from_translation(at), neon);
+        }
+    }
+}
+
+/// Architecture along one sector of each circuit. All supports sit beyond the barriers (on the
+/// Dustbowl, on the open shoulder) and are solid.
+fn sector_structure(mesh: &mut MeshData, solids: &mut Vec<Solid>, def: &TrackDef, frame: Mat4) {
+    // The uprights: offset from the center line, foot height, posts along the road, half
+    // extents, height.
+    let (x, foot, posts, half, height): (f32, f32, &[f32], Vec2, f32) = match def.id {
+        TrackId::Dustbowl => (9.0, -1.0, &[-1.5, 1.5], Vec2::splat(0.21), 10.0),
+        TrackId::Grindstone => (9.6, -1.5, &[0.0], Vec2::new(1.6, 1.9), 13.9),
+        TrackId::Skyway => (9.0, -2.0, &[0.0], Vec2::new(0.4, 0.52), 7.5),
+    };
+    for sign in [-1.0_f32, 1.0] {
+        for &z in posts {
+            solids.push(Solid::upright_box(
+                frame,
+                Vec3::new(sign * x, foot, z),
+                half,
+                height,
+            ));
+        }
+    }
     let block = |m: &mut MeshData, a: Vec3, b: Vec3, width, depth, layer, color| {
         let span = b - a;
         let transform = Mat4::from_rotation_translation(
@@ -640,8 +895,21 @@ fn sector_structure(mesh: &mut MeshData, def: &TrackDef, frame: Mat4) {
     }
 }
 
-/// A scrap-metal checkpoint built into the canyon. The cloth hangs in torn strips.
-fn canyon_gate(mesh: &mut MeshData, frame: Mat4) {
+/// How far the canyon gate's towers stand from the road's center (m). They are solid, and the
+/// gate sits just past the crest where karts land wide, so they keep well clear of the edge.
+const GATE_X: f32 = 13.0;
+
+/// A scrap-metal checkpoint built into the canyon. The cloth hangs in torn strips. Its two
+/// rock-and-steel towers are solid; the cloth and the truss overhead are out of reach.
+fn canyon_gate(mesh: &mut MeshData, solids: &mut Vec<Solid>, frame: Mat4) {
+    for x in [-GATE_X, GATE_X] {
+        solids.push(Solid::upright_box(
+            frame,
+            Vec3::new(x, -1.0, 0.0),
+            Vec2::new(2.4, 2.9),
+            16.0,
+        ));
+    }
     let steel = [0.67, 0.55, 0.46];
     let girder = |m: &mut MeshData, a: Vec3, b: Vec3, r: f32| {
         let axis = b - a;
@@ -657,7 +925,7 @@ fn canyon_gate(mesh: &mut MeshData, frame: Mat4) {
             steel,
         );
     };
-    for x in [-10.0, 10.0] {
+    for x in [-GATE_X, GATE_X] {
         let mount = |y| frame * Mat4::from_translation(Vec3::new(x, y, 0.0));
         textured_box(
             mesh,
@@ -693,13 +961,14 @@ fn canyon_gate(mesh: &mut MeshData, frame: Mat4) {
     for y in [12.7, 14.3] {
         girder(
             mesh,
-            Vec3::new(-11.8, y, 0.0),
-            Vec3::new(11.8, y, 0.0),
+            Vec3::new(-(GATE_X + 1.8), y, 0.0),
+            Vec3::new(GATE_X + 1.8, y, 0.0),
             0.16,
         );
     }
+    let lacing = (GATE_X + 1.4) * 2.0 / 12.0;
     for i in 0..12 {
-        let x = -11.4 + i as f32 * 1.9;
+        let x = -(GATE_X + 1.4) + i as f32 * lacing;
         let (y0, y1) = if i % 2 == 0 {
             (12.7, 14.3)
         } else {
@@ -708,7 +977,7 @@ fn canyon_gate(mesh: &mut MeshData, frame: Mat4) {
         girder(
             mesh,
             Vec3::new(x, y0, 0.0),
-            Vec3::new(x + 1.9, y1, 0.0),
+            Vec3::new(x + lacing, y1, 0.0),
             0.11,
         );
     }
@@ -956,6 +1225,8 @@ pub fn build_track(def: &TrackDef) -> Track {
 
     let mut road = MeshData::default();
     let mut col = Collision::default();
+    // Solid structures, walled into the collision mesh once everything is placed.
+    let mut solids: Vec<Solid> = Vec::new();
     let mut flames = Vec::new();
     let road_mat = material(st.road as u32, st.road_edge.unwrap_or(st.road) as u32, 0);
     let road_tex = st.road_tex;
@@ -1253,7 +1524,7 @@ pub fn build_track(def: &TrackDef) -> Track {
         let (center, fwd, _, _) = frames[((n as f32 * sector) as usize + k * spacing) % n];
         let frame =
             Mat4::from_rotation_translation(Quat::from_rotation_y(fwd.x.atan2(fwd.z)), center);
-        sector_structure(&mut road, def, frame);
+        sector_structure(&mut road, &mut solids, def, frame);
         if def.id == TrackId::Grindstone {
             castle::gate_standards(&mut road, frame);
         }
@@ -1275,10 +1546,11 @@ pub fn build_track(def: &TrackDef) -> Track {
     if def.id == TrackId::Dustbowl {
         let at = 0.83;
         let (c, f, right, _) = frames[(n as f32 * at) as usize];
-        flames.push(c + right * 8.4 + Vec3::Y * 5.9);
-        flames.push(c - right * 8.4 + Vec3::Y * 5.9);
+        flames.push(c + right * (GATE_X - 1.6) + Vec3::Y * 5.9);
+        flames.push(c - right * (GATE_X - 1.6) + Vec3::Y * 5.9);
         canyon_gate(
             &mut road,
+            &mut solids,
             Mat4::from_rotation_translation(Quat::from_rotation_y(f.x.atan2(f.z)), c),
         );
     }
@@ -1315,6 +1587,12 @@ pub fn build_track(def: &TrackDef) -> Track {
         let rot = Quat::from_rotation_y(yaw);
         for side in [-1.0f32, 1.0] {
             let p = c + r * side * (ROAD_HALF_WIDTH + 1.2) + Vec3::Y * 3.5;
+            solids.push(Solid::upright_box(
+                Mat4::from_rotation_translation(rot, p),
+                Vec3::Y * -4.0,
+                Vec2::splat(0.45),
+                8.0,
+            ));
             textured_box(
                 &mut road,
                 Vec3::new(0.45, 4.0, 0.45),
@@ -1466,8 +1744,8 @@ pub fn build_track(def: &TrackDef) -> Track {
         rocks.push(pos);
     }
 
-    let canyon =
-        (def.id == TrackId::Dustbowl).then(|| canyon::Canyon::build(&mut props, &centerline));
+    let canyon = (def.id == TrackId::Dustbowl)
+        .then(|| canyon::Canyon::build(&mut props, &mut solids, &centerline));
     if def.id == TrackId::Dustbowl {
         for (i, &(c, _, side, _)) in frames.iter().enumerate().step_by(39) {
             let sign = if (i / 39) % 2 == 0 { -1.0 } else { 1.0 };
@@ -1559,58 +1837,17 @@ pub fn build_track(def: &TrackDef) -> Track {
                 [0.15, 0.85, 1.0],
             );
         }
-        // The city: lit skyscrapers far below, clear of the road's footprint.
+        // A sea of clouds far below, catching the moonlight; the pylons sink into it.
         let low = centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min);
-        let mut rng = Rng(0x000c_17e5);
-        let (mut towers, mut tries) = (0, 0);
-        while towers < 70 && tries < 4000 {
-            tries += 1;
-            let x = lo.x - 200.0 + rng.next() * (hi.x - lo.x + 400.0);
-            let z = lo.y - 200.0 + rng.next() * (hi.y - lo.y + 400.0);
-            if terrain::distance_to(&centerline, x, z) < 22.0 {
-                continue;
-            }
-            let (hx, hz) = (8.0 + rng.next() * 10.0, 8.0 + rng.next() * 10.0);
-            let top = low - 18.0 - rng.next() * 55.0;
-            let bottom = low - 220.0;
-            let h = (top - bottom) * 0.5;
-            let rot = Quat::from_rotation_y((rng.next() * 4.0).floor() * 0.4);
-            let warmth = rng.next();
-            let tint = [0.3 + 0.12 * warmth, 0.31, 0.4 - 0.1 * warmth];
-            let mut b = box_mesh(Vec3::new(hx, h, hz), [tint[0], tint[1], tint[2], 1.0]);
-            let xf = Mat4::from_rotation_translation(rot, Vec3::new(x, bottom + h, z));
-            for v in &mut b.vertices {
-                v.pos = xf.transform_point3(Vec3::from_array(v.pos)).to_array();
-                v.normal = xf
-                    .transform_vector3(Vec3::from_array(v.normal))
-                    .normalize()
-                    .to_array();
-                v.material = material(
-                    Layer::CityFacade as u32,
-                    Layer::CityFacade as u32,
-                    TRIPLANAR_B | EMISSIVE,
-                );
-            }
-            road.append(&b);
-            // A red aircraft beacon on every third roof.
-            if towers % 3 == 0 {
-                emissive_box(
-                    &mut road,
-                    Vec3::splat(0.6),
-                    Mat4::from_translation(Vec3::new(x, top + 0.6, z)),
-                    [1.0, 0.1, 0.15],
-                );
-            }
-            towers += 1;
-        }
+        cloud_sea(&mut road, lo, hi, low - CLOUD_DEPTH);
+        skyway_billboards(&mut road, &frames, &centerline);
     }
-
-    let collision = TriMesh::with_surfaces(col.positions, col.indices, col.surfaces, 8.0);
 
     let every = (CHECKPOINT_SPACING / SAMPLE_SPACING).round() as usize;
     let checkpoints = (0..n)
         .step_by(every)
         .map(|i| Checkpoint {
+            line: i,
             center: frames[i].0,
             forward: frames[i].1,
             half_width: ROAD_HALF_WIDTH
@@ -1625,25 +1862,36 @@ pub fn build_track(def: &TrackDef) -> Track {
     let (sp, sf, _, _) = frames[n - 2];
     let spawn = (sp, sf.x.atan2(sf.z));
 
-    Track {
+    let mut track = Track {
         canyon,
         id: def.id,
         name: def.name,
         box_rows: def.box_rows.to_vec(),
         terrain_kind: st.terrain,
+        walled: wall_h > 0.0,
         fall_y: centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min) - 12.0,
         flames,
         road,
         terrain: terrain_mesh,
         props,
-        collision,
+        // Placed props need the finished track; collision is built just below.
+        collision: TriMesh::new(Vec::new(), Vec::new(), 8.0),
         centerline,
         road_up,
         checkpoints,
         spawn,
         rocks,
         boost_pads,
+        solids: Vec::new(),
+    };
+    // Every solid prop collides, so online players agree on the course.
+    solids.extend(crate::scenery::solids(&track));
+    for s in &solids {
+        col.solid(s);
     }
+    track.collision = TriMesh::with_surfaces(col.positions, col.indices, col.surfaces, 8.0);
+    track.solids = solids;
+    track
 }
 
 #[cfg(test)]
@@ -1849,6 +2097,46 @@ mod tests {
     }
 
     #[test]
+    fn nothing_solid_stands_on_the_road() {
+        // Solid props and structures stand beside the road, never on it: a ray across the deck
+        // at kart height reaches the edge without hitting anything.
+        for def in TRACKS.iter() {
+            let t = build_track(def);
+            let n = t.centerline.len() - 1;
+            for i in 0..n {
+                let fwd = (t.centerline[i + 1] - t.centerline[(i + n - 1) % n]).normalize();
+                let up = t.road_up[i];
+                let right = fwd.cross(up).normalize();
+                for side in [-1.0, 1.0] {
+                    let hit = t.collision.raycast(
+                        t.centerline[i] + up * 1.0,
+                        right * side,
+                        ROAD_HALF_WIDTH - 0.2,
+                    );
+                    assert!(hit.is_none(), "{}: obstacle on the road at {i}", def.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dustbowl_gantry_is_solid() {
+        // The open circuit has no barrier: the start gantry's pillars stop a kart themselves.
+        let t = build_track(&TRACKS[0]);
+        let n = t.centerline.len() - 1;
+        let (c, f) = (t.centerline[0], t.centerline[1] - t.centerline[n - 1]);
+        let right = f.normalize().cross(Vec3::Y).normalize();
+        for side in [-1.0, 1.0] {
+            let hit = t
+                .collision
+                .raycast(c + Vec3::Y, right * side, 12.0)
+                .expect("a gantry pillar beside the start line");
+            assert_eq!(hit.surface, Surface::Wall);
+            assert!((hit.t - (ROAD_HALF_WIDTH + 0.75)).abs() < 0.3, "{}", hit.t);
+        }
+    }
+
+    #[test]
     fn roads_have_no_steps() {
         // Ramps and crests climb under 0.8 m per 2 m sample; a bank that flips at a spline
         // control point used to lift the road by meters in one sample.
@@ -1922,31 +2210,60 @@ mod tests {
     }
 
     #[test]
-    fn skyway_has_a_lit_city_far_below() {
+    fn skyway_floats_over_a_sea_of_clouds() {
         let t = build_track(&TRACKS[2]);
         let low = t.centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min);
+        let cloud = material(0, 0, UNTEXTURED);
+        let clouds: Vec<_> = t
+            .road
+            .vertices
+            .iter()
+            .filter(|v| v.material == cloud && v.pos[1] < low - 1.0)
+            .collect();
+        assert!(clouds.len() > 10_000, "{} cloud verts", clouds.len());
+        assert!(
+            clouds.iter().all(|v| v.pos[1] < low - 30.0),
+            "every cloud top stays below the deck: low {low}, highest {:?}",
+            clouds
+                .iter()
+                .map(|v| v.pos)
+                .max_by(|a, b| a[1].total_cmp(&b[1]))
+        );
         let city = material(
             Layer::CityFacade as u32,
             Layer::CityFacade as u32,
             TRIPLANAR_B | EMISSIVE,
         );
-        let towers: Vec<_> = t
+        assert!(
+            !t.road.vertices.iter().any(|v| v.material == city),
+            "the city is gone"
+        );
+    }
+
+    #[test]
+    fn skyway_shows_every_poster_clear_of_the_road() {
+        let t = build_track(&TRACKS[2]);
+        let poster = material(Layer::Posters as u32, Layer::Posters as u32, EMISSIVE);
+        let corners: Vec<_> = t
             .road
             .vertices
             .iter()
-            .filter(|v| v.material == city)
+            .filter(|v| v.material == poster)
             .collect();
-        assert!(
-            towers.len() >= 24 * 40,
-            "at least 40 towers ({} verts)",
-            towers.len()
+        assert_eq!(
+            corners.len(),
+            4 * crate::posters::COUNT,
+            "every poster stands"
         );
-        assert!(
-            towers.iter().all(|v| v.pos[1] < low - 12.0),
-            "all below the deck"
-        );
+        for v in &corners {
+            let d = terrain::distance_to(&t.centerline, v.pos[0], v.pos[2]);
+            assert!(
+                d > ROAD_HALF_WIDTH + 2.0,
+                "a poster corner {d} m from the road"
+            );
+        }
         let d = build_track(&TRACKS[0]);
-        assert!(!d.road.vertices.iter().any(|v| v.material == city));
+        assert!(!d.road.vertices.iter().any(|v| v.material == poster));
     }
 
     #[test]

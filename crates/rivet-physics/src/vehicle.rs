@@ -8,7 +8,7 @@ use glam::{Quat, Vec3};
 /// One tick of player or bot intent.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DriveInput {
-    /// 0..1
+    /// 0..1; drives forward, or (without brake) stops the kart rolling backwards.
     pub throttle: f32,
     /// 0..1; brakes while moving forward, reverses when nearly stopped.
     pub brake: f32,
@@ -66,10 +66,12 @@ pub struct VehicleParams {
     /// Drift boost tiers, ascending by charge.
     pub boost_tiers: [BoostTier; 3],
     pub boost_pad: BoostTier,
-    /// Top speed multiplier when fully on offroad surfaces.
+    /// Top speed multiplier at the full offroad penalty.
     pub offroad_speed_scale: f32,
-    /// Deceleration (m/s²) above the offroad top speed.
+    /// Deceleration (m/s²) above the offroad top speed at the full penalty.
     pub offroad_drag: f32,
+    /// Share of the offroad penalty a running boost still feels (0 = boosts ignore offroad).
+    pub offroad_boost_share: f32,
     /// Share of the tangential speed lost per unit of head-on wall impact.
     pub wall_scrub: f32,
 }
@@ -134,8 +136,12 @@ impl Default for VehicleParams {
                 speed: 12.0,
                 duration: 1.2,
             },
-            offroad_speed_scale: 0.55,
-            offroad_drag: 10.0,
+            // Full penalty: 38 -> 24.7 m/s. Noticeable, but a kart can still race back.
+            offroad_speed_scale: 0.65,
+            // Bleeds the 13 m/s gap in about a second, so a short excursion costs something.
+            offroad_drag: 14.0,
+            // A tier-3 drift boost through the dunes keeps about 91% of its top speed.
+            offroad_boost_share: 0.25,
             wall_scrub: 0.25,
         }
     }
@@ -160,7 +166,8 @@ pub struct VehicleState {
     pub drift: Option<DriftState>,
     pub boost_timer: f32,
     pub boost_speed: f32,
-    /// Share of grounded wheels on offroad surfaces last tick (0..1), for effects.
+    /// Offroad penalty applied last tick (0..1): the share of grounded wheels on offroad
+    /// surfaces, scaled by the grade passed to [`step_graded`]. For effects.
     pub offroad: f32,
     /// Seconds of spin-out left (hit by a weapon): no control while > 0.
     pub spin: f32,
@@ -253,12 +260,29 @@ fn approach(v: f32, target: f32, rate: f32) -> f32 {
     }
 }
 
-/// Advances one fixed tick.
+/// Advances one fixed tick, with the full offroad penalty on offroad surfaces.
 pub fn step(
     state: &mut VehicleState,
     params: &VehicleParams,
     input: DriveInput,
     world: &TriMesh,
+    dt: f32,
+) {
+    step_graded(state, params, input, world, 1.0, dt);
+}
+
+/// Advances one fixed tick, scaling the offroad penalty by `offroad_grade` (0..1).
+///
+/// Surfaces say *where* the ground is rough; the grade says *how much* it costs, so a game can
+/// forgive clipping the edge of the road and ramp the penalty up further out. The penalty is
+/// the share of grounded wheels on [`Surface::Offroad`] times the grade: road surfaces and
+/// airtime never slow the kart, whatever the grade.
+pub fn step_graded(
+    state: &mut VehicleState,
+    params: &VehicleParams,
+    input: DriveInput,
+    world: &TriMesh,
+    offroad_grade: f32,
     dt: f32,
 ) {
     let p = params;
@@ -307,12 +331,13 @@ pub fn step(
 
     state.velocity += accel * dt;
     let offroad = if hits > 0 {
-        offroad_hits as f32 / hits as f32
+        offroad_hits as f32 / hits as f32 * offroad_grade.clamp(0.0, 1.0)
     } else {
         0.0
     };
     state.offroad = offroad;
-    let top_speed = p.max_speed * (1.0 + (p.offroad_speed_scale - 1.0) * offroad);
+    let offroad_loss = (1.0 - p.offroad_speed_scale) * offroad;
+    let top_speed = p.max_speed * (1.0 - offroad_loss);
 
     // --- Boost timer, drift state ---
     if state.boost_timer > 0.0 {
@@ -360,14 +385,20 @@ pub fn step(
     if state.grounded {
         let boosting = state.boost_timer > 0.0;
         if boosting {
-            speed = approach(speed, p.max_speed + state.boost_speed, p.boost_accel * dt);
-        } else if speed > top_speed {
-            // Faster than this surface allows (left a boost, ran onto grass).
-            let drag = if offroad > 0.0 {
+            // A boost mostly powers through rough ground: it feels only a share of the loss.
+            let boost_top = (p.max_speed + state.boost_speed)
+                * (1.0 - offroad_loss * p.offroad_boost_share.clamp(0.0, 1.0));
+            // Rough ground bleeds the excess gently instead of snapping down to it.
+            let rate = if offroad > 0.0 && speed > boost_top {
                 p.offroad_drag
             } else {
-                p.coast_decel * 4.0
+                p.boost_accel
             };
+            speed = approach(speed, boost_top, rate * dt);
+        } else if speed > top_speed {
+            // Faster than this surface allows (left a boost, ran onto grass).
+            let coast = p.coast_decel * 4.0;
+            let drag = coast + (p.offroad_drag - coast).max(0.0) * offroad;
             speed = approach(speed, top_speed, drag * dt);
         } else if throttle > 0.0 && speed >= -0.5 {
             let r = (speed / top_speed).clamp(0.0, 1.0);
@@ -376,6 +407,9 @@ pub fn step(
             speed = (speed - p.brake_decel * brake * dt).max(0.0);
         } else if brake > 0.0 {
             speed = approach(speed, -p.reverse_max, p.accel * brake * dt);
+        } else if throttle > 0.0 {
+            // Rolling backwards on the throttle: the wheels drive against the roll and stop it.
+            speed = approach(speed, 0.0, p.brake_decel * throttle * dt);
         } else {
             speed = approach(speed, 0.0, p.coast_decel * dt);
         }
@@ -741,6 +775,70 @@ mod tests {
         assert_eq!(s.offroad, 1.0);
     }
 
+    /// Forward speed after `secs` of full throttle on `world` at `grade`, from `v0` m/s.
+    fn run_graded(world: &TriMesh, p: &VehicleParams, grade: f32, v0: f32, secs: f32) -> f32 {
+        let mut s = with_speed(world, p, v0);
+        let throttle = DriveInput {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..(secs / DT) as usize {
+            step_graded(&mut s, p, throttle, world, grade, DT);
+        }
+        forward_speed(&s)
+    }
+
+    #[test]
+    fn offroad_grade_scales_the_penalty() {
+        let w = flat_world_with(Surface::Offroad);
+        let p = VehicleParams::default();
+        let none = run_graded(&w, &p, 0.0, p.max_speed, 4.0);
+        let half = run_graded(&w, &p, 0.5, p.max_speed, 4.0);
+        let full = run_graded(&w, &p, 1.0, p.max_speed, 4.0);
+        let cap = p.max_speed * p.offroad_speed_scale;
+        assert!(none > p.max_speed - 0.6, "grade 0 is no penalty: {none}");
+        assert!(
+            half < none - 3.0 && half > full + 3.0,
+            "half grade in between: {full} < {half} < {none}"
+        );
+        assert!(
+            (full - cap).abs() < 0.6,
+            "full grade sits at the cap: {full}"
+        );
+        // A grade beyond 1 is clamped: never slower than the cap.
+        let over = run_graded(&w, &p, 3.0, p.max_speed, 4.0);
+        assert!((over - cap).abs() < 0.6, "clamped: {over}");
+    }
+
+    #[test]
+    fn offroad_grade_never_slows_the_kart_on_road() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        let v = run_graded(&w, &p, 1.0, p.max_speed, 3.0);
+        assert!(v > p.max_speed - 0.6, "road speed {v}");
+    }
+
+    #[test]
+    fn boost_mostly_powers_through_offroad() {
+        let w = flat_world_with(Surface::Offroad);
+        let p = VehicleParams::default();
+        let tier = p.boost_tiers[2];
+        let mut s = with_speed(&w, &p, p.max_speed + tier.speed);
+        s.boost_speed = tier.speed;
+        s.boost_timer = tier.duration;
+        let throttle = DriveInput {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..(tier.duration * 0.8 / DT) as usize {
+            step_graded(&mut s, &p, throttle, &w, 1.0, DT);
+        }
+        let v = forward_speed(&s);
+        let boosted = p.max_speed + tier.speed;
+        assert!(v < boosted - 1.0, "still slightly slowed: {v}");
+        assert!(v > boosted * 0.88, "boost powers through: {v} of {boosted}");
+    }
+
     #[test]
     fn boost_pad_triggers_boost() {
         let w = flat_world_with(Surface::BoostPad);
@@ -887,6 +985,35 @@ mod tests {
         }
         let v = s.velocity.length();
         assert!(v > 18.0 && v < 31.0, "speed after glancing hit {v}");
+    }
+
+    #[test]
+    fn throttle_stops_a_backward_roll() {
+        let w = flat_world();
+        let p = VehicleParams::default();
+        let mut s = with_speed(&w, &p, 0.0);
+        s.velocity = s.forward() * -12.0;
+        let throttle = DriveInput {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        // Coasting alone (2 m/s²) would take six seconds; the throttle takes well under one.
+        for _ in 0..30 {
+            step(&mut s, &p, throttle, &w, DT);
+        }
+        assert!(
+            s.speed() > -0.5,
+            "still rolling back at {:.1} m/s",
+            s.speed()
+        );
+        for _ in 0..30 {
+            step(&mut s, &p, throttle, &w, DT);
+        }
+        assert!(
+            s.speed() > 3.0,
+            "then drives forward ({:.1} m/s)",
+            s.speed()
+        );
     }
 
     #[test]

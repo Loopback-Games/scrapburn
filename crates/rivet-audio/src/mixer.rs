@@ -2,6 +2,12 @@
 
 use std::f32::consts::TAU;
 
+use crate::music::Music;
+use crate::songs::Theme;
+
+/// Soundtrack level in the final mix.
+const MUSIC_LEVEL: f32 = 0.42;
+
 /// One-shot effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sfx {
@@ -59,8 +65,18 @@ pub enum Command {
     OrbHum {
         gain: f32,
     },
-    /// Silences every continuous voice (menus, pause).
+    /// Silences every continuous voice (menus, pause). The soundtrack has its own control.
     StopLoops,
+    /// The soundtrack: which piece (a change fades the old one out, then starts the new one
+    /// from the top), `gain` 0..1 (0 fades it out, and it next starts from the top),
+    /// `muffle` 0..1 (as heard behind the pause menu), `intensity` 0..1 (the final lap's
+    /// extra layers).
+    Music {
+        theme: Theme,
+        gain: f32,
+        muffle: f32,
+        intensity: f32,
+    },
 }
 
 const VOICES: usize = 16;
@@ -108,6 +124,7 @@ pub struct Mixer {
     skids: [Loop; VOICES],
     orb: Loop,
     shots: Vec<OneShot>,
+    music: Music,
     noise: u32,
 }
 
@@ -125,12 +142,18 @@ impl Mixer {
             skids: [Loop::default(); VOICES],
             orb: Loop::default(),
             shots: Vec::new(),
+            music: Music::new(rate),
             noise: 0x1234_5678,
         }
     }
 
     pub fn active_one_shots(&self) -> usize {
         self.shots.len()
+    }
+
+    /// Whether the soundtrack is running.
+    pub fn music_playing(&self) -> bool {
+        self.music.playing()
     }
 
     pub fn apply(&mut self, cmd: Command) {
@@ -147,6 +170,12 @@ impl Mixer {
                 gain.is_finite() && pan.is_finite()
             }
             Command::OrbHum { gain } => gain.is_finite(),
+            Command::Music {
+                gain,
+                muffle,
+                intensity,
+                ..
+            } => gain.is_finite() && muffle.is_finite() && intensity.is_finite(),
             Command::StopLoops => true,
         };
         if !finite {
@@ -191,6 +220,12 @@ impl Mixer {
                 });
             }
             Command::OrbHum { gain } => self.orb.target_gain = gain.clamp(0.0, 1.0),
+            Command::Music {
+                theme,
+                gain,
+                muffle,
+                intensity,
+            } => self.music.set(theme, gain, muffle, intensity),
             Command::StopLoops => {
                 for v in self.engines.iter_mut().chain(self.skids.iter_mut()) {
                     v.target_gain = 0.0;
@@ -353,6 +388,11 @@ impl Mixer {
                     k += 1;
                 }
             }
+
+            // The soundtrack sits under the race: engines and effects stay on top.
+            let (ml, mr) = self.music.frame();
+            l += ml * MUSIC_LEVEL;
+            r += mr * MUSIC_LEVEL;
 
             // Soft clip so stacked effects never exceed full scale.
             let (l, r) = (l.tanh(), r.tanh());

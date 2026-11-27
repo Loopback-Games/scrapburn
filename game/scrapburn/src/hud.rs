@@ -760,6 +760,209 @@ pub fn human_row(
     o.label_centered(x + 173. * u, y + 14. * u, 1.3 * u, WHITE, tag);
 }
 
+/// A gamepad control, drawn as an Xbox-style button glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadGlyph {
+    A,
+    B,
+    X,
+    Y,
+    LeftBumper,
+    RightBumper,
+    LeftTrigger,
+    RightTrigger,
+    LeftStick,
+    RightStick,
+    /// The small left center button (two overlapping windows).
+    View,
+    /// The small right center button (three lines).
+    Menu,
+    DPad,
+}
+
+/// Face button fills: A green, B red, X blue, Y yellow.
+const PAD_A: [f32; 4] = [0.365, 0.761, 0.118, 1.];
+const PAD_B: [f32; 4] = [0.910, 0.067, 0.137, 1.];
+/// A touch deeper than Xbox's #0078D7 so a white letter keeps 4.5:1 contrast.
+const PAD_X: [f32; 4] = [0., 0.447, 0.808, 1.];
+const PAD_Y: [f32; 4] = [1., 0.725, 0., 1.];
+/// Letters on the light face buttons (A, Y).
+const PAD_DARK_LETTER: [f32; 4] = [0.05, 0.06, 0.07, 1.];
+/// Bumpers, triggers, sticks, the center buttons and the D-pad.
+const PAD_BODY: [f32; 4] = [0.19, 0.22, 0.24, 1.];
+const PAD_RIM: [f32; 4] = [0.46, 0.52, 0.55, 1.];
+
+impl PadGlyph {
+    /// The letter and colors of a face button, or `None` for the neutral controls.
+    fn face(self) -> Option<(&'static str, [f32; 4], [f32; 4])> {
+        match self {
+            Self::A => Some(("A", PAD_A, PAD_DARK_LETTER)),
+            Self::B => Some(("B", PAD_B, WHITE)),
+            Self::X => Some(("X", PAD_X, WHITE)),
+            Self::Y => Some(("Y", PAD_Y, PAD_DARK_LETTER)),
+            _ => None,
+        }
+    }
+
+    /// The name written beside a center button, which carries an icon rather than text.
+    fn caption(self) -> Option<&'static str> {
+        match self {
+            Self::View => Some("View"),
+            Self::Menu => Some("Menu"),
+            _ => None,
+        }
+    }
+
+    /// Glyph width for a button `s` pixels across (the face button diameter).
+    pub fn width(self, s: f32) -> f32 {
+        match self {
+            Self::LeftBumper | Self::RightBumper => 1.7 * s,
+            Self::LeftTrigger | Self::RightTrigger => 1.35 * s,
+            _ => match self.caption() {
+                Some(c) => s * 1.3 + width(c, s * 0.08),
+                None => s,
+            },
+        }
+    }
+
+    /// Draws the glyph from left edge `x`, vertically centered on `cy`; `s` as in `width`.
+    pub fn draw(self, o: &mut Overlay, x: f32, cy: f32, s: f32) {
+        let r = 0.5 * s;
+        let rim = (0.07 * s).max(1.);
+        let centered = |o: &mut Overlay, cx: f32, scale: f32, color, t: &str| {
+            o.label_centered(cx - 0.5 * width(t, scale), cy, scale, color, t);
+        };
+        // A neutral body: a light rim with a dark fill inset.
+        let body = |o: &mut Overlay, w: f32, h: f32, radius: f32| {
+            let y = cy - 0.5 * h;
+            o.rounded_rect(x, y, w, h, radius, PAD_RIM);
+            o.rounded_rect(
+                x + rim,
+                y + rim,
+                w - 2. * rim,
+                h - 2. * rim,
+                radius - rim,
+                PAD_BODY,
+            );
+        };
+        if let Some((letter, fill, ink)) = self.face() {
+            o.circle(x + r, cy, r, fill);
+            centered(o, x + r, s * 0.068, ink, letter);
+            return;
+        }
+        match self {
+            Self::LeftBumper | Self::RightBumper => {
+                let w = self.width(s);
+                body(o, w, 0.72 * s, 0.24 * s);
+                let t = if self == Self::LeftBumper { "LB" } else { "RB" };
+                centered(o, x + 0.5 * w, s * 0.056, WHITE, t);
+            }
+            Self::LeftTrigger | Self::RightTrigger => {
+                let w = self.width(s);
+                body(o, w, s, 0.42 * s);
+                let t = if self == Self::LeftTrigger {
+                    "LT"
+                } else {
+                    "RT"
+                };
+                centered(o, x + 0.5 * w, s * 0.056, WHITE, t);
+            }
+            Self::LeftStick | Self::RightStick => {
+                // A raised cap inside the stick's well.
+                o.circle(x + r, cy, r, PAD_RIM);
+                o.circle(x + r, cy, r - rim, PAD_BODY);
+                o.circle(x + r, cy, 0.72 * r, [0.27, 0.31, 0.33, 1.]);
+                let t = if self == Self::LeftStick { "LS" } else { "RS" };
+                centered(o, x + r, s * 0.05, WHITE, t);
+            }
+            Self::View | Self::Menu => {
+                o.circle(x + r, cy, r, PAD_RIM);
+                o.circle(x + r, cy, r - rim, PAD_BODY);
+                let t = (0.06 * s).max(1.);
+                if self == Self::View {
+                    // Two overlapping windows; the front one hides the back one's corner.
+                    let side = 0.34 * s;
+                    let back = (x + r - 0.36 * side, cy - 0.64 * side);
+                    let front = (x + r - 0.64 * side, cy - 0.36 * side);
+                    outline(o, back.0, back.1, side, side, t, WHITE);
+                    o.rect(front.0, front.1, side, side, PAD_BODY);
+                    outline(o, front.0, front.1, side, side, t, WHITE);
+                } else {
+                    let lw = 0.4 * s;
+                    for i in -1..=1 {
+                        let ly = cy + i as f32 * 0.13 * s - 0.5 * t;
+                        o.rect(x + r - 0.5 * lw, ly, lw, t, WHITE);
+                    }
+                }
+                if let Some(c) = self.caption() {
+                    o.label_centered(x + 1.3 * s, cy, s * 0.08, MINT, c);
+                }
+            }
+            Self::DPad => {
+                let arm = 0.36 * s;
+                o.rounded_rect(x, cy - 0.5 * arm, s, arm, 0.1 * s, PAD_RIM);
+                o.rounded_rect(x + r - 0.5 * arm, cy - r, arm, s, 0.1 * s, PAD_RIM);
+                let a = arm - 2. * rim;
+                o.rect(x + rim, cy - 0.5 * a, s - 2. * rim, a, PAD_BODY);
+                o.rect(x + r - 0.5 * a, cy - r + rim, a, s - 2. * rim, PAD_BODY);
+            }
+            // Drawn above from `face`.
+            Self::A | Self::B | Self::X | Self::Y => {}
+        }
+    }
+}
+
+/// A rectangle border `t` pixels thick.
+fn outline(o: &mut Overlay, x: f32, y: f32, w: f32, h: f32, t: f32, color: [f32; 4]) {
+    o.rect(x, y, w, t, color);
+    o.rect(x, y + h - t, w, t, color);
+    o.rect(x, y + t, t, h - 2. * t, color);
+    o.rect(x + w - t, y + t, t, h - 2. * t, color);
+}
+
+/// Gap on each side of the "/" between alternative gamepad glyphs, as a fraction of `s`.
+const PAD_OR_GAP: f32 = 0.28;
+
+/// Width of a row of alternative glyphs separated by "/", for buttons `s` pixels across.
+pub fn pad_glyphs_width(glyphs: &[PadGlyph], s: f32) -> f32 {
+    let or = width("/", s * 0.08) + 2. * PAD_OR_GAP * s;
+    glyphs.iter().map(|g| g.width(s)).sum::<f32>() + or * glyphs.len().saturating_sub(1) as f32
+}
+
+/// Draws `glyphs` separated by "/" from left edge `x`, centered on `cy`.
+pub fn draw_pad_glyphs(o: &mut Overlay, glyphs: &[PadGlyph], x: f32, cy: f32, s: f32) {
+    let mut gx = x;
+    for (i, g) in glyphs.iter().enumerate() {
+        if i > 0 {
+            gx += PAD_OR_GAP * s;
+            o.label_centered(gx, cy, s * 0.08, DIM, "/");
+            gx += width("/", s * 0.08) + PAD_OR_GAP * s;
+        }
+        g.draw(o, gx, cy, s);
+        gx += g.width(s);
+    }
+}
+
+/// Each driving action with its keyboard keys and gamepad buttons.
+pub const DRIVING_CONTROLS: [(&str, &str, &[PadGlyph]); 8] = {
+    use PadGlyph::*;
+    [
+        ("Accelerate", "W / Up", &[RightTrigger, A]),
+        ("Brake / reverse", "S / Down", &[LeftTrigger]),
+        ("Steer", "A D / Left Right", &[LeftStick]),
+        ("Hop / drift", "Space / Shift", &[LeftBumper, RightBumper]),
+        ("Fire item", "E / Left Ctrl / J", &[X]),
+        ("Recover kart", "R", &[B]),
+        ("Pause", "Esc", &[Menu]),
+        ("FPS display", "F3", &[View]),
+    ]
+};
+
+/// Controls card text sizes and the gamepad button diameter, in menu units.
+const CONTROLS_ACTION_SCALE: f32 = 2.15;
+const CONTROLS_KEY_SCALE: f32 = 2.1;
+const CONTROLS_PAD_BUTTON: f32 = 26.;
+
 pub fn controls_card(o: &mut Overlay, w: f32, h: f32, pad: bool) {
     let u = menu_scale(w, h);
     let pw = 520. * u;
@@ -768,19 +971,7 @@ pub fn controls_card(o: &mut Overlay, w: f32, h: f32, pad: bool) {
     o.rect(x, y, pw, 386. * u, INK);
     o.rect(x, y, pw, 3. * u, MINT);
     o.label_centered(x + 20. * u, y + 34. * u, 2.8 * u, WHITE, "DRIVING CONTROLS");
-    for (i, (action, key, button)) in [
-        ("Accelerate", "W / Up", "RT / A"),
-        ("Brake / reverse", "S / Down", "LT"),
-        ("Steer", "A D / Left Right", "Left stick"),
-        ("Hop / drift", "Space / Shift", "LB / RB"),
-        ("Fire item", "E / Left Ctrl / J", "X"),
-        ("Recover kart", "R", "B"),
-        ("Pause", "Esc", "Start"),
-        ("FPS display", "F3", "Select"),
-    ]
-    .iter()
-    .enumerate()
-    {
+    for (i, &(action, key, buttons)) in DRIVING_CONTROLS.iter().enumerate() {
         let cy = y + (80. + i as f32 * 40.) * u;
         o.rect(
             x + 20. * u,
@@ -789,15 +980,15 @@ pub fn controls_card(o: &mut Overlay, w: f32, h: f32, pad: bool) {
             u,
             [0.4, 0.65, 0.65, 0.28],
         );
-        o.label_centered(x + 20. * u, cy, 2.15 * u, WHITE, action);
-        let val = if pad { button } else { key };
-        o.label_centered(
-            x + pw - 20. * u - width(val, 2.1 * u),
-            cy,
-            2.1 * u,
-            MINT,
-            val,
-        );
+        o.label_centered(x + 20. * u, cy, CONTROLS_ACTION_SCALE * u, WHITE, action);
+        let right = x + pw - 20. * u;
+        if pad {
+            let s = CONTROLS_PAD_BUTTON * u;
+            draw_pad_glyphs(o, buttons, right - pad_glyphs_width(buttons, s), cy, s);
+        } else {
+            let s = CONTROLS_KEY_SCALE * u;
+            o.label_centered(right - width(key, s), cy, s, MINT, key);
+        }
     }
 }
 
@@ -1378,6 +1569,62 @@ mod tests {
         assert_eq!(countdown_label(0.2), Some("1"));
         assert_eq!(countdown_label(-0.5), Some("GO!"));
         assert_eq!(countdown_label(-1.5), None);
+    }
+
+    /// WCAG contrast ratio between two sRGB colors.
+    fn contrast(a: [f32; 4], b: [f32; 4]) -> f32 {
+        let lum = |c: [f32; 4]| {
+            let lin = |v: f32| {
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+        };
+        let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn face_button_letters_are_legible() {
+        for g in [PadGlyph::A, PadGlyph::B, PadGlyph::X, PadGlyph::Y] {
+            let (letter, fill, ink) = g.face().expect("a face button");
+            let ratio = contrast(fill, ink);
+            assert!(ratio >= 4.5, "{letter}: {ratio:.2}:1");
+        }
+        assert!(PadGlyph::LeftBumper.face().is_none());
+    }
+
+    #[test]
+    fn gamepad_glyphs_clear_the_action_column() {
+        // The card is laid out in menu units, so one scale covers every window size.
+        for u in [0.5, 1.0, 2.5] {
+            let pw = 520. * u;
+            for (action, _, buttons) in DRIVING_CONTROLS {
+                let action_end = 20. * u + width(action, CONTROLS_ACTION_SCALE * u);
+                let glyphs_start =
+                    pw - 20. * u - pad_glyphs_width(buttons, CONTROLS_PAD_BUTTON * u);
+                assert!(
+                    glyphs_start - action_end > 24. * u,
+                    "{action} at scale {u}: {action_end} vs {glyphs_start}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_rows_add_a_separator_between_alternatives() {
+        let s = 26.;
+        let one = pad_glyphs_width(&[PadGlyph::A], s);
+        assert_eq!(one, s);
+        let two = pad_glyphs_width(&[PadGlyph::RightTrigger, PadGlyph::A], s);
+        assert!(two > PadGlyph::RightTrigger.width(s) + s);
+        assert!(
+            PadGlyph::Menu.width(s) > s,
+            "center buttons carry a caption"
+        );
     }
 
     #[test]

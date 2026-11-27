@@ -1,10 +1,11 @@
 //! Turns race state and events into mixer commands.
 
 use glam::Vec3;
-use rivet_audio::{Audio, Command, Sfx};
+use rivet_audio::{Audio, Command, Sfx, Theme};
 
 use crate::combat::{CombatEvent, ItemKind};
 use crate::race::{Phase, Race, RaceEvent};
+use crate::track::TrackId;
 
 /// Engines fade out beyond this distance (m).
 const HEARING: f32 = 140.0;
@@ -40,6 +41,53 @@ pub struct Listener {
     pub right: Vec3,
 }
 
+/// What the soundtrack does this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MusicCue {
+    /// Silent: the countdown (the circuit's song starts on GO), or music switched off.
+    Off,
+    /// The menu theme.
+    Menu,
+    /// Racing: full level.
+    Race,
+    /// Behind the pause menu: quieter and muffled.
+    Paused,
+    /// The results screen: a little quieter.
+    Results,
+}
+
+impl MusicCue {
+    /// (gain, muffle) for the mixer.
+    fn levels(self) -> (f32, f32) {
+        match self {
+            MusicCue::Off => (0.0, 0.0),
+            MusicCue::Menu => (0.85, 0.0),
+            MusicCue::Race => (1.0, 0.0),
+            MusicCue::Paused => (0.55, 1.0),
+            MusicCue::Results => (0.75, 0.0),
+        }
+    }
+}
+
+/// Each circuit's own piece.
+pub fn theme_for(track: TrackId) -> Theme {
+    match track {
+        TrackId::Dustbowl => Theme::Dust,
+        TrackId::Grindstone => Theme::Castle,
+        TrackId::Skyway => Theme::Sky,
+    }
+}
+
+/// Whether racer `focus` is on the last lap of a race of more than one lap (the soundtrack
+/// adds layers).
+pub fn final_lap(race: &Race, focus: usize) -> bool {
+    race.laps_to_win > 1
+        && race
+            .racers
+            .get(focus)
+            .is_some_and(|r| r.finish.is_none() && !r.out && r.laps.laps() + 1 >= race.laps_to_win)
+}
+
 /// Remembers what was playing to detect starts (boosts, countdown steps, new nails).
 #[derive(Default)]
 pub struct SoundDirector {
@@ -54,6 +102,23 @@ pub struct SoundDirector {
 }
 
 impl SoundDirector {
+    /// The soundtrack: call once per rendered frame, in menus too. `track` picks the race
+    /// song.
+    pub fn music(&self, audio: &Audio, race: &Race, focus: usize, track: TrackId, cue: MusicCue) {
+        let (gain, muffle) = cue.levels();
+        let theme = if cue == MusicCue::Menu {
+            Theme::Menu
+        } else {
+            theme_for(track)
+        };
+        audio.send(Command::Music {
+            theme,
+            gain,
+            muffle,
+            intensity: if final_lap(race, focus) { 1.0 } else { 0.0 },
+        });
+    }
+
     /// Call once per rendered frame. `active` is false in menus and pause (loops stop).
     pub fn update(
         &mut self,
@@ -244,5 +309,35 @@ mod tests {
         let (_, right) = spatial(Vec3::ZERO, Vec3::X, Vec3::new(10.0, 0.0, 0.0), 100.0);
         let (_, left) = spatial(Vec3::ZERO, Vec3::X, Vec3::new(-10.0, 0.0, 0.0), 100.0);
         assert!(right > 0.5 && left < -0.5);
+    }
+
+    #[test]
+    fn final_lap_is_the_last_of_several() {
+        let t = crate::track::build_graybox_loop();
+        let mut race = Race::new(&t, 2, true, 3);
+        let p = race.player.expect("a player race");
+        assert!(!final_lap(&race, p), "lap one");
+        race.racers[p].laps.set_net_state(1, 2, 0.0);
+        assert!(final_lap(&race, p), "two laps done of three");
+        race.racers[p].finish = Some((1, 90.0));
+        assert!(!final_lap(&race, p), "finished");
+        let sprint = Race::new(&t, 2, true, 1);
+        assert!(
+            !final_lap(&sprint, p),
+            "a one-lap race has no final-lap layer"
+        );
+        assert!(!final_lap(&race, 99), "no such racer");
+    }
+
+    #[test]
+    fn every_circuit_has_its_own_theme() {
+        let themes: Vec<_> = crate::track::TRACKS
+            .iter()
+            .map(|t| theme_for(t.id))
+            .collect();
+        for (i, a) in themes.iter().enumerate() {
+            assert_ne!(*a, Theme::Menu);
+            assert!(themes[i + 1..].iter().all(|b| b != a), "{themes:?}");
+        }
     }
 }

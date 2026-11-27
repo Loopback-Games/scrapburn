@@ -18,7 +18,7 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 - **Multiplayer** opens private invites, direct hosting and joining, and your racer name.
 - **Garage** previews three chassis and eight finishes on your kart. Click a paint swatch or cycle finishes, then choose **Done** to save.
 - **Controls** shows keyboard and gamepad bindings and is also available in the pause menu.
-- **Settings** adjusts graphics, lap count, and rivals. Turn **Scenery** on to see the trackside landmarks.
+- **Settings** adjusts graphics, lap count, and rivals. Turn **Music** off to race to engines alone.
 
 ### The circuits
 
@@ -26,7 +26,7 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 |---|---|
 | ![Giant fossil ribs curl over the dirt straight opposite a sandstone arch](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** Follow the wheel ruts under a leviathan’s ribs, then race the ore buckets across the refinery bend. A dust devil spins beside the back straight. The eight-meter sand shoulders give you room to run wide and still cross a checkpoint. |
 | ![Tournament pennants over the approach to the sun-wheel gate](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** Race beneath tournament pennants past the windmill and through a jeweled sun-wheel gate. Look over the low parapet for the slate-roofed great hall midway around the lap, then follow the torchlit ramparts to the drawbridge jump. |
-| ![A cargo airship above the neon launch straight under an aurora](docs/media/skyway-zero.jpg) | **Skyway Zero.** Launch alongside a cargo airship and follow the banked neon deck above the city. A solar relay marks the far S-bends, and four boost strips reward a clean line. |
+| ![A cargo airship above the neon launch straight under an aurora](docs/media/skyway-zero.jpg) | **Skyway Zero.** Launch alongside a cargo airship and follow the banked neon deck above a sea of clouds, past glowing billboards in tribute to 90s shooters, platformers and racers. A solar relay marks the far S-bends, and four boost strips reward a clean line. |
 
 ### Weapons
 
@@ -165,7 +165,7 @@ Rivet is a set of small crates, each usable on its own:
 | `rivet-render` | wgpu renderer: HDR, shadows, materials, sky, bloom, particles, TrueType HUD text |
 | `rivet-physics` | Triangle-mesh collision and arcade kart physics (suspension, drift tiers, surfaces) |
 | `rivet-ai` | Racing-line bots that drift, dodge and recover |
-| `rivet-audio` | A procedural sound mixer (engines, skids, weapons) |
+| `rivet-audio` | A procedural sound mixer (engines, skids, weapons) and a synthesized race soundtrack |
 | `rivet-assets` | GLB and texture loading |
 | `rivet-net` | UDP host/client links with a handshake, session tokens and timeouts, plus a byte codec |
 

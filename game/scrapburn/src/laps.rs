@@ -75,13 +75,20 @@ impl LapTracker {
     }
 
     /// Lap progress in checkpoints, fractional: passed checkpoints this lap plus the share of
-    /// the way to the next one.
-    pub fn progress(&self, pos: Vec3, checkpoints: &[Checkpoint]) -> f32 {
+    /// the way to the next one, measured along `centerline` (the track's, which the
+    /// checkpoints index into) so a kart out on the shoulder or across a bend ranks by how
+    /// far round the road it is, not by straight-line distance.
+    pub fn progress(&self, pos: Vec3, checkpoints: &[Checkpoint], centerline: &[Vec3]) -> f32 {
         let next = &checkpoints[self.next];
         let prev = &checkpoints[self.last_checkpoint()];
-        let span = prev.center.distance(next.center).max(1.0);
-        // May go negative behind the previous checkpoint (the grid), so order still counts there.
-        let frac = (1.0 - pos.distance(next.center) / span).clamp(-1.5, 1.0);
+        let behind = (pos - prev.center).dot(prev.forward);
+        let frac = if behind < 0.0 {
+            // Behind the previous checkpoint (the grid): negative, so order still counts there.
+            let span = prev.center.distance(next.center).max(1.0);
+            (behind / span).max(-1.5)
+        } else {
+            along(pos, prev.line, next.line, centerline)
+        };
         let passed = if self.next == 0 {
             self.count - 1
         } else {
@@ -145,6 +152,34 @@ impl LapTracker {
         }
         None
     }
+}
+
+/// Share (0..1) of the way from centerline point `from` to point `to` (wrapping past the
+/// end of the loop) at the centerline point nearest `pos` between them.
+fn along(pos: Vec3, from: usize, to: usize, centerline: &[Vec3]) -> f32 {
+    let mut n = centerline.len();
+    // The track's centerline closes with a copy of its first point.
+    if n > 1 && centerline[0].distance(centerline[n - 1]) < 0.01 {
+        n -= 1;
+    }
+    if n < 2 {
+        return 0.0;
+    }
+    let (from, mut to) = (from % n, to % n);
+    if to <= from {
+        to += n;
+    }
+    let mut best = (f32::MAX, 0.0f32);
+    for k in from..to {
+        let a = centerline[k % n];
+        let seg = centerline[(k + 1) % n] - a;
+        let t = ((pos - a).dot(seg) / seg.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        let d = pos.distance_squared(a + seg * t);
+        if d < best.0 {
+            best = (d, (k - from) as f32 + t);
+        }
+    }
+    best.1 / (to - from) as f32
 }
 
 #[cfg(test)]

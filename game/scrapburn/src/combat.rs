@@ -29,7 +29,9 @@ const REEL_MAX_SPEED: f32 = 44.0;
 const SLINGSHOT: (f32, f32) = (10.0, 0.8);
 const YANK_KEEP: f32 = 0.6;
 
-const ORB_SPEED: f32 = 52.0;
+/// Plasma Orb cruise speed (m/s): well clear of a kart on its biggest boost (38 + 14), so
+/// nobody can outrun one, not even the racer who fired it.
+const ORB_SPEED: f32 = 68.0;
 const ORB_HOME_RANGE: f32 = 16.0;
 const ORB_ZAP_RADIUS: f32 = 8.0;
 const ORB_ZAP_SPIN: (f32, f32) = (0.35, 0.85);
@@ -138,7 +140,9 @@ pub fn nail_hit(state: &mut VehicleState) {
     }
 }
 
-/// Where item boxes sit: rows of four across the road at three places on the lap.
+/// Where item boxes sit: rows of four across the road at three places on the lap, each lane
+/// `BOX_HEIGHT` over the deck. The lanes follow the road's bank, so on a banked turn the row
+/// tilts with the surface instead of hanging level with the centerline.
 pub fn item_box_spots(track: &Track) -> Vec<Vec3> {
     let cl = &track.centerline;
     let n = cl.len() - 1;
@@ -146,7 +150,8 @@ pub fn item_box_spots(track: &Track) -> Vec<Vec3> {
     for &row in &track.box_rows {
         let i = (n as f32 * row) as usize;
         let f = (cl[(i + 1) % n] - cl[(i + n - 1) % n]).normalize();
-        let right = f.cross(Vec3::Y).normalize();
+        let up = track.road_up[i];
+        let right = f.cross(up).normalize();
         for lane in BOX_LANES {
             out.push(cl[i] + right * lane + Vec3::Y * BOX_HEIGHT);
         }
@@ -673,6 +678,28 @@ mod tests {
     }
 
     #[test]
+    fn boxes_hover_at_one_height_over_the_road_on_every_track() {
+        // A banked road tilts under the outer lanes; boxes must follow it, not hang level with
+        // the centerline (on Skyway's steep banks the outer boxes floated meters above the deck).
+        for def in &crate::track::TRACKS {
+            let t = crate::track::build_track(def);
+            for b in item_box_spots(&t) {
+                let hit = t
+                    .collision
+                    .raycast(b + Vec3::Y * 4.0, Vec3::NEG_Y, 10.0)
+                    .unwrap_or_else(|| panic!("{}: no road under the box at {b}", def.name));
+                assert_eq!(hit.surface, rivet_physics::Surface::Road, "{}", def.name);
+                let above = b.y - hit.point.y;
+                assert!(
+                    (above - BOX_HEIGHT).abs() < 0.35,
+                    "{}: box at {b} hovers {above:.2} m over the road (want {BOX_HEIGHT})",
+                    def.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn odds_favor_the_back() {
         let count = |pos: usize| {
             (0..1000u32)
@@ -775,6 +802,35 @@ mod tests {
             }
         }
         assert!(boom, "the orb detonated on the leader");
+    }
+
+    #[test]
+    fn a_boosting_kart_cannot_outrun_its_own_orb() {
+        let t = track();
+        let mut r = duel(120.0);
+        r.combat.held[0] = Some(ItemKind::PlasmaOrb);
+        r.fire(0);
+        let tier = r.racers[0].params.boost_tiers[2];
+        for _ in 0..(2.0 * 60.0) as usize {
+            // Flat out on the biggest drift boost the whole time.
+            r.racers[0].state.boost_timer = tier.duration;
+            r.racers[0].state.boost_speed = tier.speed;
+            r.step(
+                t,
+                DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                },
+                1.0 / 60.0,
+            );
+        }
+        let target = r.racers[1].state.position;
+        let orb = r.combat.orbs.first().map(|o| o.pos.distance(target));
+        let me = r.racers[0].state.position.distance(target);
+        assert!(
+            orb.is_none_or(|d| d < me - 15.0),
+            "the orb pulls away: orb {orb:?} m from the leader, owner {me} m"
+        );
     }
 
     #[test]

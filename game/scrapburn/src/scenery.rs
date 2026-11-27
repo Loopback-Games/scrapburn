@@ -8,7 +8,7 @@ use rivet_assets::{GlbError, Rgba8Image, load_glb};
 use rivet_render::{MeshData, Vertex, material};
 
 use crate::terrain::{self, TerrainKind};
-use crate::track::{Track, TrackId};
+use crate::track::{Solid, Track, TrackId};
 
 /// A prop model: file stem, typical size (largest dimension, m), how much of its size must stay
 /// clear of the road, and its shading.
@@ -20,28 +20,59 @@ pub struct PropKind {
     pub specular: f32,
     /// Self-lit brightness (neon), 0 = lit by the sun.
     pub glow: f32,
+    /// The parts a kart bumps off, in model space; empty for props nothing can hit.
+    pub solid: &'static [Block],
 }
 
 impl PropKind {
     /// A sunlit landmark with half its largest dimension reserved for road clearance.
-    const fn landmark(name: &'static str, size: f32, specular: f32) -> Self {
+    const fn landmark(
+        name: &'static str,
+        size: f32,
+        specular: f32,
+        solid: &'static [Block],
+    ) -> Self {
         Self {
             name,
             size,
             footprint: 0.5,
             specular,
             glow: 0.0,
+            solid,
         }
     }
 }
 
-pub const PROPS: [PropKind; 24] = [
+/// An upright box of a prop that karts collide with, in the normalized model space of
+/// `load_prop` (largest dimension 1, centered on X/Z, base at y = 0). A little inside the
+/// visible model, so a scrape that looks clear is clear.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Block {
+    /// Center on the ground (x, z).
+    pub center: [f32; 2],
+    /// Half extents (x, z).
+    pub half: [f32; 2],
+    pub height: f32,
+}
+
+impl Block {
+    const fn new(x: f32, z: f32, half_x: f32, half_z: f32, height: f32) -> Self {
+        Self {
+            center: [x, z],
+            half: [half_x, half_z],
+            height,
+        }
+    }
+}
+
+pub const PROPS: [PropKind; 23] = [
     PropKind {
         name: "skull_rock",
         size: 55.0,
         footprint: 0.5,
         specular: 0.04,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.34, 0.44, 0.9)],
     },
     PropKind {
         name: "plane_wreck",
@@ -49,6 +80,10 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.25,
         glow: 0.0,
+        solid: &[
+            Block::new(0.05, 0.0, 0.43, 0.09, 0.3),
+            Block::new(0.12, 0.0, 0.12, 0.3, 0.1),
+        ],
     },
     PropKind {
         name: "fuel_tanks",
@@ -56,6 +91,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.3,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.41, 0.48, 0.7)],
     },
     PropKind {
         name: "pumpjack",
@@ -63,6 +99,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.3,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.02, 0.48, 0.13, 0.55)],
     },
     PropKind {
         name: "water_tower",
@@ -70,6 +107,12 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.3,
         specular: 0.3,
         glow: 0.0,
+        solid: &[
+            Block::new(-0.15, 0.0, 0.035, 0.035, 0.45),
+            Block::new(0.15, 0.0, 0.035, 0.035, 0.45),
+            Block::new(0.0, -0.15, 0.035, 0.035, 0.45),
+            Block::new(0.0, 0.15, 0.035, 0.035, 0.45),
+        ],
     },
     PropKind {
         name: "bus_wreck",
@@ -77,6 +120,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.25,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.48, 0.2, 0.42)],
     },
     PropKind {
         name: "wreck_car",
@@ -84,6 +128,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.25,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.47, 0.19, 0.27)],
     },
     PropKind {
         name: "barrel_stack",
@@ -91,6 +136,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.2,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.3, 0.4, 0.9)],
     },
     PropKind {
         name: "cactus",
@@ -98,6 +144,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.3,
         specular: 0.05,
         glow: 0.0,
+        solid: &[Block::new(0.01, -0.03, 0.08, 0.08, 1.0)],
     },
     PropKind {
         name: "dead_tree",
@@ -105,6 +152,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.4,
         specular: 0.03,
         glow: 0.0,
+        solid: &[Block::new(0.0, -0.02, 0.07, 0.08, 0.9)],
     },
     PropKind {
         name: "castle_tower",
@@ -112,6 +160,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.4,
         specular: 0.05,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.31, 0.31, 1.0)],
     },
     PropKind {
         name: "gatehouse",
@@ -119,6 +168,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.45,
         specular: 0.05,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.42, 0.48, 0.73)],
     },
     PropKind {
         name: "brazier",
@@ -126,6 +176,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.3,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.3, 0.3, 1.0)],
     },
     PropKind {
         name: "banner_pole",
@@ -133,6 +184,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.3,
         specular: 0.1,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.04, 0.05, 1.0)],
     },
     PropKind {
         name: "guardian_statue",
@@ -140,6 +192,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.4,
         specular: 0.15,
         glow: 0.0,
+        solid: &[Block::new(0.0, -0.03, 0.17, 0.28, 1.0)],
     },
     PropKind {
         name: "siege_wagon",
@@ -147,6 +200,7 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.5,
         specular: 0.1,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.27, 0.48, 0.63)],
     },
     PropKind {
         name: "neon_arch",
@@ -154,6 +208,10 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.0,
         specular: 0.4,
         glow: 0.22,
+        solid: &[
+            Block::new(0.0, -0.47, 0.12, 0.03, 0.57),
+            Block::new(0.0, 0.47, 0.12, 0.03, 0.57),
+        ],
     },
     PropKind {
         name: "antenna_pylon",
@@ -161,19 +219,38 @@ pub const PROPS: [PropKind; 24] = [
         footprint: 0.2,
         specular: 0.3,
         glow: 0.0,
+        solid: &[Block::new(0.0, 0.0, 0.13, 0.14, 1.0)],
     },
-    PropKind {
-        name: "billboard_frame",
-        size: 12.0,
-        footprint: 0.4,
-        specular: 0.3,
-        glow: 0.3,
-    },
-    PropKind::landmark("solar_relay", 42.0, 0.45),
-    PropKind::landmark("sky_freighter", 58.0, 0.25),
-    PropKind::landmark("great_hall", 42.0, 0.08),
-    PropKind::landmark("sail_mill", 32.0, 0.07),
-    PropKind::landmark("sandstone_window", 39.0, 0.04),
+    PropKind::landmark(
+        "solar_relay",
+        42.0,
+        0.45,
+        &[Block::new(0.0, 0.0, 0.05, 0.05, 0.52)],
+    ),
+    // Cruising overhead: nothing to hit.
+    PropKind::landmark("sky_freighter", 58.0, 0.25, &[]),
+    PropKind::landmark(
+        "great_hall",
+        42.0,
+        0.08,
+        &[Block::new(0.0, 0.0, 0.45, 0.22, 0.92)],
+    ),
+    PropKind::landmark(
+        "sail_mill",
+        32.0,
+        0.07,
+        &[Block::new(0.0, 0.0, 0.2, 0.2, 1.0)],
+    ),
+    // Two legs: a kart can drive through the window.
+    PropKind::landmark(
+        "sandstone_window",
+        39.0,
+        0.04,
+        &[
+            Block::new(-0.35, 0.0, 0.15, 0.15, 0.6),
+            Block::new(0.22, 0.0, 0.17, 0.15, 0.6),
+        ],
+    ),
 ];
 
 fn kind(name: &str) -> usize {
@@ -241,9 +318,30 @@ impl Rng {
     }
 }
 
-/// Props that are part of the circuit itself (kept when background scenery is off): Skyway's
-/// neon arches, seated on the banked road.
-pub fn track_features(track: &Track) -> Vec<Placement> {
+/// The solid parts of every prop on the circuit, for the collision mesh. Deterministic and
+/// independent of what is drawn.
+pub fn solids(track: &Track) -> Vec<Solid> {
+    let mut out = Vec::new();
+    for p in placements(track) {
+        let model = p.model();
+        for b in PROPS[p.kind].solid {
+            let [x, z] = b.center;
+            let [hx, hz] = b.half;
+            let base = [(-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz)]
+                .map(|(dx, dz)| model.transform_point3(Vec3::new(x + dx, 0.0, z + dz)));
+            let rise = model.transform_vector3(Vec3::Y * b.height);
+            out.push(Solid {
+                base: base.to_vec(),
+                up: rise.normalize_or(Vec3::Y),
+                height: rise.length(),
+            });
+        }
+    }
+    out
+}
+
+/// Skyway's neon arches, seated on the banked road.
+fn arches(track: &Track) -> Vec<Placement> {
     if track.id != TrackId::Skyway {
         return Vec::new();
     }
@@ -397,19 +495,10 @@ fn grindstone(track: &Track) -> Vec<Placement> {
     out
 }
 
-/// Skyway Zero: neon arches over the deck, holo billboards, and pylons rising out of the haze.
+/// Skyway Zero: neon arches over the deck, and pylons rising out of the clouds.
 fn skyway(track: &Track) -> Vec<Placement> {
-    let mut out = track_features(track);
-    for (k, at) in [0.2, 0.37, 0.68, 0.95].into_iter().enumerate() {
-        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
-        let (c, r) = frame(track, at);
-        out.push(place(
-            "billboard_frame",
-            c + r * side * 16.5 + Vec3::Y * 0.5,
-            yaw_to(-r * side),
-            1.0,
-        ));
-    }
+    // The billboards themselves are part of the track mesh (`track::skyway_billboards`).
+    let mut out = arches(track);
     // Cruise above the launch straight. The relay hangs lower beside the far S-bends.
     for (name, at, lateral, altitude) in [
         ("sky_freighter", 0.065, -47.0, 8.0),
@@ -616,13 +705,7 @@ mod tests {
         }
         assert!(!castle.contains(&"cactus"), "no cacti at the castle");
         let sky = names(2);
-        for n in [
-            "neon_arch",
-            "antenna_pylon",
-            "billboard_frame",
-            "sky_freighter",
-            "solar_relay",
-        ] {
+        for n in ["neon_arch", "antenna_pylon", "sky_freighter", "solar_relay"] {
             assert!(sky.contains(&n), "skyway lacks {n}");
         }
         assert!(!sky.contains(&"skull_rock"));
@@ -644,30 +727,99 @@ mod tests {
     }
 
     #[test]
-    fn scenery_off_keeps_only_track_features() {
+    fn hidden_props_are_out_of_reach() {
+        // With scenery off a walled circuit hides its props; their solid parts must all stand
+        // beyond the barriers, or a client with scenery off would hit invisible walls.
         use crate::track::{TRACKS, build_track};
-        for (i, def) in TRACKS.iter().enumerate() {
+        for def in &TRACKS {
             let t = build_track(def);
-            let kept: Vec<&str> = track_features(&t)
-                .iter()
-                .map(|p| PROPS[p.kind].name)
-                .collect();
-            if i == 2 {
-                assert!(
-                    !kept.is_empty() && kept.iter().all(|n| *n == "neon_arch"),
-                    "{kept:?}"
-                );
-            } else {
-                assert!(kept.is_empty(), "{}: {kept:?}", def.name);
+            if !t.walled {
+                continue;
+            }
+            for s in solids(&t) {
+                for p in &s.base {
+                    let d = crate::terrain::distance_to(&t.centerline, p.x, p.z);
+                    assert!(
+                        d > ROAD_HALF_WIDTH + 0.5,
+                        "{}: a solid prop corner {d:.1} m from the centerline",
+                        def.name
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn karts_bump_off_props_instead_of_driving_through() {
+        use crate::track::{TRACKS, build_track};
+        use rivet_physics::{DriveInput, VehicleParams, VehicleState, step};
+        let t = build_track(&TRACKS[0]);
+        let params = VehicleParams::default();
+        let (mut tested, mut reached) = (0, 0);
+        for p in placements(&t) {
+            let name = PROPS[p.kind].name;
+            if !["bus_wreck", "wreck_car", "barrel_stack", "fuel_tanks"].contains(&name) {
+                continue;
+            }
+            // Drive flat out at the prop's center from 12 m farther out, heading for the road
+            // (from the road side, a kart can sail over a low stack off the banked edge).
+            let block = PROPS[p.kind].solid[0];
+            let model = p.model();
+            let center = model.transform_point3(Vec3::new(block.center[0], 0.0, block.center[1]));
+            let road = t
+                .centerline
+                .iter()
+                .min_by(|a, b| {
+                    let flat = |q: &Vec3| Vec3::new(q.x - center.x, 0.0, q.z - center.z).length();
+                    flat(a).total_cmp(&flat(b))
+                })
+                .expect("a centerline");
+            let dir = Vec3::new(road.x - center.x, 0.0, road.z - center.z).normalize();
+            let start = center - dir * (12.0 + p.size * 0.5);
+            let ground = t
+                .collision
+                .raycast(start + Vec3::Y * 30.0, Vec3::NEG_Y, 60.0)
+                .expect("ground near the prop");
+            let mut kart = VehicleState::spawn(ground.point + Vec3::Y * 0.6, dir.x.atan2(dir.z));
+            kart.velocity = dir * 25.0;
+            let to_local = model.inverse();
+            let mut closest = f32::MAX;
+            for tick in 0..120 {
+                let input = DriveInput {
+                    throttle: 1.0,
+                    ..Default::default()
+                };
+                step(&mut kart, &params, input, &t.collision, 1.0 / 60.0);
+                let local = to_local.transform_point3(kart.position);
+                let inside = (local.x - block.center[0]).abs() < block.half[0]
+                    && (local.z - block.center[1]).abs() < block.half[1];
+                assert!(
+                    !inside,
+                    "drove into the {name} at {} (tick {tick}, kart {}, local {local})",
+                    p.pos, kart.position
+                );
+                let gap = ((local.x - block.center[0]).abs() - block.half[0])
+                    .max((local.z - block.center[1]).abs() - block.half[1]);
+                closest = closest.min(gap * p.size);
+            }
+            // (A neighbor can block the way: a barrel stack beside a bus wreck.)
+            if closest < 2.0 {
+                reached += 1;
+            }
+            tested += 1;
+        }
+        assert!(tested >= 8, "only {tested} props tested");
+        assert!(
+            reached * 4 >= tested * 3,
+            "reached only {reached} of {tested}"
+        );
     }
 
     #[test]
     fn skyway_arches_follow_the_road_bank() {
         use crate::track::{TRACKS, build_track};
         let t = build_track(&TRACKS[2]);
-        for a in track_features(&t) {
+        for a in arches(&t) {
             let i = t
                 .centerline
                 .iter()

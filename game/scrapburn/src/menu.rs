@@ -51,8 +51,6 @@ pub enum MenuAction {
     PresetChanged,
     /// A different track was picked on the title screen.
     TrackChanged,
-    /// Background scenery was switched on or off.
-    SceneryChanged,
     /// Host an online game.
     HostGame,
     PrivateHost,
@@ -80,10 +78,10 @@ pub struct Settings {
     pub fps: FpsDisplay,
     /// Index into `track::TRACKS`.
     pub track: usize,
-    /// Background scenery (props and rocks around the circuits).
-    pub scenery: bool,
     /// The preset is being picked automatically.
     pub auto_preset: bool,
+    /// The race soundtrack.
+    pub music: bool,
 }
 
 /// How frame rate is shown in game (F3 / Select cycles it).
@@ -124,8 +122,8 @@ impl Default for Settings {
             rivals: 7,
             fps: FpsDisplay::Off,
             track: 0,
-            scenery: true,
             auto_preset: false,
+            music: true,
         }
     }
 }
@@ -169,7 +167,7 @@ pub const SETTING_PRESET: usize = 0;
 pub const SETTING_LAPS: usize = 1;
 pub const SETTING_RIVALS: usize = 2;
 pub const SETTING_FPS: usize = 3;
-pub const SETTING_SCENERY: usize = 4;
+pub const SETTING_MUSIC: usize = 4;
 const LAP_CHOICES: [u32; 3] = [1, 3, 5];
 const RIVAL_CHOICES: [usize; 3] = [3, 5, 7];
 
@@ -368,7 +366,7 @@ impl MenuState {
                 format!("LAPS  < {} >", s.laps),
                 format!("RIVALS  < {} >", s.rivals),
                 format!("SHOW FPS  < {} >", s.fps.label()),
-                format!("SCENERY  < {} >", if s.scenery { "ON" } else { "OFF" }),
+                format!("MUSIC  < {} >", if s.music { "ON" } else { "OFF" }),
                 "BACK".into(),
             ],
             Screen::Paused => vec![
@@ -561,10 +559,7 @@ impl MenuState {
                     }
                     SETTING_LAPS => s.laps = cycle(&LAP_CHOICES, s.laps, step),
                     SETTING_RIVALS => s.rivals = cycle(&RIVAL_CHOICES, s.rivals, step),
-                    SETTING_SCENERY => {
-                        s.scenery = !s.scenery;
-                        return MenuAction::SceneryChanged;
-                    }
+                    SETTING_MUSIC => s.music = !s.music,
                     SETTING_FPS => {
                         s.fps = if step > 0 {
                             s.fps.next()
@@ -1030,17 +1025,17 @@ mod tests {
     }
 
     #[test]
-    fn scenery_toggles_and_defaults_on() {
+    fn music_toggles_and_defaults_on() {
         let mut s = Settings::default();
-        assert!(s.scenery);
+        assert!(s.music);
         let mut m = MenuState::new(Screen::Settings);
-        m.selected = SETTING_SCENERY;
-        assert!(m.items(&s)[SETTING_SCENERY].contains("ON"));
-        assert_eq!(
-            m.handle(press(|i| i.right = true), &mut s),
-            MenuAction::SceneryChanged
-        );
-        assert!(!s.scenery);
+        m.selected = SETTING_MUSIC;
+        assert!(m.items(&s)[SETTING_MUSIC].contains("MUSIC  < ON >"));
+        m.handle(press(|i| i.select = true), &mut s);
+        assert!(!s.music);
+        assert!(m.items(&s)[SETTING_MUSIC].contains("OFF"));
+        m.handle(press(|i| i.left = true), &mut s);
+        assert!(s.music);
     }
 
     #[test]

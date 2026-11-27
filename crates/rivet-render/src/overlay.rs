@@ -227,6 +227,18 @@ impl Overlay {
         }
     }
 
+    /// Solid rectangle with corners rounded to `radius` (clamped to half the shorter side) and
+    /// a one-pixel antialiased rim. A square with `radius` at half its side is a circle.
+    pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: [f32; 4]) {
+        self.vertices
+            .extend(rounded_rect_vertices(x, y, w, h, radius, color));
+    }
+
+    /// Solid circle of radius `r` centered on (`cx`, `cy`), with an antialiased rim.
+    pub fn circle(&mut self, cx: f32, cy: f32, r: f32, color: [f32; 4]) {
+        self.rounded_rect(cx - r, cy - r, 2.0 * r, 2.0 * r, r, color);
+    }
+
     /// Label text whose capitals are vertically centered on `cy`.
     pub fn label_centered(&mut self, x: f32, cy: f32, scale: f32, color: [f32; 4], s: &str) {
         let y = match &self.atlas {
@@ -293,5 +305,129 @@ impl Overlay {
         pass.set_bind_group(0, &self.screen_bg, &[]);
         pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
         pass.draw(0..self.uploaded, 0..1);
+    }
+}
+
+/// Width in pixels of the antialiased rim around rounded shapes.
+const FEATHER: f32 = 1.0;
+
+/// Points per quarter arc, enough that a corner of `radius` pixels looks smooth.
+fn arc_steps(radius: f32) -> usize {
+    ((radius * 0.6).ceil() as usize).clamp(2, 24)
+}
+
+/// Clockwise outline of a rounded rectangle whose corner arcs are grown by `offset` pixels.
+fn rounded_outline(x: f32, y: f32, w: f32, h: f32, radius: f32, offset: f32) -> Vec<[f32; 2]> {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let steps = arc_steps(radius);
+    let r = (radius + offset).max(0.0);
+    let corners = [
+        (x + radius, y + radius, PI),
+        (x + w - radius, y + radius, 1.5 * PI),
+        (x + w - radius, y + h - radius, 0.0),
+        (x + radius, y + h - radius, FRAC_PI_2),
+    ];
+    let mut points = Vec::with_capacity(4 * (steps + 1));
+    for (cx, cy, start) in corners {
+        for i in 0..=steps {
+            let a = start + FRAC_PI_2 * i as f32 / steps as f32;
+            points.push([cx + r * a.cos(), cy + r * a.sin()]);
+        }
+    }
+    points
+}
+
+/// Triangles for `Overlay::rounded_rect`: a fan over the solid interior, then a rim that fades
+/// from `color` to transparent across `FEATHER` pixels centered on the shape's edge.
+fn rounded_rect_vertices(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    color: [f32; 4],
+) -> Vec<OverlayVertex> {
+    if w <= 0.0 || h <= 0.0 {
+        return Vec::new();
+    }
+    let radius = radius.clamp(0.0, 0.5 * w.min(h));
+    let inner = rounded_outline(x, y, w, h, radius, -0.5 * FEATHER);
+    let outer = rounded_outline(x, y, w, h, radius, 0.5 * FEATHER);
+    let clear = [color[0], color[1], color[2], 0.0];
+    let vertex = |pos, color| OverlayVertex {
+        pos,
+        uv: [-1.0, -1.0],
+        color,
+    };
+    let center = [x + 0.5 * w, y + 0.5 * h];
+    let n = inner.len();
+    let mut out = Vec::with_capacity(n * 9);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        out.extend([
+            vertex(center, color),
+            vertex(inner[i], color),
+            vertex(inner[j], color),
+            vertex(inner[i], color),
+            vertex(outer[i], clear),
+            vertex(outer[j], clear),
+            vertex(inner[i], color),
+            vertex(outer[j], clear),
+            vertex(inner[j], color),
+        ]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Area of the opaque fan triangles (the rim triangles each have a transparent corner).
+    fn fan_area(v: &[OverlayVertex]) -> f32 {
+        v.chunks(3)
+            .filter(|t| t.iter().all(|p| p.color[3] > 0.0))
+            .map(|t| {
+                let [a, b, c] = [t[0].pos, t[1].pos, t[2].pos];
+                0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn rounded_rect_stays_within_its_bounds_plus_the_rim() {
+        let v = rounded_rect_vertices(10.0, 20.0, 60.0, 24.0, 8.0, [1.0; 4]);
+        assert_eq!(v.len() % 3, 0);
+        let eps = 1e-3;
+        for p in &v {
+            let [px, py] = p.pos;
+            assert!((9.5 - eps..=70.5 + eps).contains(&px), "x {px}");
+            assert!((19.5 - eps..=44.5 + eps).contains(&py), "y {py}");
+        }
+        assert!(
+            v.iter().any(|p| p.color[3] == 0.0),
+            "the rim fades to transparent"
+        );
+    }
+
+    #[test]
+    fn circle_covers_about_pi_r_squared() {
+        let r = 20.0;
+        let v = rounded_rect_vertices(0.0, 0.0, 2.0 * r, 2.0 * r, r, [1.0; 4]);
+        // The solid fan stops half a rim inside the edge.
+        let expected = std::f32::consts::PI * (r - 0.5 * FEATHER).powi(2);
+        let area = fan_area(&v);
+        assert!(
+            (area - expected).abs() / expected < 0.02,
+            "{area} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn oversized_radius_is_clamped_to_a_pill() {
+        let pill = rounded_rect_vertices(0.0, 0.0, 80.0, 20.0, 999.0, [1.0; 4]);
+        let clamped = rounded_rect_vertices(0.0, 0.0, 80.0, 20.0, 10.0, [1.0; 4]);
+        assert_eq!(pill.len(), clamped.len());
+        assert!(rounded_rect_vertices(0.0, 0.0, 0.0, 20.0, 5.0, [1.0; 4]).is_empty());
     }
 }
