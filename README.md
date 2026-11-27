@@ -4,7 +4,7 @@
 **Rivet**, an original Rust engine inspired by the designs of Quake 3, Doom, Source and
 Trackmania. Rivet contains no id Software code.
 
-![Title screen](docs/media/title.jpg)
+![Scrapburn main menu](docs/media/title.jpg)
 
 ## Play
 
@@ -18,15 +18,15 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 - **Multiplayer** opens private invites, direct hosting and joining, and your racer name.
 - **Garage** previews three chassis and eight finishes on your kart. Click a paint swatch or cycle finishes, then choose **Done** to save.
 - **Controls** shows keyboard and gamepad bindings and is also available in the pause menu.
-- **Settings** adjusts graphics, lap count, and rivals.
+- **Settings** adjusts graphics, lap count, and rivals. Turn **Scenery** on to see the trackside landmarks.
 
 ### The circuits
 
-| | |
+| Driver’s view | Circuit |
 |---|---|
-| ![Dustbowl Loop](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** A sundown run between sandstone pillars and rusted checkpoints. Skull banners mark the gates, and twin flares light the approach to the refinery. |
-| ![Castle Grindstone](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** Torchlit ramparts at dusk. A tight, technical fortress circuit with towers, a gatehouse, stone guardians, and a drawbridge jump. |
-| ![Skyway Zero](docs/media/skyway-zero.jpg) | **Skyway Zero.** A neon ribbon 40 m above a sleeping city at night. Fast, banked by curvature, with four boost strips. Don't look down. |
+| ![An open canyon road leading to a skull-banner gate, with a sandstone arch on the left](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** Race across an open canyon floor past a sandstone arch and a rusted refinery. Eight-meter sand shoulders give you room to run wide and still cross a checkpoint, but the loose surface costs speed. |
+| ![A sail windmill above a low stone parapet beside the castle straight](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** A sail windmill marks the opening straight. Look over the low parapet for the slate-roofed great hall midway around the lap, then follow the torchlit ramparts to the drawbridge jump. |
+| ![A cargo airship above the neon launch straight under an aurora](docs/media/skyway-zero.jpg) | **Skyway Zero.** Launch alongside a cargo airship and follow the banked neon deck above the city. A solar relay marks the far S-bends, and four boost strips reward a clean line. |
 
 ### Weapons
 
@@ -54,7 +54,7 @@ mark the three boost tiers. Orange pads boost you too, and sand slows you down.
 
 ## Online
 
-![Online: host and guest](docs/media/online.jpg)
+![Host and guest racing on Dustbowl Loop with the human standings visible](docs/media/online.jpg)
 
 One player hosts and the others join. The host's machine runs the race, the bots and the
 weapons; each player drives their own kart locally, so steering feels immediate at any ping.
@@ -99,7 +99,7 @@ in the terminal. Packaging builds the helper with the pinned toolchain in
 ## Options
 
 ```sh
-just run --track castle --mode elimination   # straight into a race
+just run --track castle                      # open with Castle Grindstone selected
 just run --preset low                        # for older integrated GPUs
 just bench                                   # 30 s automated benchmark
 ```
@@ -108,16 +108,17 @@ just bench                                   # 30 s automated benchmark
   driving your display.
 - `--size 1600x900`, `--present vsync|immediate`.
 - `--preset low|medium|high`: Low renders the 3D scene at 75% scale.
-- `--track dustbowl|castle|skyway`, `--mode race|timetrial|elimination`.
+- `--track dustbowl|castle|skyway` selects the circuit. For an automated race,
+  `just bench --track castle --mode elimination` selects both the circuit and the race mode.
 
-A GPU with no monitor attached can still be benchmarked offscreen:
+From a graphical session, use `--offscreen` to benchmark a GPU without a monitor attached.
 
 ```sh
 just bench --adapter integrated --offscreen --screenshot shot.png
 ```
 
-Measured on an Intel UHD 730 (desktop iGPU), Medium preset, 1600×900, 8 karts:
-about 155 fps on Dustbowl and Castle and about 190 fps on Skyway (5–7 ms GPU per frame).
+With eight karts on an Intel UHD 730 at 1600×900 and Medium settings, Dustbowl averaged
+131 fps, Castle 139 fps, and Skyway 175 fps. [Benchmark results and reproduction steps](docs/perf/2026-11-27-circuit-scenery.md)
 
 ## Building
 
@@ -168,8 +169,10 @@ Rivet is a set of small crates, each usable on its own:
 | `rivet-assets` | GLB and texture loading |
 | `rivet-net` | UDP host/client links with a handshake, session tokens and timeouts, plus a byte codec |
 
-Art is original: textures were generated with Codex, models with Tripo and cleaned up in
-Blender (see the `PROVENANCE.md` files under `assets/`). The HUD font is Rajdhani (SIL OFL).
+The karts and 19 scenery props were modeled with Tripo and prepared in Blender. Five circuit
+landmarks use original procedural meshes with embedded texture atlases. The terrain and road
+surfaces use original generated textures. The HUD uses Rajdhani under the SIL Open Font License.
+[Model credits](assets/models/PROVENANCE.md) · [Texture credits](assets/textures/PROVENANCE.md) · [Font credits](assets/fonts/PROVENANCE.md)
 
 ## License
 

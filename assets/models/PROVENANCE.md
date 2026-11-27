@@ -12,6 +12,17 @@ and teal paint, riveted armor plates, front ram bar, no driver, game asset, clea
 
 Tripo spend is tracked in `assets/tripo-spend.tsv` (project cap: 800 credits).
 
-The sandstone window, sail mill, great hall, sky freighter, and solar relay are original
-procedural meshes authored for the three circuits. Each GLB includes a surface atlas with
-patterns for sandstone strata, masonry, slate, wood grain, canvas, and metal panels.
+## Scenery props
+
+The 19 original Tripo props span all three circuits. The Blender preparation scripts record
+the triangle budget for each prop. [Dustbowl props](../../tools/blender/prepare_props.sh) ·
+[Castle and Skyway props](../../tools/blender/prepare_props2.sh)
+
+The five landmarks below use original procedural meshes. Each GLB embeds its own copy of
+a surface atlas with sandstone strata, masonry, slate, wood grain, canvas, and metal panels.
+
+| Circuit | Landmark models |
+|---|---|
+| Dustbowl Loop | [Sandstone arch](props/sandstone_window.glb) |
+| Castle Grindstone | [Sail windmill](props/sail_mill.glb) and [great hall](props/great_hall.glb) |
+| Skyway Zero | [Cargo airship](props/sky_freighter.glb) and [solar relay](props/solar_relay.glb) |

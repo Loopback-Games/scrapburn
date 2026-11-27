@@ -18,6 +18,11 @@ within 6 months, not archived or deprecated, license compatible with MIT OR Apac
 | serde_json | glTF (GLB) JSON chunk parsing | serde-rs, MIT/Apache |
 | fontdue | TrueType HUD text rasterization | mooman219, 1.7k stars, MIT/Apache |
 | cpal | Audio output | RustAudio, ~3k stars, Apache-2.0; Linux needs ALSA headers (Homebrew alsa-lib locally, libasound2-dev in CI) |
+| arboard | Copy and paste private race invites | Text-only clipboard support, MIT/Apache |
+| ureq | Fetch release metadata and update archives over HTTPS | Uses the OS trust store, MIT/Apache |
+| rustls | TLS for the updater | Uses the ring cryptography provider, Apache-2.0/ISC/MIT |
+| sha2 | Verify update archives with SHA-256 | MIT/Apache |
+| flate2 | Decode deflated ZIP entries and verify their CRCs | MIT/Apache |
 | cargo-audit (tool) | `just security` | RustSec (Rust working group), first-party carve-out |
 
 ## Exceptions
