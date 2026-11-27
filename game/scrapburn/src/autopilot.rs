@@ -4,10 +4,18 @@ use glam::Vec3;
 use rivet_ai::{BotDriver, RacingLine};
 use rivet_physics::{DriveInput, VehicleParams, VehicleState};
 
-/// Drives like a top bot with no lane offset and no traffic.
+/// Drives like a top bot with no lane offset and no traffic. Stateless: a fresh driver each
+/// tick, so its recovery maneuvers (which need memory) never kick in here.
 pub fn autopilot(state: &VehicleState, centerline: &[Vec3]) -> DriveInput {
     let line = RacingLine::new(centerline.to_vec());
-    BotDriver::new(1.0, 0.0).drive(state, &VehicleParams::default(), &line, &[], 1.0)
+    BotDriver::new(1.0, 0.0).drive(
+        state,
+        &VehicleParams::default(),
+        &line,
+        &[],
+        1.0,
+        1.0 / 60.0,
+    )
 }
 
 #[cfg(test)]

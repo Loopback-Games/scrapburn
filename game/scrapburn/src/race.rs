@@ -2,7 +2,7 @@
 
 use glam::Vec3;
 use rivet_ai::{BotDriver, RacingLine};
-use rivet_physics::{DriveInput, VehicleParams, VehicleState, collide_karts, step};
+use rivet_physics::{DriveInput, VehicleParams, VehicleState, collide_karts, step_graded};
 
 use crate::combat::{Combat, CombatEvent};
 use crate::controls::HopLatch;
@@ -14,8 +14,11 @@ const KART_RADIUS: f32 = 1.0;
 /// Mass of an average kart (kg); seats vary around it.
 pub const BASE_MASS: f32 = 300.0;
 const START_BOOST: (f32, f32) = (6.0, 0.9);
+/// A bot slower than this (m/s) for `STUCK_SECONDS` is put back at its last checkpoint: nose
+/// against a rock or pillar it can't see its way round. Long enough for a back-out or a
+/// turn-around (both keep moving), short enough not to sit out a chunk of the lap.
 const STUCK_SPEED: f32 = 2.0;
-const STUCK_SECONDS: f32 = 3.0;
+const STUCK_SECONDS: f32 = 2.0;
 /// Farther than this from the centerline (beyond the barriers) for this long = put back.
 const OFF_TRACK_DISTANCE: f32 = crate::track::ROAD_HALF_WIDTH + 18.0;
 const OFF_TRACK_SECONDS: f32 = 1.5;
@@ -23,6 +26,34 @@ const SPAWN_LIFT: f32 = 0.6;
 /// Catch-up range: bots far behind the player speed up, far ahead slow down.
 const CATCH_UP: (f32, f32) = (0.95, 1.06);
 const CATCH_UP_DISTANCE: f32 = 6.0; // in checkpoints
+/// How far (m) the kart's center may stray past the road edge before offroad ground slows it:
+/// a wheel-track plus a kart-width of slack, so clipping a curb or hanging the tail over the
+/// edge mid-drift is free.
+const OFFROAD_GRACE: f32 = 2.5;
+/// Beyond the grace, the penalty ramps up over this many meters to its full strength (the
+/// outer edge of Dustbowl's sand shoulder, where the open desert starts).
+const OFFROAD_RAMP: f32 = 5.0;
+
+/// Offroad penalty grade (0..1) for a kart `distance` m from the track centerline: zero within
+/// the grace past the road edge, then easing in to 1 at full depth.
+fn offroad_grade(distance: f32) -> f32 {
+    let past = distance - crate::track::ROAD_HALF_WIDTH - OFFROAD_GRACE;
+    let t = (past / OFFROAD_RAMP).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// One physics tick for `state`, with the offroad penalty graded by distance from the road.
+fn step_kart(
+    state: &mut VehicleState,
+    params: &VehicleParams,
+    input: DriveInput,
+    track: &Track,
+    dt: f32,
+) {
+    let p = state.position;
+    let grade = offroad_grade(crate::terrain::distance_to(&track.centerline, p.x, p.z));
+    step_graded(state, params, input, &track.collision, grade, dt);
+}
 
 /// Eight palette tints for the field (multiplied into the kart texture).
 pub const TINTS: [[f32; 3]; 8] = [
@@ -118,6 +149,9 @@ pub struct Race {
 const WRONG_WAY_SPEED: f32 = 3.0;
 /// Seconds of that before the warning shows.
 const WRONG_WAY_SECONDS: f32 = 0.8;
+/// A bot (never a human) still going the wrong way after this many seconds is put back at
+/// its last checkpoint: a safety net under the driver's own turn-around.
+const WRONG_WAY_RESPAWN_SECONDS: f32 = 4.0;
 
 /// Brakes on during the countdown: a kart may settle on its suspension but not roll.
 fn hold_on_grid(r: &mut Racer) {
@@ -353,7 +387,7 @@ impl Race {
             DriveInput::default()
         } else if let Some(bot) = r.bot.as_mut() {
             let near: Vec<Vec3> = others.iter().map(|o| o.0).collect();
-            bot.drive(&r.state, &r.params, line, &near, 1.0)
+            bot.drive(&r.state, &r.params, line, &near, 1.0, dt)
         } else {
             r.hop.press(input.hop);
             DriveInput {
@@ -361,7 +395,7 @@ impl Race {
                 ..input
             }
         };
-        step(&mut r.state, &r.params, input, &track.collision, dt);
+        step_kart(&mut r.state, &r.params, input, track, dt);
         if !racing {
             hold_on_grid(r);
         } else {
@@ -380,7 +414,8 @@ impl Race {
 
     pub fn progress(&self, i: usize, track: &Track) -> f32 {
         let r = &self.racers[i];
-        r.laps.progress(r.state.position, &track.checkpoints)
+        r.laps
+            .progress(r.state.position, &track.checkpoints, &track.centerline)
     }
 
     /// Racer indices from first to last: finishers by place, then by progress.
@@ -418,6 +453,7 @@ impl Race {
         r.prev = r.state.clone();
         r.stuck = 0.0;
         r.off_track = 0.0;
+        r.wrong = 0.0;
     }
 
     /// One fixed tick. `player_input.hop` is latched until a tick consumes it.
@@ -486,7 +522,7 @@ impl Race {
                     .filter(|(j, _)| *j != i)
                     .map(|(_, p)| *p)
                     .collect();
-                Some(bot.drive(&r.state, &r.params, &self.line, &others, scale))
+                Some(bot.drive(&r.state, &r.params, &self.line, &others, scale, dt))
             } else {
                 r.hop.press(player_input.hop);
                 Some(DriveInput {
@@ -495,7 +531,7 @@ impl Race {
                 })
             };
             if let Some(input) = input {
-                step(&mut r.state, &r.params, input, &track.collision, dt);
+                step_kart(&mut r.state, &r.params, input, track, dt);
                 if !racing {
                     hold_on_grid(r);
                 }
@@ -535,8 +571,12 @@ impl Race {
             let p = r.state.position;
             let far = crate::terrain::distance_to(&track.centerline, p.x, p.z) > OFF_TRACK_DISTANCE;
             r.off_track = if far { r.off_track + dt } else { 0.0 };
-            let lost =
-                p.y < track.fall_y || r.stuck > STUCK_SECONDS || r.off_track > OFF_TRACK_SECONDS;
+            let bot_wrong_way =
+                r.bot.is_some() && self.player != Some(i) && r.wrong > WRONG_WAY_RESPAWN_SECONDS;
+            let lost = p.y < track.fall_y
+                || r.stuck > STUCK_SECONDS
+                || r.off_track > OFF_TRACK_SECONDS
+                || bot_wrong_way;
             // Remote karts respawn on their own machine.
             if lost && !r.remote {
                 Self::respawn(r, track);
@@ -692,6 +732,208 @@ mod tests {
                 "track {track_i}: no progress after recovering ({p0:.2} -> {p1:.2})"
             );
         }
+    }
+
+    /// How a wreck leaves a bot.
+    #[derive(Debug, Clone, Copy)]
+    struct Wreck {
+        /// Centerline index the bot lands at.
+        at: usize,
+        /// Heading relative to the track direction (degrees, + = left).
+        heading: f32,
+        /// Lateral offset from the centerline (m, + = right).
+        lateral: f32,
+        /// Speed along the new heading (m/s); negative = rolling backwards.
+        speed: f32,
+        /// Extra velocity along the track direction (m/s; negative = knocked back down it).
+        shove: f32,
+        /// Spun out by a hit (a one-second spin keeping 70% of the speed).
+        spin: bool,
+        /// Height above the road (m): airborne.
+        lift: f32,
+    }
+
+    /// The ways a wreck leaves a bot, as (lateral, speed, shove, spin, lift). `HARD_WRECKS` is
+    /// the slice that has caught regressions; the rest only run in `wreck_sweep`.
+    const WRECK_MODES: [(f32, f32, f32, bool, f32); 8] = [
+        (0.0, 0.0, 0.0, false, 0.0),
+        (0.0, 22.0, 0.0, false, 0.0),
+        // Against a barrier, still rolling (a turn-around toward the barrier scraped along it).
+        (5.5, 10.0, 0.0, false, 0.0),
+        (-5.5, 10.0, 0.0, false, 0.0),
+        // Spun out while knocked back down the track, or flung along it.
+        (0.0, 0.0, -20.0, true, 0.0),
+        (0.0, 0.0, 20.0, true, 0.0),
+        // Rolling backwards.
+        (0.0, -8.0, 0.0, false, 0.0),
+        // Airborne.
+        (0.0, 15.0, 0.0, false, 3.0),
+    ];
+    const HARD_WRECKS: std::ops::Range<usize> = 2..7;
+    /// Seconds a wrecked bot gets to sort itself out, and then to show it is racing again.
+    const WRECK_SETTLE: f32 = 5.0;
+    const WRECK_WATCH: f32 = 4.0;
+    /// Centerline points (2 m) per second a recovered bot must cover: 12 m/s on average, a
+    /// third of racing speed, so a respawn or a slow turn-around still passes but rolling
+    /// backwards or scraping a wall the wrong way does not.
+    const WRECK_MIN_RATE: f32 = 6.0;
+
+    /// Puts racer 0 of a one-bot race into `w` (lap state as if it had driven there), runs
+    /// `settle + watch` seconds, and returns the centerline points it gained per second over
+    /// the last `watch` seconds, and whether it shows WRONG WAY at the end.
+    fn run_wreck(t: &Track, w: Wreck, settle: f32, watch: f32) -> (f32, bool) {
+        let mut race = Race::new(t, 1, false, 99);
+        race.phase = Phase::Racing;
+        let line = race.line.clone();
+        let n = line.len();
+        let i = w.at % n;
+        let tan = line.tangent(i);
+        let yaw = tan.x.atan2(tan.z) + w.heading.to_radians();
+        let ground = t.centerline[i] + line.right(i) * w.lateral;
+        let mut s = VehicleState::spawn(ground + Vec3::Y * (SPAWN_LIFT + w.lift), yaw);
+        s.velocity = s.forward() * w.speed + tan * w.shove;
+        if w.spin {
+            s.spin_out(1.0, 0.7);
+        }
+        // The first checkpoint past the wreck is next (wrapping to the start/finish line).
+        let next = t
+            .checkpoints
+            .iter()
+            .position(|c| line.nearest(c.center) > i)
+            .unwrap_or(0);
+        let r = &mut race.racers[0];
+        r.laps.set_net_state(next as u16, 1, 0.0);
+        r.prev = s.clone();
+        r.state = s;
+        let dt = 1.0 / 60.0;
+        let mut last = line.nearest(race.racers[0].state.position) as i64;
+        let mut gained = 0;
+        let half = n as i64 / 2;
+        for k in 0..((settle + watch) / dt) as usize {
+            race.step(t, DriveInput::default(), dt);
+            let now = line.nearest(race.racers[0].state.position) as i64;
+            // Signed points moved, across the start/finish wrap (a respawn counts as lost ground).
+            let d = (now - last + half).rem_euclid(n as i64) - half;
+            last = now;
+            if k as f32 * dt >= settle {
+                gained += d;
+            }
+        }
+        (gained as f32 / watch, race.wrong_way(0))
+    }
+
+    /// The hard wrecks at a few headings, at the start/finish line (both sides), the tightest
+    /// bend, and `extra` spots; returns the cases where the bot did not race on.
+    fn failed_wrecks(track_i: usize, extra: &[usize]) -> Vec<String> {
+        let t = crate::track::build_track(&crate::track::TRACKS[track_i]);
+        let line = RacingLine::new(t.centerline.clone());
+        let n = line.len();
+        let bend = |i: usize| line.tangent(i + n - 5).dot(line.tangent(i + 5));
+        let hairpin = (0..n)
+            .min_by(|&a, &b| bend(a).total_cmp(&bend(b)))
+            .unwrap_or(0);
+        let mut spots = vec![n - 2, 1, hairpin, (hairpin + n - 12) % n];
+        spots.extend_from_slice(extra);
+        let mut failed = Vec::new();
+        for &at in &spots {
+            for heading in [0.0, 180.0, 100.0, -120.0] {
+                for &(lateral, speed, shove, spin, lift) in &WRECK_MODES[HARD_WRECKS] {
+                    let w = Wreck {
+                        at,
+                        heading,
+                        lateral,
+                        speed,
+                        shove,
+                        spin,
+                        lift,
+                    };
+                    let (rate, wrong) = run_wreck(&t, w, WRECK_SETTLE, WRECK_WATCH);
+                    if rate < WRECK_MIN_RATE || wrong {
+                        failed.push(format!("{w:?}: {rate:.1} points/s, wrong way {wrong}"));
+                    }
+                }
+            }
+        }
+        failed
+    }
+
+    // The extra spots are where wrecked bots used to lose the most ground: long downhills
+    // (rolling backwards) and the canyon.
+    #[test]
+    fn wrecked_bots_race_on_at_dustbowl() {
+        let failed = failed_wrecks(0, &[259, 518]);
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn wrecked_bots_race_on_at_grindstone() {
+        let failed = failed_wrecks(1, &[37, 296]);
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn wrecked_bots_race_on_at_skyway() {
+        let failed = failed_wrecks(2, &[222, 629, 666]);
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// The full grid of wrecks (every 37th point, ten headings, every mode: ~6000 runs).
+    /// Slow; run with `cargo test --release -p scrapburn wreck_sweep -- --ignored`.
+    #[test]
+    #[ignore = "slow: an exhaustive sweep, run in release"]
+    fn wreck_sweep() {
+        let mut failed = Vec::new();
+        for track_i in 0..crate::track::TRACKS.len() {
+            let t = crate::track::build_track(&crate::track::TRACKS[track_i]);
+            let n = t.centerline.len() - 1;
+            let mut spots: Vec<usize> = (0..n).step_by(37).collect();
+            spots.extend([n - 4, n - 1, 1, 3]);
+            for &at in &spots {
+                for heading in [
+                    0.0, 60.0, 90.0, 120.0, 170.0, 180.0, -170.0, -120.0, -90.0, -60.0,
+                ] {
+                    for (lateral, speed, shove, spin, lift) in WRECK_MODES {
+                        let w = Wreck {
+                            at,
+                            heading,
+                            lateral,
+                            speed,
+                            shove,
+                            spin,
+                            lift,
+                        };
+                        let (rate, wrong) = run_wreck(&t, w, WRECK_SETTLE, WRECK_WATCH);
+                        if rate < WRECK_MIN_RATE || wrong {
+                            failed.push(format!("track {track_i} {w:?}: {rate:.1} points/s"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn only_local_bots_are_put_back_for_going_the_wrong_way() {
+        let t = track();
+        let mut race = Race::new(t, 3, true, 3);
+        race.set_remote(2);
+        race.phase = Phase::Racing;
+        // Everyone mid-lap, with a long WRONG WAY stint behind them.
+        for (k, r) in race.racers.iter_mut().enumerate() {
+            let at = 200 + k * 30;
+            r.state = VehicleState::spawn(t.centerline[at] + Vec3::Y * SPAWN_LIFT, 0.0);
+            r.prev = r.state.clone();
+            r.laps.sync_to(r.state.position, &t.checkpoints);
+            r.wrong = WRONG_WAY_RESPAWN_SECONDS + 1.0;
+        }
+        let before: Vec<Vec3> = race.racers.iter().map(|r| r.state.position).collect();
+        race.step(t, DriveInput::default(), 1.0 / 60.0);
+        let moved = |i: usize| race.racers[i].state.position.distance(before[i]);
+        assert!(moved(0) < 1.0, "the player is never put back for wrong way");
+        assert!(moved(1) > 5.0, "the bot goes back to its last checkpoint");
+        assert!(!race.wrong_way(1), "and is facing the right way");
+        assert!(moved(2) < 1.0, "a remote kart respawns on its own machine");
     }
 
     #[test]
@@ -893,6 +1135,83 @@ mod tests {
     }
 
     #[test]
+    fn offroad_grade_forgives_the_edge_then_ramps_to_a_cap() {
+        let edge = crate::track::ROAD_HALF_WIDTH;
+        assert_eq!(offroad_grade(0.0), 0.0, "on the road");
+        assert_eq!(offroad_grade(edge + 1.5), 0.0, "just past the edge is free");
+        assert_eq!(offroad_grade(edge + OFFROAD_GRACE), 0.0);
+        let mut last = 0.0;
+        for k in 1..=10 {
+            let g = offroad_grade(edge + OFFROAD_GRACE + OFFROAD_RAMP * k as f32 / 10.0);
+            assert!(g > last, "rises with depth: {g} after {last}");
+            last = g;
+        }
+        assert_eq!(last, 1.0, "full at the end of the ramp");
+        assert_eq!(offroad_grade(edge + 40.0), 1.0, "and never more");
+    }
+
+    /// Mean speed (m/s) over the last 1.5 s of a 4 s full-throttle run on Dustbowl, holding
+    /// `offset` m to the right of the centerline along the back straight (no pads, gentle).
+    fn dustbowl_run(t: &Track, offset: f32) -> f32 {
+        let line = RacingLine::new(t.centerline.clone());
+        let p = VehicleParams::default();
+        // A lane clear of the (solid) rocks and props on both sides, near and deep.
+        let i0 = 240;
+        let start = line.point(i0) + line.right(i0) * offset + Vec3::Y * 1.0;
+        let f = line.tangent(i0);
+        let mut s = VehicleState::spawn(start, f.x.atan2(f.z));
+        s.velocity = f * p.max_speed;
+        let (dt, mut sum, mut n) = (1.0 / 60.0, 0.0, 0);
+        for k in 0..240 {
+            let i = line.nearest(s.position);
+            let aim = line.point(i + 6) + line.right(i + 6) * offset - s.position;
+            let fwd = s.forward();
+            let side = fwd.cross(Vec3::new(aim.x, 0.0, aim.z).normalize_or(fwd)).y;
+            let input = DriveInput {
+                throttle: 1.0,
+                steer: (-side * 3.0).clamp(-1.0, 1.0),
+                ..Default::default()
+            };
+            step_kart(&mut s, &p, input, t, dt);
+            if k >= 150 {
+                sum += s.speed();
+                n += 1;
+            }
+        }
+        let d = crate::terrain::distance_to(&t.centerline, s.position.x, s.position.z);
+        assert!(
+            (d - offset.abs()).abs() < 2.0,
+            "kept the lane: {d:.1} m from the centerline, wanted {offset}"
+        );
+        sum / n as f32
+    }
+
+    #[test]
+    fn driving_off_dustbowl_is_slower_but_not_crippling() {
+        let t = crate::track::build_track(&crate::track::TRACKS[0]);
+        let p = VehicleParams::default();
+        let edge = crate::track::ROAD_HALF_WIDTH;
+        let road = dustbowl_run(&t, 0.0);
+        assert!(road > p.max_speed - 1.5, "road speed {road:.1}");
+        for side in [1.0f32, -1.0] {
+            let clipping = dustbowl_run(&t, side * (edge + 1.5));
+            let deep = dustbowl_run(&t, side * (edge + OFFROAD_GRACE + OFFROAD_RAMP + 1.0));
+            assert!(
+                clipping > road - 1.0,
+                "side {side}: clipping the edge is free ({clipping:.1} vs {road:.1})"
+            );
+            assert!(
+                deep < road * 0.8,
+                "side {side}: deep offroad is noticeably slower ({deep:.1} vs {road:.1})"
+            );
+            assert!(
+                deep > p.max_speed * p.offroad_speed_scale - 1.0,
+                "side {side}: but not below the cap ({deep:.1})"
+            );
+        }
+    }
+
+    #[test]
     fn player_starts_last() {
         let t = track();
         let r = Race::new(t, 8, true, 3);
@@ -932,6 +1251,91 @@ mod tests {
             racer.laps.sync_to(pos, &t.checkpoints);
         }
         assert_eq!(r.standings(t), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn standings_hold_across_the_road_on_every_track() {
+        // A kart 4 m behind another stays behind, wherever it is across the road.
+        for def in &crate::track::TRACKS {
+            let t = crate::track::build_track(def);
+            let mut r = Race::new(&t, 2, false, 3);
+            let cl = &t.centerline;
+            let mut wrong = Vec::new();
+            // Up to the last checkpoint: `sync_to` (a teleport) puts karts past it on the grid.
+            let end = t.checkpoints.last().map_or(cl.len(), |c| c.line) - 2;
+            for i in (4..end).step_by(3) {
+                let tangent = (cl[i + 1] - cl[i - 1]).normalize();
+                let side = tangent.cross(Vec3::Y).normalize();
+                // Near the middle of a tight bend every part of it is about as close: "ahead"
+                // is ambiguous there, so skip spots within 4 m of the bend's center.
+                let (a, b, c) = (cl[i - 2], cl[i], cl[i + 2]);
+                let turn = (b - a).normalize().angle_between((c - b).normalize());
+                let radius = b.distance(a) / turn.max(1e-6);
+                let inward = (a + c - 2.0 * b).dot(side).signum();
+                for offset in [-9.0f32, -5.0, 5.0, 9.0] {
+                    if offset.signum() == inward && offset.abs() > radius - 4.0 {
+                        continue;
+                    }
+                    r.racers[0].state.position = cl[i] + side * offset;
+                    r.racers[1].state.position = cl[i + 2];
+                    for racer in &mut r.racers {
+                        let pos = racer.state.position;
+                        racer.laps.sync_to(pos, &t.checkpoints);
+                    }
+                    if r.progress(0, &t) >= r.progress(1, &t) {
+                        wrong.push((i, offset));
+                    }
+                }
+            }
+            assert!(
+                wrong.is_empty(),
+                "{}: {} misordered spots, e.g. {:?}",
+                def.name,
+                wrong.len(),
+                &wrong[..wrong.len().min(6)]
+            );
+        }
+    }
+
+    #[test]
+    fn bots_finish_laps_on_every_track_without_piling_into_props() {
+        // Solid props and structures line the open Dustbowl's shoulders; the bots must still
+        // get round every circuit, and only rarely touch one (after a wild landing or a hit).
+        for def in &crate::track::TRACKS {
+            let t = crate::track::build_track(def);
+            let mut r = Race::new(&t, 8, false, 2);
+            let mut touching = vec![vec![false; t.solids.len()]; 8];
+            let (mut finished, mut touches, mut ticks) = (0, 0, 0);
+            while finished < 8 && ticks < 150 * 60 {
+                ticks += 1;
+                finished += r
+                    .step(&t, DriveInput::default(), 1.0 / 60.0)
+                    .iter()
+                    .filter(|e| matches!(e, RaceEvent::Finish { .. }))
+                    .count();
+                for (i, racer) in r.racers.iter().enumerate() {
+                    let p = racer.state.position;
+                    for (k, s) in t.solids.iter().enumerate() {
+                        let low = s.base.iter().map(|b| b.y).fold(f32::MAX, f32::min);
+                        let near = s.edge_distance_xz(p) < 1.7
+                            && p.y > low - 3.0
+                            && p.y < low + s.height + 1.0;
+                        touches += usize::from(near && !touching[i][k]);
+                        touching[i][k] = near;
+                    }
+                }
+            }
+            assert!(
+                finished >= 6,
+                "{}: only {finished} of 8 bots finished two laps in 150 s",
+                def.name
+            );
+            assert!(
+                touches <= 3,
+                "{}: bots ran into solid props {touches} times in two laps",
+                def.name
+            );
+        }
     }
 
     #[test]

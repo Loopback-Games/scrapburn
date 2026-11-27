@@ -1,9 +1,9 @@
 //! Dustbowl's fossil bed, refinery cableway, and windblown mesa country.
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat4, Quat, Vec2, Vec3};
 use rivet_render::{MeshData, ParticleInstance, TRIPLANAR_B, material};
 
-use super::{Layer, quad, sandstone_pillar, textured_box};
+use super::{Layer, Solid, quad, sandstone_pillar, textured_box};
 use crate::terrain;
 
 pub struct Canyon {
@@ -291,7 +291,9 @@ fn skull(mesh: &mut MeshData, frame: Mat4) {
 }
 
 impl Canyon {
-    pub(super) fn build(mesh: &mut MeshData, line: &[Vec3]) -> Self {
+    /// Builds the landmarks into `mesh` and their solid parts into `solids`: the tram towers,
+    /// the rib roots, the skull and the mesa pillars. The rib arcs and the cable are overhead.
+    pub(super) fn build(mesh: &mut MeshData, solids: &mut Vec<Solid>, line: &[Vec3]) -> Self {
         let frame = |at: f32| {
             let i = (at * (line.len() - 1) as f32) as usize;
             let f = line[i + 1] - line[i];
@@ -300,6 +302,14 @@ impl Canyon {
         let ground = |p: Vec3| Vec3::new(p.x, terrain::height_at(line, p.x, p.z), p.z);
         let tram = frame(0.325) * Mat4::from_rotation_y(0.24);
         cableway(mesh, tram);
+        for x in [-SPAN, SPAN] {
+            solids.push(Solid::upright_box(
+                tram,
+                Vec3::new(x, -4.0, 0.0),
+                Vec2::new(4.3, 3.2),
+                cable(x, 0.0).y + 4.0,
+            ));
+        }
         // The carcass curves with the first straight. Only the tips reach over the lane.
         for i in 0..9 {
             let t = i as f32 / 8.0;
@@ -308,6 +318,13 @@ impl Canyon {
             let root = ground(road.transform_point3(Vec3::new(-22.0, 0.0, 0.0))) - Vec3::Y * 1.8;
             let fossil = Mat4::from_cols(road.x_axis, road.y_axis, road.z_axis, root.extend(1.0))
                 * Mat4::from_rotation_y(0.18 * (i as f32 * 1.9).sin());
+            // The rib roots and the vertebra between them.
+            solids.push(Solid::upright_box(
+                fossil,
+                Vec3::new(0.0, 0.0, 0.1 * size),
+                Vec2::new(2.2 * size, 3.4 * size),
+                6.0,
+            ));
             // Broad vertebrae peek through the sand between the rib roots.
             bone(
                 mesh,
@@ -340,11 +357,15 @@ impl Canyon {
         }
         let neck = frame(0.091);
         let head = ground(neck.transform_point3(Vec3::new(-24.0, 0.0, 0.0))) - Vec3::Y * 0.75;
-        skull(
-            mesh,
-            Mat4::from_cols(neck.x_axis, neck.y_axis, neck.z_axis, head.extend(1.0))
-                * Mat4::from_rotation_y(-0.75),
-        );
+        let skull_frame = Mat4::from_cols(neck.x_axis, neck.y_axis, neck.z_axis, head.extend(1.0))
+            * Mat4::from_rotation_y(-0.75);
+        skull(mesh, skull_frame);
+        solids.push(Solid::upright_box(
+            skull_frame,
+            Vec3::new(0.0, 0.0, -2.7),
+            Vec2::new(5.2, 9.2),
+            9.0,
+        ));
         let basin = frame(0.53);
         for (i, (x, z, r, h)) in [
             (95.0, 85.0, 25.0, 56.0),
@@ -357,6 +378,17 @@ impl Canyon {
             let p = ground(basin.transform_point3(Vec3::new(x, 0.0, z)));
             if terrain::distance_to(line, p.x, p.z) > r + 16.0 {
                 sandstone_pillar(mesh, p, r, h, i as u64 + 310);
+                solids.push(Solid {
+                    base: (0..12)
+                        .map(|k| {
+                            let a = k as f32 * std::f32::consts::TAU / 12.0;
+                            // Sunk deep: the dunes around a wide pillar fall away.
+                            p - Vec3::Y * 6.0 + Vec3::new(a.cos(), 0.0, a.sin()) * r * 0.8
+                        })
+                        .collect(),
+                    up: Vec3::Y,
+                    height: h + 6.0,
+                });
             }
         }
         Self {
@@ -412,7 +444,7 @@ mod tests {
     fn canyon_landmarks_leave_room_to_drive() {
         let track = build_track(&TRACKS[0]);
         let mut landmarks = MeshData::default();
-        let canyon = Canyon::build(&mut landmarks, &track.centerline);
+        let canyon = Canyon::build(&mut landmarks, &mut Vec::new(), &track.centerline);
         let check = |p: Vec3| {
             let road = track
                 .centerline

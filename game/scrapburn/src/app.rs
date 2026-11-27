@@ -32,7 +32,7 @@ use scrapburn::netplay::{
 use scrapburn::particles::{Blend, Particle, ParticleSystem};
 use scrapburn::race::{Phase, Race, RaceEvent};
 use scrapburn::scenery;
-use scrapburn::sound::SoundDirector;
+use scrapburn::sound::{MusicCue, SoundDirector};
 use scrapburn::track::{TRACKS, Track, build_track};
 use scrapburn::update;
 use scrapburn::{MAX_STEPS, TICK_DT};
@@ -482,11 +482,7 @@ impl Game {
             .iter()
             .map(|m| m.as_ref().map(|m| GpuMesh::new(&ctx.device, m)))
             .collect();
-        let placements = if settings.scenery {
-            scenery::placements(&track)
-        } else {
-            scenery::track_features(&track)
-        };
+        let placements = scenery::placements(&track);
         let g = |m: MeshData| GpuMesh::new(&ctx.device, &m);
         let service_bay = g(crate::garage::service_bay());
         let fx_meshes = FxMeshes {
@@ -705,15 +701,6 @@ impl Game {
         if let Some(next) = self.circuit.and_then(|c| c.next(&standings)) {
             self.circuit = Some(next);
             self.play_round(mode);
-        }
-    }
-
-    /// Props around the circuit: everything, or just the track's own features.
-    fn scenery_for(&self, track: &Track) -> Vec<scenery::Placement> {
-        if self.settings.scenery {
-            scenery::placements(track)
-        } else {
-            scenery::track_features(track)
         }
     }
 
@@ -1189,7 +1176,7 @@ impl Game {
         self.track = build_track(&TRACKS[self.settings.track % TRACKS.len()]);
         self.track_meshes = [&self.track.road, &self.track.terrain, &self.track.props]
             .map(|m| GpuMesh::new(&self.ctx.device, m));
-        self.placements = self.scenery_for(&self.track);
+        self.placements = scenery::placements(&self.track);
         self.flame_points = flame_points(&self.track, &self.placements);
         self.flame_fx = ParticleSystem::new(1500);
         self.scene.lighting = scrapburn::track::lighting(self.track.id);
@@ -1379,10 +1366,6 @@ impl Game {
                         }
                     }
                     MenuAction::TrackChanged => self.load_track(),
-                    MenuAction::SceneryChanged => {
-                        self.placements = self.scenery_for(&self.track);
-                        self.flame_points = flame_points(&self.track, &self.placements);
-                    }
                     MenuAction::PrivateHost => self.private_game(true),
                     MenuAction::PrivateJoin => self.private_game(false),
                     MenuAction::HostGame => self.host_game(false),
@@ -1538,6 +1521,24 @@ impl Game {
                 ear: self.camera.eye(),
                 right,
             };
+            let racing = self.race.phase == Phase::Racing;
+            let in_race = matches!(self.session, Session::Play(_));
+            let music = match self.menu.screen {
+                _ if !self.settings.music => MusicCue::Off,
+                Screen::Playing if in_race && racing => MusicCue::Race,
+                // The countdown: silence, then the circuit's song on GO.
+                Screen::Playing if in_race => MusicCue::Off,
+                Screen::Results if in_race => MusicCue::Results,
+                // The pause menu, and the settings and controls opened from it.
+                Screen::Paused | Screen::Settings | Screen::Controls if in_race => {
+                    if racing {
+                        MusicCue::Paused
+                    } else {
+                        MusicCue::Off
+                    }
+                }
+                _ => MusicCue::Menu,
+            };
             self.sound.update(
                 audio,
                 &self.race,
@@ -1546,6 +1547,8 @@ impl Game {
                 self.focus(),
                 active,
             );
+            self.sound
+                .music(audio, &self.race, self.focus(), self.track.id, music);
         }
         if !self.minimized {
             self.render(frame_dt as f32, simulate);
@@ -1827,12 +1830,10 @@ impl Game {
             return;
         };
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        // Road, terrain, and (with scenery on) the rocks.
-        let shown = if self.settings.scenery { 3 } else { 2 };
         let mut draws: Vec<Draw> = self
             .track_meshes
             .iter()
-            .take(if garage { 0 } else { shown })
+            .take(if garage { 0 } else { 3 })
             .map(|m| Draw::new(m, Mat4::IDENTITY))
             .collect();
         if garage {
@@ -1909,9 +1910,7 @@ impl Game {
             }
             // Scenery: frustum-culled; small props dropped far away; shadows only near the focus.
             let frustum = rivet_render::Frustum::from_view_proj(&(view.proj * view.view));
-            if self.settings.scenery
-                && let Some(canyon) = &self.track.canyon
-            {
+            if let Some(canyon) = &self.track.canyon {
                 for model in canyon.skips(view.time) {
                     if frustum.sphere_visible(model.transform_point3(-Vec3::Y * 2.5), 5.6) {
                         draws.push(Draw::new(&self.ore_skip, model));

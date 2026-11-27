@@ -20,6 +20,7 @@ pub mod menu;
 pub mod netplay;
 pub mod particles;
 pub mod png;
+pub mod posters;
 pub mod race;
 pub mod scenery;
 pub mod sound;

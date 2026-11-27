@@ -81,6 +81,21 @@ const DODGE_SHIFT: f32 = 3.2;
 const MAX_LANE: f32 = 5.0;
 /// Above this speed a big heading error means brake; below it, turn around under power.
 const SHARP_BRAKE_SPEED: f32 = 10.0;
+/// Rolling backwards faster than this (m/s) flips the steering: a reversing kart yaws the
+/// other way for the same steer, so the nose must be steered as if in reverse gear.
+const ROLLING_BACK_SPEED: f32 = 0.5;
+/// Throttle on, grounded, yet slower than this (m/s) for `BLOCKED_SECONDS`: nose against a
+/// barrier, where a kart can't turn (steering needs speed). Back out for `BACK_OUT_SECONDS`.
+const BLOCKED_SPEED: f32 = 1.0;
+const BLOCKED_SECONDS: f32 = 0.4;
+const BACK_OUT_SECONDS: f32 = 0.9;
+/// Backing out ends early once the nose is this close (rad) to the way to go.
+const BACK_OUT_DONE_ANGLE: f32 = 0.6;
+/// Heading error (rad) beyond which the target counts as right behind and the bot picks its
+/// turn by the road's room instead (see `drive`).
+const COMMIT_TURN_ANGLE: f32 = 2.6;
+/// Farther than this (m) off the line, a turn-around always swings toward the line.
+const TURN_ROOM_OFFSET: f32 = 1.5;
 
 /// One bot's driving style and short-term state.
 #[derive(Debug, Clone)]
@@ -90,6 +105,12 @@ pub struct BotDriver {
     /// Preferred lateral offset from the racing line (m, + = right).
     pub lane: f32,
     dodge: f32,
+    /// Seconds of throttle without moving (`BLOCKED_SECONDS`).
+    blocked: f32,
+    /// Seconds left of backing out from a barrier.
+    back_out: f32,
+    /// Turn direction committed to while the target is nearly straight behind (+ = left).
+    turn: f32,
 }
 
 impl BotDriver {
@@ -98,11 +119,14 @@ impl BotDriver {
             skill,
             lane,
             dodge: 0.0,
+            blocked: 0.0,
+            back_out: 0.0,
+            turn: 0.0,
         }
     }
 
-    /// Chooses this tick's input. `others` are the other karts' positions; `speed_scale` is a
-    /// race-level multiplier (catch-up).
+    /// Chooses this tick's input, `dt` seconds after the last. `others` are the other karts'
+    /// positions; `speed_scale` is a race-level multiplier (catch-up).
     pub fn drive(
         &mut self,
         me: &VehicleState,
@@ -110,11 +134,13 @@ impl BotDriver {
         line: &RacingLine,
         others: &[Vec3],
         speed_scale: f32,
+        dt: f32,
     ) -> DriveInput {
         let i = line.nearest(me.position);
         let f = me.forward();
         let f = Vec3::new(f.x, 0.0, f.z).normalize_or(Vec3::Z);
-        let speed = me.speed().max(0.0);
+        let signed_speed = me.speed();
+        let speed = signed_speed.max(0.0);
 
         // Dodge: a kart right ahead in our lane pushes us toward the roomier side.
         let mut want_dodge = 0.0;
@@ -140,7 +166,26 @@ impl BotDriver {
         let j = i + ahead_pts;
         let target = line.point(j) + line.right(j) * lane;
         let d = Vec3::new(target.x - me.position.x, 0.0, target.z - me.position.z).normalize_or(f);
-        let angle = f.cross(d).y.atan2(f.dot(d));
+        let mut angle = f.cross(d).y.atan2(f.dot(d));
+        if angle.abs() > COMMIT_TURN_ANGLE {
+            // Right behind, the sign of the error is noise. Turn toward the middle of the road:
+            // turning toward the near barrier hits it, and the barrier's glancing contact swings
+            // the nose back along it, so the kart scrapes down the wall the wrong way for good.
+            // Near the middle, keep whichever turn was already chosen.
+            let to_middle = -right * (me.position - line.point(i)).dot(right);
+            let toward_middle = f.cross(to_middle).y;
+            let side = if to_middle.length() > TURN_ROOM_OFFSET {
+                toward_middle.signum()
+            } else if self.turn != 0.0 {
+                self.turn
+            } else {
+                angle.signum()
+            };
+            angle = side * angle.abs();
+            self.turn = side;
+        } else {
+            self.turn = 0.0;
+        }
 
         // Corners come from the line's own curvature, not the kart's heading, so the bot never
         // drifts down a straight (no boost-chaining "snaking").
@@ -155,11 +200,58 @@ impl BotDriver {
             .is_some_and(|dr| dr.dir == turn_dir && turn.abs() > DRIFT_EXIT_TURN);
         let drift = !sharp && (corner || keep);
 
+        // Spun out or airborne the kart ignores (or barely feels) the wheel: don't count that
+        // as being blocked, and don't start backing out.
+        let in_control = me.spin <= 0.0 && me.grounded;
+        if self.back_out > 0.0 {
+            self.back_out = if angle.abs() < BACK_OUT_DONE_ANGLE {
+                0.0
+            } else {
+                (self.back_out - dt).max(0.0)
+            };
+        }
+        if self.back_out > 0.0 {
+            // Reverse with the wheel turned so the nose swings toward the way to go.
+            self.blocked = 0.0;
+            return DriveInput {
+                throttle: 0.0,
+                brake: 1.0,
+                steer: (angle * 2.5).clamp(-1.0, 1.0),
+                drift: false,
+                hop: false,
+            };
+        }
+
         let top = params.max_speed * self.skill * speed_scale;
         // Off-line at speed: brake. Slow and pointing the wrong way (after a spin-out): drive
         // forward on full lock to turn around rather than braking, which would reverse.
         let brake_hard = sharp && speed > SHARP_BRAKE_SPEED;
         let throttle = if brake_hard || speed > top { 0.0 } else { 1.0 };
+
+        // Throttle on but going nowhere: nose into a barrier (or another kart). Back out.
+        if throttle > 0.0 && in_control && signed_speed.abs() < BLOCKED_SPEED {
+            self.blocked += dt;
+            if self.blocked > BLOCKED_SECONDS && sharp {
+                self.blocked = 0.0;
+                self.back_out = BACK_OUT_SECONDS;
+            }
+        } else {
+            self.blocked = 0.0;
+        }
+
+        // Rolling backwards (knocked back, or downhill after a spin): throttle stops the roll
+        // and the steering is mirrored, or the bot would turn its nose away from the line and
+        // settle facing backwards.
+        if signed_speed < -ROLLING_BACK_SPEED {
+            return DriveInput {
+                throttle: 1.0,
+                brake: 0.0,
+                steer: (angle * 2.5).clamp(-1.0, 1.0),
+                drift: false,
+                hop: false,
+            };
+        }
+
         let steer = if drift {
             // Hold the arc to the line: a light bias into the corner plus tracking. Entry needs a
             // committed steer, so the first tick steers at least DRIFT_ENTRY_STEER into the turn.
@@ -238,7 +330,7 @@ mod tests {
         let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.6, -90.0), 0.0);
         let mut lateral = Vec::new();
         for _ in 0..(secs / DT) as usize {
-            let input = bot.drive(&s, &p, &line, others, 1.0);
+            let input = bot.drive(&s, &p, &line, others, 1.0, DT);
             step(&mut s, &p, input, &w, DT);
             lateral.push((s.position, line.lateral_offset(s.position)));
         }
@@ -288,7 +380,7 @@ mod tests {
         // On the first straight (heading +Z) but facing -Z, nearly stopped (just spun out).
         let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.45, -40.0), std::f32::consts::PI);
         s.grounded = true;
-        let input = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0);
+        let input = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0, DT);
         assert!(
             input.brake == 0.0 && input.throttle > 0.5,
             "drive out of it, don't reverse: {input:?}"
@@ -303,10 +395,92 @@ mod tests {
         let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.45, -40.0), std::f32::consts::PI);
         s.grounded = true;
         s.velocity = s.rotation * Vec3::Z * 25.0;
-        let input = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0);
+        let input = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0, DT);
         assert!(
             input.brake > 0.5 && input.throttle == 0.0,
             "brake, don't coast the wrong way: {input:?}"
+        );
+    }
+
+    #[test]
+    fn rolling_backwards_steers_the_nose_toward_the_line() {
+        // A reversing kart yaws the other way for the same steer. Facing up the first straight
+        // (+Z) with the line off to the kart's right (-X), rolling backwards: forward driving
+        // would steer right (+), so the mirrored steer is left, and the throttle stops the roll.
+        let line = oval();
+        let p = VehicleParams::default();
+        let mut s = VehicleState::spawn(Vec3::new(-66.0, 0.45, -40.0), 0.0);
+        s.grounded = true;
+        let ahead = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0, DT);
+        s.velocity = Vec3::new(0.0, 0.0, -8.0);
+        let back = BotDriver::new(1.0, 0.0).drive(&s, &p, &line, &[], 1.0, DT);
+        assert!(
+            ahead.steer > 0.0,
+            "toward the line going forward: {ahead:?}"
+        );
+        assert!(back.steer < 0.0, "mirrored while rolling back: {back:?}");
+        assert!(back.throttle > 0.5 && back.brake == 0.0, "{back:?}");
+    }
+
+    #[test]
+    fn spun_backwards_while_rolling_back_turns_around() {
+        // Facing backwards and rolling backwards (so moving forward along the line): the
+        // un-mirrored steering held the kart facing backwards for as long as it rolled.
+        let w = ground();
+        let line = oval();
+        let p = VehicleParams::default();
+        let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.6, -60.0), std::f32::consts::PI);
+        s.velocity = Vec3::new(0.0, 0.0, 10.0);
+        let mut bot = BotDriver::new(1.0, 0.0);
+        for _ in 0..(3.0 / DT) as usize {
+            let input = bot.drive(&s, &p, &line, &[], 1.0, DT);
+            step(&mut s, &p, input, &w, DT);
+        }
+        let along = s.forward().dot(line.tangent(line.nearest(s.position)));
+        assert!(along > 0.7, "still facing backwards ({along:.2})");
+        assert!(s.speed() > 5.0, "and driving on ({:.1} m/s)", s.speed());
+    }
+
+    #[test]
+    fn turning_around_beside_a_barrier_swings_toward_the_middle() {
+        let line = oval();
+        let p = VehicleParams::default();
+        for side in [-1.0f32, 1.0] {
+            // Facing backwards near one edge of the first straight (+Z; right is -X).
+            let x = -70.0 - side * 5.5;
+            let mut s = VehicleState::spawn(Vec3::new(x, 0.45, -40.0), std::f32::consts::PI);
+            s.grounded = true;
+            s.velocity = s.forward() * 6.0;
+            let mut bot = BotDriver::new(1.0, 0.0);
+            let input = bot.drive(&s, &p, &line, &[], 1.0, DT);
+            // Facing -Z, steering right (+) swings the nose toward +X, the middle for side +1.
+            let toward = side;
+            assert!(
+                input.steer * toward > 0.9,
+                "side {side}: steer {} should swing away from the near edge",
+                input.steer
+            );
+        }
+    }
+
+    #[test]
+    fn backs_out_when_pinned_nose_first() {
+        // Pointing across the road at a standstill (as if nose-in to a barrier): a kart can't
+        // turn without speed, so after a moment of going nowhere the bot reverses.
+        let line = oval();
+        let p = VehicleParams::default();
+        let mut s = VehicleState::spawn(Vec3::new(-70.0, 0.45, -40.0), -1.7);
+        s.grounded = true;
+        let mut bot = BotDriver::new(1.0, 0.0);
+        let first = bot.drive(&s, &p, &line, &[], 1.0, DT);
+        assert!(first.throttle > 0.5, "tries to drive out first: {first:?}");
+        let mut last = first;
+        for _ in 0..(BLOCKED_SECONDS / DT) as usize + 2 {
+            last = bot.drive(&s, &p, &line, &[], 1.0, DT);
+        }
+        assert!(
+            last.brake > 0.5 && last.throttle == 0.0,
+            "backs out: {last:?}"
         );
     }
 
@@ -321,7 +495,7 @@ mod tests {
         let mut bot = BotDriver::new(1.0, 0.0);
         let mut steer = 0.0;
         for _ in 0..10 {
-            steer = bot.drive(&s, &p, &line, &[blocker], 1.0).steer;
+            steer = bot.drive(&s, &p, &line, &[blocker], 1.0, DT).steer;
         }
         assert!(
             steer.abs() > 0.2,

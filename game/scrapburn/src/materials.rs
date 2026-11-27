@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rivet_assets::{AssetError, Rgba8Image, load_rgba, mip_chain, resized};
 use rivet_render::MaterialShading;
 
-/// Texture array layers, in `LAYER_FILES` order.
+/// Texture array layers: `LAYER_FILES` in order, then the generated ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
     Asphalt = 0,
@@ -23,17 +23,21 @@ pub enum Layer {
     WoodPlanks = 12,
     CanyonStandard = 13,
     SandstoneBeds = 14,
+    /// Skyway's billboard art, drawn in code (`posters`).
+    Posters = 15,
 }
 
 impl Layer {
     /// Layers loaded from `LAYER_FILES`.
-    pub const COUNT: usize = 15;
+    pub const FILES: usize = 15;
+    /// All the game's own layers: the files, then the generated ones.
+    pub const COUNT: usize = 16;
 }
 
 /// The kart's own texture, appended after the file layers.
 pub const KART_LAYER: u32 = Layer::COUNT as u32;
 
-pub const LAYER_FILES: [&str; Layer::COUNT] = [
+pub const LAYER_FILES: [&str; Layer::FILES] = [
     "asphalt.png",
     "dirt.png",
     "sand.png",
@@ -74,6 +78,7 @@ pub fn shading() -> [MaterialShading; Layer::COUNT + 1] {
         m(0.06, 12.0, 0.30), // planks
         m(0.015, 8.0, 0.20), // faded canvas
         m(0.03, 9.0, 0.048), // cross-bedded canyon sandstone
+        m(0.20, 30.0, 1.0),  // billboard posters (self-lit)
         m(0.30, 32.0, 0.25), // kart paint and metal
     ]
 }
@@ -110,12 +115,13 @@ pub fn find_assets_dir() -> Option<PathBuf> {
     find_assets_dir_from(&starts)
 }
 
-/// Loads every layer and builds its mip chain.
+/// Loads every file layer, appends the generated ones, and builds each mip chain.
 pub fn load_layers(assets: &Path) -> Result<Vec<Vec<Rgba8Image>>, AssetError> {
-    let images = LAYER_FILES
+    let mut images = LAYER_FILES
         .iter()
         .map(|f| load_rgba(&assets.join("textures").join(f)))
         .collect::<Result<Vec<_>, _>>()?;
+    images.push(crate::posters::atlas(images[0].width));
     // The texture array needs every layer at one size; match the first layer.
     let (w, h) = (images[0].width, images[0].height);
     Ok(images
@@ -139,7 +145,12 @@ mod tests {
 
     #[test]
     fn layer_tables_line_up() {
-        assert_eq!(LAYER_FILES.len(), Layer::COUNT);
+        assert_eq!(LAYER_FILES.len(), Layer::FILES);
+        assert_eq!(
+            Layer::Posters as usize,
+            Layer::FILES,
+            "generated layers follow the files"
+        );
         assert_eq!(shading().len(), Layer::COUNT + 1);
         assert_eq!(LAYER_FILES[Layer::Rock as usize], "rock.png");
     }
