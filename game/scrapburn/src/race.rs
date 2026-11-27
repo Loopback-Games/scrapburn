@@ -10,7 +10,8 @@ use crate::laps::{LapEvent, LapTracker};
 use crate::track::Track;
 
 pub const COUNTDOWN: f32 = 3.0;
-const KART_RADIUS: f32 = 1.0;
+/// Preserve the original kart-to-kart buffer around each wall contact sphere.
+const CONTACT_BUFFER: f32 = 1.25;
 /// Mass of an average kart (kg); seats vary around it.
 pub const BASE_MASS: f32 = 300.0;
 const START_BOOST: (f32, f32) = (6.0, 0.9);
@@ -97,6 +98,9 @@ pub enum Phase {
 }
 
 pub struct Racer {
+    /// Signed driver input for the visible steering linkage.
+    pub steering: f32,
+    pub design: usize,
     pub state: VehicleState,
     pub prev: VehicleState,
     pub params: VehicleParams,
@@ -125,6 +129,17 @@ pub struct Racer {
     /// Seconds spent far off the track.
     off_track: f32,
     hop: HopLatch,
+}
+
+impl Racer {
+    pub fn equip(&mut self, design: usize) {
+        self.design = design;
+        (
+            self.params.half_track,
+            self.params.half_wheelbase,
+            self.params.body_radius,
+        ) = crate::kart::KARTS[design].contacts();
+    }
 }
 
 pub struct Race {
@@ -200,6 +215,8 @@ impl Race {
                 let mut laps = LapTracker::new(track.checkpoints.len());
                 laps.start(0.0);
                 Racer {
+                    steering: 0.,
+                    design: 0,
                     prev: state.clone(),
                     state,
                     params: VehicleParams::default(),
@@ -239,6 +256,16 @@ impl Race {
             respawned: Vec::new(),
             combat_on: count > 1,
             elimination: false,
+        }
+    }
+
+    pub fn equip_grid(&mut self, equipped: usize) {
+        for (seat, racer) in self.racers.iter_mut().enumerate() {
+            racer.equip(if self.player == Some(seat) || racer.remote {
+                equipped
+            } else {
+                crate::kart::rival_design(equipped, seat, racer.mass / BASE_MASS)
+            });
         }
     }
 
@@ -370,12 +397,19 @@ impl Race {
     /// snapshots). Handles respawns locally; pushes off other karts without moving them.
     pub fn step_own(&mut self, track: &Track, i: usize, input: DriveInput, dt: f32) {
         let racing = self.phase == Phase::Racing;
-        let others: Vec<(Vec3, VehicleState, f32)> = self
+        let others: Vec<(Vec3, VehicleState, f32, f32)> = self
             .racers
             .iter()
             .enumerate()
             .filter(|&(j, o)| j != i && !o.out)
-            .map(|(_, o)| (o.state.position, o.state.clone(), o.mass))
+            .map(|(_, o)| {
+                (
+                    o.state.position,
+                    o.state.clone(),
+                    o.mass,
+                    o.params.body_radius,
+                )
+            })
             .collect();
         let line = &self.line;
         let r = &mut self.racers[i];
@@ -395,6 +429,7 @@ impl Race {
                 ..input
             }
         };
+        r.steering = input.steer;
         step_kart(&mut r.state, &r.params, input, track, dt);
         if !racing {
             hold_on_grid(r);
@@ -407,8 +442,14 @@ impl Race {
         if p.y < track.fall_y || r.off_track > OFF_TRACK_SECONDS {
             Self::respawn(r, track);
         }
-        for (_, mut other, mass) in others {
-            collide_karts(&mut r.state, r.mass, &mut other, mass, KART_RADIUS);
+        for (_, mut other, mass, radius) in others {
+            collide_karts(
+                &mut r.state,
+                r.mass,
+                &mut other,
+                mass,
+                (r.params.body_radius + radius) * 0.5 * CONTACT_BUFFER,
+            );
         }
     }
 
@@ -531,6 +572,7 @@ impl Race {
                 })
             };
             if let Some(input) = input {
+                r.steering = input.steer;
                 step_kart(&mut r.state, &r.params, input, track, dt);
                 if !racing {
                     hold_on_grid(r);
@@ -592,7 +634,13 @@ impl Race {
                 if ra.out || rb.out {
                     continue;
                 }
-                collide_karts(&mut ra.state, ra.mass, &mut rb.state, rb.mass, KART_RADIUS);
+                collide_karts(
+                    &mut ra.state,
+                    ra.mass,
+                    &mut rb.state,
+                    rb.mass,
+                    (ra.params.body_radius + rb.params.body_radius) * 0.5 * CONTACT_BUFFER,
+                );
             }
         }
         if racing && self.elimination {

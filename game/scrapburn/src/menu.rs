@@ -349,10 +349,12 @@ impl MenuState {
             ],
             Screen::Garage => vec![
                 format!(
+                    "TYPE  < {} >",
+                    crate::kart::KARTS[s.loadout.design].kind.label()
+                ),
+                format!(
                     "CHASSIS  < {} >",
-                    crate::kart::KARTS[s.loadout.design]
-                        .name
-                        .to_ascii_uppercase()
+                    crate::kart::KARTS[s.loadout.design].label()
                 ),
                 format!("FINISH  < {} >", crate::kart::FINISHES[s.loadout.finish]),
                 "DONE".into(),
@@ -515,7 +517,7 @@ impl MenuState {
                 MenuAction::None
             }
             Screen::Garage => {
-                if input.back || (input.select && self.selected == 2) {
+                if input.back || (input.select && self.selected == 3) {
                     self.go(Screen::Title);
                     self.selected = 2;
                     return MenuAction::SaveGarage;
@@ -525,12 +527,16 @@ impl MenuState {
                 } else {
                     i32::from(input.select)
                 };
-                let (index, count) = match self.selected {
-                    0 => (&mut s.loadout.design, crate::kart::KARTS.len()),
-                    1 => (&mut s.loadout.finish, crate::kart::FINISHES.len()),
-                    _ => return MenuAction::None,
-                };
-                *index = (*index as i32 + step).rem_euclid(count as i32) as usize;
+                match self.selected {
+                    0 => s.loadout.cycle_type(step),
+                    1 => s.loadout.cycle_chassis(step),
+                    2 => {
+                        s.loadout.finish = (s.loadout.finish as i32 + step)
+                            .rem_euclid(crate::kart::FINISHES.len() as i32)
+                            as usize
+                    }
+                    _ => {}
+                }
                 MenuAction::None
             }
             Screen::Settings => {
@@ -774,17 +780,34 @@ mod tests {
             .unwrap();
         menu.handle(press(|i| i.select = true), &mut settings);
         assert_eq!(menu.screen, Screen::Garage);
+        menu.handle(press(|i| i.down = true), &mut settings);
         menu.handle(press(|i| i.left = true), &mut settings);
-        assert!(menu.items(&settings)[0].contains("SPEEDSTER"));
+        assert!(menu.items(&settings)[1].contains("SPEEDSTER"));
         menu.handle(press(|i| i.down = true), &mut settings);
         menu.handle(press(|i| i.right = true), &mut settings);
-        assert!(menu.items(&settings)[1].contains("GLACIER"));
+        assert!(menu.items(&settings)[2].contains("GLACIER"));
         assert_eq!(
             menu.handle(press(|i| i.back = true), &mut settings),
             MenuAction::SaveGarage
         );
         assert_eq!(menu.items(&settings)[menu.selected], "GARAGE");
         assert_eq!(settings.loadout.design, 2);
+    }
+
+    #[test]
+    fn garage_type_filters_chassis_and_wraps_both_ways() {
+        let mut menu = MenuState::new(Screen::Garage);
+        let mut settings = Settings::default();
+        menu.handle(press(|i| i.left = true), &mut settings);
+        assert!(menu.items(&settings)[0].contains("DIRT BIKE"));
+        menu.handle(press(|i| i.down = true), &mut settings);
+        menu.handle(press(|i| i.left = true), &mut settings);
+        assert!(menu.items(&settings)[1].contains("RIDGEBACK 450"));
+        menu.handle(press(|i| i.right = true), &mut settings);
+        assert!(menu.items(&settings)[1].contains("REDLINE 250"));
+        menu.handle(press(|i| i.up = true), &mut settings);
+        menu.handle(press(|i| i.left = true), &mut settings);
+        assert!(menu.items(&settings)[1].contains("NORTH STAR 570"));
     }
 
     #[test]

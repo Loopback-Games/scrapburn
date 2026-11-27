@@ -165,6 +165,14 @@ pub fn ghost_path(dir: &Path, track: &str) -> PathBuf {
     dir.join("ghosts").join(format!("{track}.ghost"))
 }
 
+pub fn class_ghost_path(dir: &Path, track: &str, trail: bool) -> PathBuf {
+    if trail {
+        ghost_path(dir, &format!("trail/{track}"))
+    } else {
+        ghost_path(dir, track)
+    }
+}
+
 pub fn load(path: &Path) -> Option<Ghost> {
     Ghost::decode(&std::fs::read(path).ok()?)
 }

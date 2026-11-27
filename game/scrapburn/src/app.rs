@@ -88,8 +88,8 @@ enum Session {
 
 /// One kart design on the GPU: body, four wheels around their hubs, tire radius.
 struct KartGpu {
-    /// Index into `kart::KARTS`.
-    design: usize,
+    rig: Option<scrapburn::kart::SteeringRig>,
+    ghost: GpuMesh,
     body: GpuMesh,
     wheels: [GpuMesh; 4],
     hubs: [Vec3; 4],
@@ -97,22 +97,26 @@ struct KartGpu {
 }
 
 impl KartGpu {
-    fn new(
-        device: &wgpu::Device,
-        design: usize,
-        data: &MeshData,
-        tex: Option<&Rgba8Image>,
-    ) -> Self {
-        let k = &scrapburn::kart::KARTS[design];
-        let mut parts = scrapburn::kart::split_wheels_textured(
-            data,
-            scrapburn::kart::KART_LENGTH * k.wheel_ratio,
-            tex,
-        );
-        scrapburn::kart::add_marker_lamps(&mut parts.body);
-        scrapburn::kart::fit_buggy_frame(&mut parts.body, design);
+    fn new(device: &wgpu::Device, parts: scrapburn::kart::KartParts) -> Self {
+        let mut ghost = parts.body.clone();
+        for (wheel, hub) in parts.wheels.iter().zip(parts.hubs) {
+            let mut wheel = wheel.clone();
+            for v in &mut wheel.vertices {
+                v.pos = (Vec3::from_array(v.pos) + hub).to_array();
+            }
+            ghost.append(&wheel);
+        }
+        for v in &mut ghost.vertices {
+            v.color = [0.2, 0.5, 0.6, 0.0];
+            v.material = rivet_render::material(
+                0,
+                0,
+                rivet_render::UNTEXTURED | rivet_render::EMISSIVE | rivet_render::DITHER,
+            );
+        }
         Self {
-            design,
+            rig: parts.rig,
+            ghost: GpuMesh::new(device, &ghost),
             body: GpuMesh::new(device, &parts.body),
             wheels: parts.wheels.each_ref().map(|w| GpuMesh::new(device, w)),
             hubs: parts.hubs,
@@ -208,12 +212,9 @@ struct Game {
     service_bay: GpuMesh,
     ore_skip: GpuMesh,
     route_previews: Vec<Vec<Vec3>>,
-    /// Loaded kart designs (index into `kart::KARTS` order; missing ones are skipped).
+    /// Loaded kart designs in catalog order.
     karts: Vec<KartGpu>,
-    /// Design each racer drives (index into `karts`).
-    kart_of: Vec<usize>,
     wheel_spin: Vec<[f32; 4]>,
-    ghost_mesh: GpuMesh,
     fx_meshes: FxMeshes,
     combat_fx: ParticleSystem,
     race: Race,
@@ -237,6 +238,7 @@ struct Game {
     steer: SteerRamp,
     effects: Vec<Effects>,
     leans: Vec<f32>,
+    steering_angles: Vec<f32>,
     ghost_file: Option<std::path::PathBuf>,
     best_ghost: BestGhost,
     recorder: GhostRecorder,
@@ -276,23 +278,6 @@ struct Game {
     flame_fx: ParticleSystem,
     flame_points: Vec<Vec3>,
     flame_acc: f32,
-}
-
-/// Use the equipped chassis for the local driver and weight-based designs for bots.
-fn kart_assignment(race: &Race, karts: &[KartGpu], design: usize) -> Vec<usize> {
-    race.racers
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let human = race.player == Some(i) || r.remote;
-            let want = if race.player == Some(i) {
-                design
-            } else {
-                scrapburn::kart::model_for(r.mass / scrapburn::race::BASE_MASS, human)
-            };
-            karts.iter().position(|k| k.design == want).unwrap_or(0)
-        })
-        .collect()
 }
 
 /// Where flames burn: the track's torches and the top of every brazier.
@@ -393,10 +378,40 @@ impl Game {
                 }
             }
         }
-        // The other kart designs, each with its own texture layer after the props.
-        let mut extra_karts: Vec<(usize, MeshData, Option<Rgba8Image>)> = Vec::new();
+        let (rider, rider_tex) = scrapburn::kart::load_rider(&assets, layers.len() as u32)?;
+        let rider_tex = rider_tex.context("missing seated rider texture")?;
+        layers.push(rivet_assets::mip_chain(&rivet_assets::resized(
+            &rider_tex, size.0, size.1,
+        )));
+        shading_table.push(rivet_render::MaterialShading {
+            specular: 0.15,
+            gloss: 16.,
+            triplanar_scale: 0.25,
+        });
+
+        let trail_layer = layers.len() as u32;
+        let trail_texture =
+            rivet_assets::load_rgba(&assets.join("models/karts/trail-surfaces.jpg"))?;
+        layers.push(rivet_assets::mip_chain(&rivet_assets::resized(
+            &trail_texture,
+            size.0,
+            size.1,
+        )));
+        shading_table.push(rivet_render::MaterialShading {
+            specular: 0.27,
+            gloss: 32.,
+            triplanar_scale: 0.25,
+        });
+        let mut karts = vec![KartGpu::new(
+            &ctx.device,
+            scrapburn::kart::imported_parts(0, &kart_data, kart_tex.as_ref()),
+        )];
         for (d, design) in kart_designs.iter().enumerate().skip(1) {
             let layer = layers.len() as u32;
+            if let Some(model) = design.trail_model {
+                karts.push(KartGpu::new(&ctx.device, model.parts(&rider, trail_layer)));
+                continue;
+            }
             match scrapburn::kart::load(&assets, design, layer) {
                 Ok((mesh, tex)) => {
                     let img = tex.as_ref().map_or_else(
@@ -409,9 +424,20 @@ impl Game {
                         gloss: 32.0,
                         triplanar_scale: 0.25,
                     });
-                    extra_karts.push((d, mesh, tex));
+                    let mut parts = scrapburn::kart::imported_parts(d, &mesh, tex.as_ref());
+                    if design.kind.trail() {
+                        scrapburn::kart::mount_north_star_rider(&mut parts, &rider);
+                    }
+                    karts.push(KartGpu::new(&ctx.device, parts));
                 }
-                Err(e) => log::info!("kart {} not available ({e})", design.name),
+                Err(e) if design.kind.trail() => return Err(e).context("loading North Star ATV"),
+                Err(e) => {
+                    log::warn!("kart {} not available ({e})", design.name);
+                    karts.push(KartGpu::new(
+                        &ctx.device,
+                        scrapburn::kart::imported_parts(0, &kart_data, kart_tex.as_ref()),
+                    ));
+                }
             }
         }
         let settings = Settings {
@@ -450,34 +476,6 @@ impl Game {
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
         let ore_skip = GpuMesh::new(&ctx.device, &scrapburn::track::canyon::ore_skip());
-        let parts = scrapburn::kart::split_wheels(
-            &kart_data,
-            scrapburn::kart::KART_LENGTH * scrapburn::kart::WHEEL_RADIUS_RATIO,
-        );
-        log::info!(
-            "kart wheels: {} triangles split off the body",
-            parts
-                .wheels
-                .iter()
-                .map(|w| w.indices.len() / 3)
-                .sum::<usize>()
-        );
-        let mut karts = vec![KartGpu::new(&ctx.device, 0, &kart_data, kart_tex.as_ref())];
-        karts.extend(
-            extra_karts
-                .iter()
-                .map(|(d, m, t)| KartGpu::new(&ctx.device, *d, m, t.as_ref())),
-        );
-        let mut ghost_data = kart_data.clone();
-        for v in &mut ghost_data.vertices {
-            v.color = [0.2, 0.5, 0.6, 0.0];
-            v.material = rivet_render::material(
-                0,
-                0,
-                rivet_render::UNTEXTURED | rivet_render::EMISSIVE | rivet_render::DITHER,
-            );
-        }
-        let ghost_mesh = GpuMesh::new(&ctx.device, &ghost_data);
         let prop_gpu: Vec<Option<GpuMesh>> = prop_meshes
             .iter()
             .map(|m| m.as_ref().map(|m| GpuMesh::new(&ctx.device, m)))
@@ -498,8 +496,13 @@ impl Game {
             )),
             orb_glow: g(fx_meshes::plasma_halo()),
         };
-        let ghost_file =
-            scrapburn::ghost::data_dir().map(|d| scrapburn::ghost::ghost_path(&d, track.id.key()));
+        let ghost_file = scrapburn::ghost::data_dir().map(|d| {
+            scrapburn::ghost::class_ghost_path(
+                &d,
+                track.id.key(),
+                kart_designs[settings.loadout.design].kind.trail(),
+            )
+        });
         let best_ghost =
             BestGhost::from_ghost(ghost_file.as_deref().and_then(scrapburn::ghost::load));
 
@@ -528,10 +531,8 @@ impl Game {
             timer,
             track,
             track_meshes,
-            kart_of: kart_assignment(&race, &karts, settings.loadout.design),
             karts,
             wheel_spin: vec![[0.0; 4]; n],
-            ghost_mesh,
             service_bay,
             fx_meshes,
             combat_fx: ParticleSystem::new(2500),
@@ -555,6 +556,7 @@ impl Game {
             steer: SteerRamp::default(),
             effects: (0..n).map(|_| Effects::new()).collect(),
             leans: vec![0.0; n],
+            steering_angles: vec![0.; n],
             ghost_file,
             best_ghost,
             recorder: GhostRecorder::default(),
@@ -618,14 +620,16 @@ impl Game {
     }
 
     fn make_race(track: &Track, session: Session, s: &Settings, bench: bool) -> Race {
-        match session {
+        let mut race = match session {
             Session::Attract => Race::new(track, 8, false, u32::MAX),
             Session::Play(Mode::Race) => Race::new(track, s.rivals + 1, !bench, s.laps),
             Session::Play(Mode::TimeTrial) => Race::new(track, 1, !bench, u32::MAX),
             Session::Play(Mode::Elimination) => {
                 Race::new_elimination(track, s.rivals.max(1) + 1, !bench)
             }
-        }
+        };
+        race.equip_grid(s.loadout.design);
+        race
     }
 
     fn start(&mut self, session: Session) {
@@ -656,6 +660,7 @@ impl Game {
         // Hosting: everyone connected gets a seat; bots fill the rest.
         if let (Net::Host(h), Session::Play(mode)) = (&mut self.net, session) {
             h.setup = RaceSetup {
+                design: self.settings.loadout.design as u8,
                 track: self.settings.track as u8,
                 elimination: mode == Mode::Elimination,
                 laps: self.settings.laps as u8,
@@ -706,10 +711,10 @@ impl Game {
 
     /// Per-kart effect buffers sized to the current race.
     fn fit_race_buffers(&mut self) {
-        self.kart_of = kart_assignment(&self.race, &self.karts, self.settings.loadout.design);
         let n = self.race.racers.len();
         self.effects = (0..n).map(|_| Effects::new()).collect();
         self.leans = vec![0.0; n];
+        self.steering_angles = vec![0.; n];
         self.wheel_spin = vec![[0.0; 4]; n];
     }
 
@@ -791,6 +796,7 @@ impl Game {
     /// Starts hosting and opens the lobby.
     fn host_game(&mut self, loopback: bool) {
         let setup = RaceSetup {
+            design: self.settings.loadout.design as u8,
             track: self.settings.track as u8,
             elimination: self.menu.lobby_elimination,
             laps: self.settings.laps as u8,
@@ -1042,6 +1048,7 @@ impl Game {
         race.racers[you].prev = race.racers[you].state.clone();
         self.race = race;
         self.fit_race_buffers();
+        self.race.racers[you].equip(snap.setup.compatible_design(self.settings.loadout.design));
         if let Net::Client { view, .. } = &mut self.net {
             *view = Some(ClientView::new(you, snap.race_id, n));
         }
@@ -1171,7 +1178,21 @@ impl Game {
         }
     }
 
-    /// Switches to `settings.track`: geometry, scenery, lighting, ghosts, and a fresh race.
+    fn load_ghost(&mut self) {
+        self.ghost_file = scrapburn::ghost::data_dir().map(|d| {
+            scrapburn::ghost::class_ghost_path(
+                &d,
+                self.track.id.key(),
+                scrapburn::kart::KARTS[self.settings.loadout.design]
+                    .kind
+                    .trail(),
+            )
+        });
+        self.best_ghost =
+            BestGhost::from_ghost(self.ghost_file.as_deref().and_then(scrapburn::ghost::load));
+    }
+
+    /// Rebuilds geometry, scenery and the race for the selected track.
     fn load_track(&mut self) {
         self.track = build_track(&TRACKS[self.settings.track % TRACKS.len()]);
         self.track_meshes = [&self.track.road, &self.track.terrain, &self.track.props]
@@ -1180,10 +1201,7 @@ impl Game {
         self.flame_points = flame_points(&self.track, &self.placements);
         self.flame_fx = ParticleSystem::new(1500);
         self.scene.lighting = scrapburn::track::lighting(self.track.id);
-        self.ghost_file = scrapburn::ghost::data_dir()
-            .map(|d| scrapburn::ghost::ghost_path(&d, self.track.id.key()));
-        self.best_ghost =
-            BestGhost::from_ghost(self.ghost_file.as_deref().and_then(scrapburn::ghost::load));
+        self.load_ghost();
         // Rebuilding the attract race must preserve the browser and its return destination.
         let browser = matches!(self.session, Session::Attract).then(|| self.menu.clone());
         self.start(self.session);
@@ -1358,6 +1376,8 @@ impl Game {
                         }
                     }
                     MenuAction::SaveGarage => {
+                        self.load_ghost();
+                        self.race.equip_grid(self.settings.loadout.design);
                         if let Some(dir) = scrapburn::ghost::data_dir()
                             && let Err(e) = self.settings.loadout.save(&dir)
                         {
@@ -1430,7 +1450,8 @@ impl Game {
                     };
                     self.race.step_own(&self.track, you, input, TICK_DT as f32);
                     view.tick_others(&mut self.race, TICK_DT as f32);
-                    link.send_kart(&self.race.racers[you].state, view, now);
+                    let racer = &self.race.racers[you];
+                    link.send_kart(&racer.state, racer.design as u8, racer.steering, view, now);
                     continue;
                 }
                 let events = self.race.step(&self.track, input, TICK_DT as f32);
@@ -1738,6 +1759,22 @@ impl Game {
         for (i, r) in self.race.racers.iter().enumerate() {
             let (pos, rot) = VehicleState::lerp(&r.prev, &r.state, alpha);
             self.effects[i].dusty_road = self.track.id == scrapburn::track::TrackId::Dustbowl;
+            let kart = &self.karts[r.design];
+            if let Some(rig) = kart.rig {
+                let rear = |k: usize| kart.hubs[k] - Vec3::Y * kart.radii[k];
+                self.effects[i].rear_wheels = [
+                    rear(2),
+                    rear(if kart.wheels[3].index_count == 0 {
+                        2
+                    } else {
+                        3
+                    }),
+                ];
+                self.effects[i].exhausts = [rig.exhaust; 2];
+            } else {
+                self.effects[i].rear_wheels = scrapburn::effects::REAR_WHEELS;
+                self.effects[i].exhausts = scrapburn::effects::EXHAUSTS;
+            }
             let shake = self.effects[i].update(&r.state, &r.params, fx_dt);
             if i == focus {
                 self.camera.kick(shake);
@@ -1749,13 +1786,18 @@ impl Game {
             } else {
                 0.0
             };
+            let bike =
+                scrapburn::kart::KARTS[r.design].kind == scrapburn::kart::VehicleType::DirtBike;
+            let target = if bike { -1.7 * target } else { target };
+            self.steering_angles[i] +=
+                (-r.steering - self.steering_angles[i]) * (1. - (-12. * fx_dt).exp());
             self.leans[i] += (target - self.leans[i]) * (1.0 - (-8.0 * frame_dt).exp());
             // Each tire rolls at its own rate, so big and small ones both keep pace with the road.
-            let radii = self.karts[self.kart_of[i]].radii;
+            let radii = self.karts[r.design].radii;
             for ((spin, radius), hub) in self.wheel_spin[i]
                 .iter_mut()
                 .zip(radii)
-                .zip(self.karts[self.kart_of[i]].hubs)
+                .zip(self.karts[r.design].hubs)
             {
                 let tire_speed = r.state.speed() - r.state.angular_yaw * hub.x;
                 *spin = (*spin + tire_speed * fx_dt / radius) % std::f32::consts::TAU;
@@ -1855,40 +1897,62 @@ impl Game {
             } else {
                 self.race.racers[i].tint
             };
-            let kart = if garage {
-                self.karts
-                    .iter()
-                    .find(|k| k.design == self.settings.loadout.design)
-                    .unwrap_or(&self.karts[0])
+            let design = if garage {
+                self.settings.loadout.design
             } else {
-                &self.karts[self.kart_of[i]]
+                self.race.racers[i].design
             };
+            let kart = &self.karts[design];
+            let axle_frame =
+                if scrapburn::kart::KARTS[design].kind == scrapburn::kart::VehicleType::DirtBike {
+                    *model
+                } else {
+                    Mat4::from_rotation_translation(*rot, *pos)
+                };
+            let turn = if garage {
+                (self.attract_t * 0.85).sin() * 0.78
+            } else {
+                self.steering_angles[i]
+            };
+            let lean = if garage {
+                -turn * 0.13
+            } else {
+                -(self.race.racers[i].state.angular_yaw * self.race.racers[i].state.speed() * 0.009)
+                    .clamp(-0.24, 0.24)
+            };
+            let joints = kart.rig.map(|rig| rig.joints(turn, lean));
             draws.push(Draw {
                 mesh: &kart.body,
                 model: *model,
+                joints,
                 casts_shadow: true,
                 tint,
             });
             // Wheels roll with speed; the front pair steers with the turn rate.
             let steer = (self.race.racers[i].state.angular_yaw * 0.3).clamp(-0.45, 0.45);
             for (k, mesh) in kart.wheels.iter().enumerate() {
+                if mesh.index_count == 0 {
+                    continue;
+                }
                 let roll = if garage {
                     Mat4::IDENTITY
                 } else {
                     Mat4::from_rotation_x(self.wheel_spin[i][k])
                 };
-                let yaw = if !garage && k < 2 {
+                let yaw = if k < 2
+                    && let Some(rig) = kart.rig
+                {
+                    Mat4::from_axis_angle(rig.axis, turn * rig.limit)
+                } else if !garage && k < 2 {
                     Mat4::from_rotation_y(steer)
                 } else {
                     Mat4::IDENTITY
                 };
-                let m = Mat4::from_rotation_translation(*rot, *pos)
-                    * Mat4::from_translation(kart.hubs[k])
-                    * yaw
-                    * roll;
+                let m = axle_frame * Mat4::from_translation(kart.hubs[k]) * yaw * roll;
                 draws.push(Draw {
                     mesh,
                     model: m,
+                    joints: None,
                     casts_shadow: true,
                     tint: [1.0; 3],
                 });
@@ -1901,8 +1965,9 @@ impl Game {
                 let lap_t = (self.race.time - self.race.racers[p].laps.lap_start()) as f32;
                 if let Some((gp, gr)) = self.best_ghost.ghost().and_then(|g| g.sample(lap_t)) {
                     draws.push(Draw {
-                        mesh: &self.ghost_mesh,
+                        mesh: &self.karts[self.race.racers[p].design].ghost,
                         model: Mat4::from_rotation_translation(gr, gp),
+                        joints: None,
                         casts_shadow: false,
                         tint: [1.0; 3],
                     });
@@ -1931,6 +1996,7 @@ impl Game {
                 draws.push(Draw {
                     mesh,
                     model: p.model(),
+                    joints: None,
                     casts_shadow: d < 110.0 + p.size,
                     tint: [1.0; 3],
                 });
@@ -1951,12 +2017,14 @@ impl Game {
                 draws.push(Draw {
                     mesh: &self.fx_meshes.core,
                     model: at * spin,
+                    joints: None,
                     casts_shadow: false,
                     tint: [1.0; 3],
                 });
                 draws.push(Draw {
                     mesh: &self.fx_meshes.shell,
                     model: at * Mat4::from_rotation_y(-self.attract_t),
+                    joints: None,
                     casts_shadow: true,
                     tint: [1.0; 3],
                 });
@@ -1970,6 +2038,7 @@ impl Game {
                 draws.push(Draw {
                     mesh: &self.fx_meshes.nail,
                     model: m,
+                    joints: None,
                     casts_shadow: false,
                     tint: [1.0; 3],
                 });
@@ -1988,6 +2057,7 @@ impl Game {
                             rot,
                             w[0] + d * 0.5,
                         ),
+                        joints: None,
                         casts_shadow: false,
                         tint: [1.0; 3],
                     });
@@ -2000,6 +2070,7 @@ impl Game {
                         glam::Quat::from_rotation_arc(Vec3::Z, head),
                         to,
                     ),
+                    joints: None,
                     casts_shadow: true,
                     tint: [1.0; 3],
                 });
@@ -2013,6 +2084,7 @@ impl Game {
                         glam::Quat::IDENTITY,
                         orb.pos,
                     ),
+                    joints: None,
                     casts_shadow: false,
                     tint: [1.0; 3],
                 });
@@ -2023,6 +2095,7 @@ impl Game {
                         glam::Quat::from_rotation_y(self.attract_t * 3.0),
                         orb.pos,
                     ),
+                    joints: None,
                     casts_shadow: false,
                     tint: [1.0; 3],
                 });
@@ -2214,12 +2287,17 @@ impl Game {
                                         .name
                                         .to_string()
                                 },
-                                if l.setup.elimination {
-                                    "ELIMINATION"
-                                } else {
-                                    "RACE"
-                                }
-                                .to_string(),
+                                format!(
+                                    "{}   {}",
+                                    if l.setup.elimination {
+                                        "ELIMINATION"
+                                    } else {
+                                        "RACE"
+                                    },
+                                    scrapburn::kart::KARTS
+                                        [l.setup.compatible_design(self.settings.loadout.design)]
+                                    .label()
+                                ),
                             ],
                             l.names.clone(),
                         ),
@@ -2478,7 +2556,7 @@ impl ApplicationHandler for App {
                     let (w, h) = game.ctx.size();
                     if let Some(finish) = hud::garage_swatch_at(w as f32, h as f32, x, y) {
                         game.settings.loadout.finish = finish;
-                        game.menu.selected = 1;
+                        game.menu.selected = 2;
                     }
                 }
                 if let Some((screen, rows)) = &game.menu_rows

@@ -61,6 +61,8 @@ pub struct VehicleParams {
     pub drift_min_speed: f32,
     pub hop_speed: f32,
     pub body_radius: f32,
+    pub half_track: f32,
+    pub half_wheelbase: f32,
     /// Acceleration toward the boosted top speed while a boost runs.
     pub boost_accel: f32,
     /// Drift boost tiers, ascending by charge.
@@ -113,6 +115,8 @@ impl Default for VehicleParams {
             drift_min_speed: 10.0,
             hop_speed: 4.5,
             body_radius: 0.8,
+            half_track: 0.6,
+            half_wheelbase: 0.9,
             boost_accel: 60.0,
             boost_tiers: [
                 BoostTier {
@@ -230,13 +234,6 @@ impl VehicleState {
     }
 }
 
-/// Wheel attachment points in body space (x is the kart's left).
-const CORNERS: [Vec3; 4] = [
-    Vec3::new(0.6, 0.0, 0.9),
-    Vec3::new(-0.6, 0.0, 0.9),
-    Vec3::new(0.6, 0.0, -0.9),
-    Vec3::new(-0.6, 0.0, -0.9),
-];
 /// Minimum distance from body center to the ground along the ground normal (bump stop).
 const MIN_CLEARANCE: f32 = 0.2;
 /// Contacts steeper than this (normal.y above it) are ground, handled by suspension.
@@ -306,7 +303,8 @@ pub fn step_graded(
     let mut offroad_hits = 0;
     let mut on_pad = false;
     let mut accel = Vec3::new(0.0, -p.gravity, 0.0);
-    for corner in CORNERS {
+    for (side, axle) in [(1., 1.), (-1., 1.), (1., -1.), (-1., -1.)] {
+        let corner = Vec3::new(side * p.half_track, 0., axle * p.half_wheelbase);
         let origin = state.position + state.rotation * corner;
         if let Some(hit) = world.raycast(origin, -up, p.suspension_rest) {
             hits += 1;

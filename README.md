@@ -16,7 +16,7 @@ just run     # title screen
 Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Set **Event** to **Single Track** and open **Track** to preview a route and equip it, or set it to **Circuit** to race every track in order. Circuits award 10, 8, 6, 5, 4, 3, 2 and 1 points per race, and the most points after the final round wins. Time Trial is always a single track.
 
 - **Multiplayer** opens private invites, direct hosting and joining, and your racer name.
-- **Garage** previews three chassis and eight finishes on your kart. Click a paint swatch or cycle finishes, then choose **Done** to save.
+- **Garage** lets you choose a vehicle type, chassis, and paint finish. Cars and trucks share a grid. ATVs and dirt bikes share another. Choose **Done** to equip your vehicle. In multiplayer, the host sets the class. Drivers equipped for the other class borrow the host’s chassis for that race.
 - **Controls** shows keyboard and gamepad bindings and is also available in the pause menu.
 - **Settings** adjusts graphics, lap count, and rivals. Turn **Music** off to race to engines alone.
 

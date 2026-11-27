@@ -76,6 +76,7 @@ pub struct Draw<'a> {
     pub mesh: &'a GpuMesh,
     pub model: Mat4,
     pub casts_shadow: bool,
+    pub joints: Option<[Mat4; 2]>,
     /// Linear color multiplier (paint variants); `[1.0; 3]` for none.
     pub tint: [f32; 3],
 }
@@ -87,6 +88,7 @@ impl<'a> Draw<'a> {
             mesh,
             model,
             casts_shadow: true,
+            joints: None,
             tint: [1.0; 3],
         }
     }
@@ -333,7 +335,7 @@ fn model_bind_group(
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: buf,
                 offset: 0,
-                size: wgpu::BufferSize::new(80),
+                size: wgpu::BufferSize::new(208),
             }),
         }],
     })
@@ -355,9 +357,26 @@ impl SceneRenderer {
         let src = |body: &str| format!("{}\n{}", include_str!("globals.wgsl"), body);
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(src(include_str!("scene.wgsl")).into()),
+            source: wgpu::ShaderSource::Wgsl(
+                src(concat!(
+                    include_str!("model.wgsl"),
+                    "\n",
+                    include_str!("scene.wgsl")
+                ))
+                .into(),
+            ),
         });
-        let shadow_module = device.create_shader_module(wgpu::include_wgsl!("shadow.wgsl"));
+        let shadow_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shadow.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("model.wgsl"),
+                    "\n",
+                    include_str!("shadow.wgsl")
+                )
+                .into(),
+            ),
+        });
         let post_module = device.create_shader_module(wgpu::include_wgsl!("post.wgsl"));
 
         let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
@@ -999,7 +1018,15 @@ impl SceneRenderer {
         for (i, d) in draws.iter().enumerate() {
             let o = i * MODEL_STRIDE as usize;
             bytes[o..o + 64].copy_from_slice(bytemuck::bytes_of(&d.model));
-            let tint = [d.tint[0], d.tint[1], d.tint[2], 1.0f32];
+            let tint = [
+                d.tint[0],
+                d.tint[1],
+                d.tint[2],
+                f32::from(d.joints.is_some()),
+            ];
+            if let Some(joints) = &d.joints {
+                bytes[o + 80..o + 208].copy_from_slice(bytemuck::cast_slice(joints));
+            }
             bytes[o + 64..o + 80].copy_from_slice(bytemuck::cast_slice(&tint));
         }
         if !bytes.is_empty() {

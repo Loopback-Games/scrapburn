@@ -16,8 +16,8 @@ use rivet_physics::{DriftState, VehicleState};
 use crate::combat::{CombatEvent, CombatNet, ItemKind};
 use crate::race::{Phase, Race, RaceEvent};
 
-/// Identifies Scrapburn and its network protocol version ("NAI" + 1).
-pub const GAME_ID: u32 = 0x4e41_4903;
+/// Identifies Scrapburn and its network protocol version ("NAI" + version).
+pub const GAME_ID: u32 = 0x4e41_4905;
 /// Default UDP port (a nod to the arena shooters of old).
 pub const DEFAULT_PORT: u16 = 27960;
 /// Remote players per host (the host makes eight).
@@ -236,6 +236,8 @@ fn get_event(r: &mut Reader, racers: usize) -> Result<RaceEvent, WireError> {
 /// Client → host: this machine's kart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KartMsg {
+    pub steering: f32,
+    pub design: u8,
     pub state: VehicleState,
     /// Total fire presses so far (the host fires once per increment).
     pub fires: u32,
@@ -245,13 +247,23 @@ pub struct KartMsg {
     pub race_id: u32,
 }
 
+// The upper nibble carries signed steering in seven steps either side of center.
+// Chassis and the elimination flag fit in the lower nibble of each racer byte.
+fn steering_bits(value: f32) -> u8 {
+    (((value.clamp(-1., 1.) * 7.).round() as i8 + 7) as u8) << 4
+}
+fn decode_steering(flags: u8) -> f32 {
+    ((flags >> 4).min(14) as f32 - 7.) / 7.
+}
+
 impl KartMsg {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
         w.u8(TAG_KART)
             .u32(self.race_id)
             .u32(self.fires)
-            .u32(self.ack);
+            .u32(self.ack)
+            .u8(self.design | steering_bits(self.steering));
         put_state(&mut w, &self.state);
         w.finish()
     }
@@ -261,10 +273,14 @@ impl KartMsg {
         if r.u8()? != TAG_KART {
             return Err(WireError::Invalid("tag"));
         }
+        let (race_id, fires, ack) = (r.u32()?, r.u32()?, r.u32()?);
+        let flags = r.u8()?;
         Ok(Self {
-            race_id: r.u32()?,
-            fires: r.u32()?,
-            ack: r.u32()?,
+            race_id,
+            fires,
+            ack,
+            steering: decode_steering(flags),
+            design: checked_design(flags & 15)?,
             state: get_state(&mut r)?,
         })
     }
@@ -273,12 +289,32 @@ impl KartMsg {
 /// What the host has set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RaceSetup {
+    /// The host chassis defines the race class.
+    pub design: u8,
     pub track: u8,
     pub elimination: bool,
     pub laps: u8,
     pub rivals: u8,
     /// The circuit round and points so far, when racing a circuit.
     pub circuit: Option<crate::circuit::Circuit>,
+}
+
+impl RaceSetup {
+    pub fn compatible_design(&self, choice: usize) -> usize {
+        let host = self.design as usize;
+        if crate::kart::KARTS[choice].kind.trail() == crate::kart::KARTS[host].kind.trail() {
+            choice
+        } else {
+            host
+        }
+    }
+}
+
+fn checked_design(design: u8) -> Result<u8, WireError> {
+    if design as usize >= crate::kart::KARTS.len() {
+        return Err(WireError::Invalid("vehicle design"));
+    }
+    Ok(design)
 }
 
 /// Host → client while waiting in the lobby.
@@ -292,7 +328,10 @@ pub struct Lobby {
 }
 
 fn put_setup(w: &mut Writer, s: &RaceSetup) {
-    w.u8(s.track).bool(s.elimination).u8(s.laps).u8(s.rivals);
+    w.u8(s.track)
+        .u8((s.design << 1) | u8::from(s.elimination))
+        .u8(s.laps)
+        .u8(s.rivals);
     match &s.circuit {
         None => {
             w.u8(0);
@@ -307,9 +346,12 @@ fn put_setup(w: &mut Writer, s: &RaceSetup) {
 }
 
 fn get_setup(r: &mut Reader) -> Result<RaceSetup, WireError> {
+    let track = r.u8()?;
+    let flags = r.u8()?;
     let s = RaceSetup {
-        track: r.u8()?,
-        elimination: r.bool()?,
+        design: checked_design(flags >> 1)?,
+        track,
+        elimination: flags & 1 != 0,
         laps: r.u8()?,
         rivals: r.u8()?,
         circuit: match r.u8()? {
@@ -372,6 +414,8 @@ impl Lobby {
 /// One racer as seen in a snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RacerNet {
+    pub steering: f32,
+    pub design: u8,
     pub state: VehicleState,
     pub next: u16,
     pub laps: u16,
@@ -453,7 +497,10 @@ impl Snapshot {
                     w.u8(0);
                 }
             }
-            w.bool(r.out).u8(r.hits).f32(r.last_hit.0).f32(r.last_hit.1);
+            w.u8(steering_bits(r.steering) | (r.design << 1) | u8::from(r.out))
+                .u8(r.hits)
+                .f32(r.last_hit.0)
+                .f32(r.last_hit.1);
             put_opt_f64(&mut w, r.last_lap);
             put_opt_f64(&mut w, r.best_lap);
         }
@@ -530,13 +577,20 @@ impl Snapshot {
             } else {
                 None
             };
+            let flags = r.u8()?;
+            let design = checked_design((flags & 15) >> 1)?;
+            if setup.compatible_design(design as usize) != design as usize {
+                return Err(WireError::Invalid("vehicle race class"));
+            }
             racers.push(RacerNet {
+                steering: decode_steering(flags),
+                design,
                 state,
                 next,
                 laps,
                 lap_start,
                 finish,
-                out: r.bool()?,
+                out: flags & 1 != 0,
                 hits: r.u8()?,
                 last_hit: (r.f32()?.clamp(0.0, 10.0), r.f32()?.clamp(0.0, 1.0)),
                 last_lap: get_opt_f64(r)?,
@@ -717,6 +771,7 @@ impl NetHost {
             self.seats[peer.0 as usize] = Some(seat);
             self.fires[peer.0 as usize] = 0;
         }
+        race.equip_grid(self.setup.design as usize);
     }
 
     /// Back to the lobby.
@@ -750,6 +805,8 @@ impl NetHost {
                     let (Some(seat), Some(race)) = (self.seats[slot], race.as_deref_mut()) else {
                         continue;
                     };
+                    race.racers[seat].steering = msg.steering;
+                    race.racers[seat].equip(self.setup.compatible_design(msg.design as usize));
                     race.push_remote_state(seat, msg.state);
                     // One shot per press, at most a few per message.
                     let presses = msg.fires.wrapping_sub(self.fires[slot]).min(3);
@@ -844,6 +901,8 @@ pub fn snapshot(
             .map(|r| {
                 let (next, laps, lap_start) = r.laps.net_state();
                 RacerNet {
+                    steering: r.steering,
+                    design: r.design as u8,
                     state: r.state.clone(),
                     next,
                     laps,
@@ -914,6 +973,10 @@ impl ClientView {
                 && r.name != name.as_str()
             {
                 r.name = name.clone().into();
+            }
+            if i != self.you {
+                r.steering = s.steering;
+                r.equip(s.design as usize);
             }
             r.laps.set_net_state(s.next, s.laps, s.lap_start);
             r.finish = s.finish;
@@ -1039,8 +1102,17 @@ impl NetClient {
     }
 
     /// Reports this machine's kart.
-    pub fn send_kart(&mut self, state: &VehicleState, view: &ClientView, now: Instant) {
+    pub fn send_kart(
+        &mut self,
+        state: &VehicleState,
+        design: u8,
+        steering: f32,
+        view: &ClientView,
+        now: Instant,
+    ) {
         let msg = KartMsg {
+            steering,
+            design,
             state: state.clone(),
             fires: self.fires,
             ack: view.last_event,
@@ -1134,6 +1206,7 @@ mod tests {
 
     fn setup() -> RaceSetup {
         RaceSetup {
+            design: 0,
             track: 0,
             elimination: false,
             laps: 3,
@@ -1177,6 +1250,8 @@ mod tests {
         s.boost_timer = 0.5;
         s.spin = 0.2;
         let m = KartMsg {
+            steering: -1.,
+            design: 3,
             state: s.clone(),
             fires: 4,
             ack: 9,
@@ -1199,6 +1274,8 @@ mod tests {
         let mut s = VehicleState::spawn(Vec3::ZERO, 0.0);
         s.position.x = 1.0e9;
         let m = KartMsg {
+            steering: -1.,
+            design: 3,
             state: s,
             fires: 0,
             ack: 0,
@@ -1308,7 +1385,15 @@ mod tests {
     #[test]
     fn host_and_client_play_over_loopback() {
         let t = build_graybox_loop();
-        let mut host = NetHost::bind(0, setup(), "Host").unwrap();
+        let mut host = NetHost::bind(
+            0,
+            RaceSetup {
+                design: 3,
+                ..setup()
+            },
+            "Host",
+        )
+        .unwrap();
         let addr = SocketAddr::from(([127, 0, 0, 1], host.port()));
         let mut client = NetClient::connect(addr, "Guest").unwrap();
         let wait = |f: &mut dyn FnMut() -> bool| {
@@ -1335,6 +1420,8 @@ mod tests {
         let lobby = lobby.unwrap();
         assert_eq!(lobby.names, vec!["Host".to_string(), "Guest".to_string()]);
         assert_eq!(lobby.you, 1);
+        assert_eq!(lobby.setup.compatible_design(0), 3);
+        assert_eq!(lobby.setup.compatible_design(5), 5);
 
         // The host starts; the guest gets seat 1 and a snapshot.
         let mut race = Race::new(&t, host.racer_count(), true, 3);
@@ -1370,11 +1457,13 @@ mod tests {
         moved.position += Vec3::new(0.0, 0.0, 4.0);
         client.fires = 1;
         assert!(wait(&mut || {
-            client.send_kart(&moved, &view, Instant::now());
+            client.send_kart(&moved, 5, -1., &view, Instant::now());
             host.poll(Instant::now(), Some(&mut race));
             race.step(&t, DriveInput::default(), 1.0 / 60.0);
             race.racers[1].state.position == moved.position
         }));
+        assert_eq!(race.racers[1].design, 5);
+        assert_eq!(race.racers[1].steering, -1.);
     }
 
     #[test]
@@ -1539,7 +1628,7 @@ mod tests {
                 let mut s = r.racers[you].state.clone();
                 s.position.z += 0.05 * tick as f32 / 60.0;
                 r.racers[you].state = s.clone();
-                client.send_kart(&s, v, now);
+                client.send_kart(&s, 0, 0., v, now);
                 if started && race.racers[you].state.position.distance(s.position) < 1.0 {
                     moved_seen = true;
                 }
