@@ -657,9 +657,9 @@ mod tests {
         pump(&mut h, &mut [&mut c], |_, ce| !ce[0].is_empty());
         let mut w = packet(Kind::Reject);
         w.str("gotcha");
-        h.sock
-            .send_to(&w.finish(), c.sock.local_addr().unwrap())
-            .unwrap();
+        // The client binds the unspecified address; Windows can't send to 0.0.0.0.
+        let client = SocketAddr::from(([127, 0, 0, 1], c.sock.local_addr().unwrap().port()));
+        h.sock.send_to(&w.finish(), client).unwrap();
         sleep(Duration::from_millis(30));
         assert!(c.poll(Instant::now()).is_empty());
         assert!(c.slot().is_some());
