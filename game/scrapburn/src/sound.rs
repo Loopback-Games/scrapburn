@@ -75,6 +75,8 @@ pub fn theme_for(track: TrackId) -> Theme {
         TrackId::Dustbowl => Theme::Dust,
         TrackId::Grindstone => Theme::Castle,
         TrackId::Skyway => Theme::Sky,
+        TrackId::Orchard => Theme::Glass,
+        TrackId::Helios => Theme::Solar,
     }
 }
 

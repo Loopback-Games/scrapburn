@@ -3,6 +3,7 @@
 
 pub mod canyon;
 mod castle;
+mod observatory;
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 use rivet_physics::{Surface, TriMesh};
@@ -104,6 +105,8 @@ pub enum TrackId {
     Dustbowl,
     Grindstone,
     Skyway,
+    Orchard,
+    Helios,
 }
 
 impl TrackId {
@@ -113,6 +116,8 @@ impl TrackId {
             TrackId::Dustbowl => "dustbowl-loop-v2",
             TrackId::Grindstone => "castle-grindstone-v2",
             TrackId::Skyway => "skyway-zero-v2",
+            TrackId::Orchard => "glass-orchard",
+            TrackId::Helios => "helios-crown",
         }
     }
 }
@@ -187,7 +192,7 @@ fn skyway_height(_p: Vec2, t: f32) -> f32 {
     40.0 + 7.0 * (tau * t * 2.0).sin() + 4.0 * (tau * t * 5.0 + 1.3).sin()
 }
 
-pub const TRACKS: [TrackDef; 3] = [
+pub const TRACKS: [TrackDef; 5] = [
     TrackDef {
         id: TrackId::Dustbowl,
         name: "DUSTBOWL LOOP",
@@ -281,6 +286,8 @@ pub const TRACKS: [TrackDef; 3] = [
             terrain: TerrainKind::Void,
         },
     },
+    observatory::ORCHARD,
+    observatory::HELIOS,
 ];
 
 /// The sun, sky and grade for each circuit.
@@ -315,6 +322,27 @@ pub fn lighting(id: TrackId) -> rivet_render::Lighting {
             vignette: 0.42,
             saturation: 1.12,
             stars: 0.15,
+        },
+        TrackId::Orchard => rivet_render::Lighting {
+            sun_dir: Vec3::new(-0.65, -0.44, 0.50).normalize(),
+            sun_color: Vec3::new(1.1, 1.45, 1.65),
+            sky_zenith: Vec3::new(0.025, 0.055, 0.16),
+            sky_horizon: Vec3::new(0.48, 0.31, 0.57),
+            fog_color: Vec3::new(0.31, 0.29, 0.47),
+            cloud_coverage: 0.38,
+            stars: 0.48,
+            bloom_intensity: 0.14,
+            ..base
+        },
+        TrackId::Helios => rivet_render::Lighting {
+            sun_dir: Vec3::new(-0.85, -0.24, 0.43).normalize(),
+            sun_color: Vec3::new(2.7, 1.67, 0.85),
+            sky_zenith: Vec3::new(0.07, 0.28, 0.37),
+            sky_horizon: Vec3::new(1.0, 0.62, 0.27),
+            fog_color: Vec3::new(0.75, 0.51, 0.34),
+            fog_density: 0.0009,
+            cloud_coverage: 0.32,
+            ..base
         },
         // Night over the city: cold moonlight, a magenta glow on the horizon, stars.
         TrackId::Skyway => rivet_render::Lighting {
@@ -754,23 +782,14 @@ fn skyway_billboards(m: &mut MeshData, frames: &[(Vec3, Vec3, Vec3, Vec3)], cent
 /// Architecture along one sector of each circuit. All supports sit beyond the barriers (on the
 /// Dustbowl, on the open shoulder) and are solid.
 fn sector_structure(mesh: &mut MeshData, solids: &mut Vec<Solid>, def: &TrackDef, frame: Mat4) {
-    // The uprights: offset from the center line, foot height, posts along the road, half
-    // extents, height.
-    let (x, foot, posts, half, height): (f32, f32, &[f32], Vec2, f32) = match def.id {
-        TrackId::Dustbowl => (9.0, -1.0, &[-1.5, 1.5], Vec2::splat(0.21), 10.0),
-        TrackId::Grindstone => (9.6, -1.5, &[0.0], Vec2::new(1.6, 1.9), 13.9),
-        TrackId::Skyway => (9.0, -2.0, &[0.0], Vec2::new(0.4, 0.52), 7.5),
+    let mut post = |x, foot, z, half, height| {
+        solids.push(Solid::upright_box(
+            frame,
+            Vec3::new(x, foot, z),
+            half,
+            height,
+        ));
     };
-    for sign in [-1.0_f32, 1.0] {
-        for &z in posts {
-            solids.push(Solid::upright_box(
-                frame,
-                Vec3::new(sign * x, foot, z),
-                half,
-                height,
-            ));
-        }
-    }
     let block = |m: &mut MeshData, a: Vec3, b: Vec3, width, depth, layer, color| {
         let span = b - a;
         let transform = Mat4::from_rotation_translation(
@@ -791,6 +810,7 @@ fn sector_structure(mesh: &mut MeshData, solids: &mut Vec<Solid>, def: &TrackDef
         match def.id {
             TrackId::Dustbowl => {
                 for z in [-1.5, 1.5] {
+                    post(sign * 9.0, -1.0, z, Vec2::splat(0.21), 10.0);
                     block(
                         mesh,
                         p(9.0, -1.0, z),
@@ -832,6 +852,7 @@ fn sector_structure(mesh: &mut MeshData, solids: &mut Vec<Solid>, def: &TrackDef
                 }
             }
             TrackId::Grindstone => {
+                post(sign * 9.6, -1.5, 0.0, Vec2::new(1.6, 1.9), 13.9);
                 block(
                     mesh,
                     p(9.6, -1.5, 0.0),
@@ -869,7 +890,16 @@ fn sector_structure(mesh: &mut MeshData, solids: &mut Vec<Solid>, def: &TrackDef
                     );
                 }
             }
+            TrackId::Orchard => {
+                observatory::crystal_gate(mesh, frame);
+                return;
+            }
+            TrackId::Helios => {
+                observatory::transit_ring(mesh, frame);
+                return;
+            }
             TrackId::Skyway => {
+                post(sign * 9.0, -2.0, 0.0, Vec2::new(0.4, 0.52), 7.5);
                 let a = p(9.0, -2.0, 0.0);
                 let b = p(9.0, 5.5, 0.0);
                 let c = p(4.5, 10.0, -2.0);
@@ -1519,6 +1549,8 @@ pub fn build_track(def: &TrackDef) -> Track {
         TrackId::Dustbowl => (0.16, 9, 3),
         TrackId::Grindstone => (0.39, 15, 2),
         TrackId::Skyway => (0.09, 8, 3),
+        TrackId::Orchard => (0.055, 11, 4),
+        TrackId::Helios => (0.035, 16, 4),
     };
     for k in 0..repeats {
         let (center, fwd, _, _) = frames[((n as f32 * sector) as usize + k * spacing) % n];
@@ -1744,6 +1776,11 @@ pub fn build_track(def: &TrackDef) -> Track {
         rocks.push(pos);
     }
 
+    match def.id {
+        TrackId::Orchard => observatory::groves(&mut props, &centerline),
+        TrackId::Helios => observatory::orrery(&mut props),
+        _ => {}
+    }
     let canyon = (def.id == TrackId::Dustbowl)
         .then(|| canyon::Canyon::build(&mut props, &mut solids, &centerline));
     if def.id == TrackId::Dustbowl {
@@ -1840,7 +1877,9 @@ pub fn build_track(def: &TrackDef) -> Track {
         // A sea of clouds far below, catching the moonlight; the pylons sink into it.
         let low = centerline.iter().map(|c| c.y).fold(f32::MAX, f32::min);
         cloud_sea(&mut road, lo, hi, low - CLOUD_DEPTH);
-        skyway_billboards(&mut road, &frames, &centerline);
+        if def.id == TrackId::Skyway {
+            skyway_billboards(&mut road, &frames, &centerline);
+        }
     }
 
     let every = (CHECKPOINT_SPACING / SAMPLE_SPACING).round() as usize;
@@ -2286,7 +2325,13 @@ mod tests {
         let ids: Vec<_> = TRACKS.iter().map(|d| d.id).collect();
         assert_eq!(
             ids,
-            vec![TrackId::Dustbowl, TrackId::Grindstone, TrackId::Skyway]
+            vec![
+                TrackId::Dustbowl,
+                TrackId::Grindstone,
+                TrackId::Skyway,
+                TrackId::Orchard,
+                TrackId::Helios
+            ]
         );
         assert!(
             TRACKS

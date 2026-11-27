@@ -1,6 +1,6 @@
 //! Renders a soundtrack piece to a WAV file: about one pass through the song and into the
 //! loop, with the final-lap layers coming in two thirds of the way.
-//! `cargo run -p rivet-audio --release --example music_demo -- [menu|dust|castle|sky] [out.wav]`
+//! `cargo run -p rivet-audio --release --example music_demo -- [menu|dust|castle|sky|glass|solar] [out.wav]`
 
 use rivet_audio::{Command, Mixer, Theme};
 
@@ -13,8 +13,10 @@ fn main() -> std::io::Result<()> {
         None | Some("dust") => Theme::Dust,
         Some("castle") => Theme::Castle,
         Some("sky") => Theme::Sky,
+        Some("glass") => Theme::Glass,
+        Some("solar") => Theme::Solar,
         Some(other) => {
-            eprintln!("unknown theme '{other}' (use menu, dust, castle or sky)");
+            eprintln!("unknown theme '{other}' (use menu, dust, castle, sky, glass or solar)");
             std::process::exit(2);
         }
     };

@@ -1,4 +1,4 @@
-//! The soundtrack's songs as sequencer data: four original pieces, one for the menus and
+//! The soundtrack's songs as sequencer data: original pieces, one for the menus and
 //! one per circuit. `music.rs` plays them.
 //!
 //! Every pattern is a 16-character string, one character per 16th note of a 4/4 bar.
@@ -18,10 +18,19 @@ pub enum Theme {
     Castle,
     /// Skyway Zero: bright synth-rock in F-sharp minor, 150 BPM.
     Sky,
+    Glass,
+    Solar,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 4] = [Theme::Menu, Theme::Dust, Theme::Castle, Theme::Sky];
+    pub const ALL: [Theme; 6] = [
+        Theme::Menu,
+        Theme::Dust,
+        Theme::Castle,
+        Theme::Sky,
+        Theme::Glass,
+        Theme::Solar,
+    ];
 
     pub(crate) fn song(self) -> &'static Song {
         match self {
@@ -29,6 +38,8 @@ impl Theme {
             Theme::Dust => &DUST,
             Theme::Castle => &CASTLE,
             Theme::Sky => &SKY,
+            Theme::Glass => &GLASS,
+            Theme::Solar => &SOLAR,
         }
     }
 }
@@ -813,6 +824,65 @@ const MENU: Song = Song {
             lead_double: true,
             arp: true,
             ..MENU_CHORUS
+        },
+    ],
+};
+
+// Glass Orchard: a descending bell figure against a syncopated, palm-muted pulse.
+const GLASS: Song = Song {
+    bpm: 142.,
+    majors: &[0, 5, 7],
+    loop_to: 0,
+    tone: Tone {
+        cab: 4600.,
+        delay: 0.54,
+        arp: 0.26,
+        ..SKY.tone
+    },
+    sections: &[
+        Section {
+            arp: true,
+            ..section(
+                8,
+                &[A, F, C, G],
+                &[("M--M--H-.M--H---", "")],
+                SKY_VERSE_DRUMS,
+            )
+        },
+        Section {
+            lead: Some(&[
+                &[(81, 3), (79, 3), (76, 2), (72, 4), (76, 4)],
+                &[(77, 4), (76, 2), (72, 2), (69, 8)],
+            ]),
+            fill: true,
+            ..section(8, &[A, F, C, G], CHORUS_GTR, PRE_DRUMS)
+        },
+    ],
+};
+
+// Helios Crown: a rising brass-like hook over a four-on-the-floor climb.
+const SOLAR: Song = Song {
+    bpm: 160.,
+    majors: &[2, 7, 9],
+    loop_to: 0,
+    tone: Tone {
+        drive: 10.,
+        cab: 6700.,
+        lead: 0.30,
+        ..DUST.tone
+    },
+    sections: &[
+        Section {
+            fill: true,
+            ..section(8, &[D, A, B, G], &[("O---H-H-O---H-H-", "")], PRE_DRUMS)
+        },
+        Section {
+            lead: Some(&[
+                &[(74, 3), (78, 3), (81, 6), (83, 4)],
+                &[(81, 4), (78, 4), (76, 8)],
+            ]),
+            lead_double: true,
+            ..section(8, &[G, A, D, D], CHORUS_GTR, SKY_CHORUS_DRUMS)
         },
     ],
 };

@@ -367,6 +367,8 @@ pub fn placements(track: &Track) -> Vec<Placement> {
         TrackId::Dustbowl => dustbowl(track),
         TrackId::Grindstone => grindstone(track),
         TrackId::Skyway => skyway(track),
+        // These circuits build their landmarks directly into the scenery mesh.
+        TrackId::Orchard | TrackId::Helios => Vec::new(),
     }
 }
 
