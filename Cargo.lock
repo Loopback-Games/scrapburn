@@ -2100,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "rivet-ai"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "glam",
  "rivet-physics",
@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "rivet-assets"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "image",
  "serde_json",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "rivet-audio"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cpal",
  "log",
@@ -2125,25 +2125,25 @@ dependencies = [
 
 [[package]]
 name = "rivet-core"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "rivet-net"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "rivet-physics"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "glam",
 ]
 
 [[package]]
 name = "rivet-platform"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "gilrs",
  "log",
@@ -2154,7 +2154,7 @@ dependencies = [
 
 [[package]]
 name = "rivet-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "fontdue",
@@ -2322,7 +2322,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scrapburn"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arboard",

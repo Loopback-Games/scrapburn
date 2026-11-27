@@ -62,7 +62,7 @@ impl std::str::FromStr for Mode {
 }
 
 pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway|orchard|helios] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -132,7 +132,9 @@ pub fn parse(
                 track = crate::track::TRACKS
                     .iter()
                     .position(|t| t.name.to_ascii_lowercase().contains(&v))
-                    .ok_or_else(|| format!("unknown track '{v}' (dustbowl, castle, skyway)"))?;
+                    .ok_or_else(|| {
+                        format!("unknown track '{v}' (dustbowl, castle, skyway, orchard, helios)")
+                    })?;
             }
             "--screenshot" => screenshot = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => return Err(USAGE.to_string()),

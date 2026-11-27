@@ -27,6 +27,8 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 | ![Giant fossil ribs curl over the dirt straight opposite a sandstone arch](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** Follow the wheel ruts under a leviathan’s ribs, then race the ore buckets across the refinery bend. A dust devil spins beside the back straight. The eight-meter sand shoulders give you room to run wide and still cross a checkpoint. |
 | ![Tournament pennants over the approach to the sun-wheel gate](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** Race beneath tournament pennants past the windmill and through a jeweled sun-wheel gate. Look over the low parapet for the slate-roofed great hall midway around the lap, then follow the torchlit ramparts to the drawbridge jump. |
 | ![A cargo airship above the neon launch straight under an aurora](docs/media/skyway-zero.jpg) | **Skyway Zero.** Launch alongside a cargo airship and follow the banked neon deck above a sea of clouds, past glowing billboards in tribute to 90s shooters, platformers and racers. A solar relay marks the far S-bends, and four boost strips reward a clean line. |
+| ![Mint and amethyst crystal spires leaning over a flagstone straight](docs/media/glass-orchard.jpg) | **Glass Orchard.** Follow the flagstones through a canopy of luminous quartz. The road doubles back into the grove halfway around the lap, with a boost strip on the way out. |
+| ![Brass transit rings frame the rising sun beside a bank of solar mirrors](docs/media/helios-crown.jpg) | **Helios Crown.** Launch through four brass transit rings into the morning sun. Climb past the terraced mirrors, then bank around the giant armillary sphere above the clouds. |
 
 ### Weapons
 
@@ -108,7 +110,7 @@ just bench                                   # 30 s automated benchmark
   driving your display.
 - `--size 1600x900`, `--present vsync|immediate`.
 - `--preset low|medium|high`: Low renders the 3D scene at 75% scale.
-- `--track dustbowl|castle|skyway` selects the circuit. For an automated race,
+- `--track dustbowl|castle|skyway|orchard|helios` selects the circuit. For an automated race,
   `just bench --track castle --mode elimination` selects both the circuit and the race mode.
 
 From a graphical session, use `--offscreen` to benchmark a GPU without a monitor attached.
