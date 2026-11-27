@@ -11,3 +11,7 @@ steel roll cage, exposed V8 engine with chrome exhaust pipes, chunky off-road ti
 and teal paint, riveted armor plates, front ram bar, no driver, game asset, clean silhouette"
 
 Tripo spend is tracked in `assets/tripo-spend.tsv` (project cap: 800 credits).
+
+The sandstone window, sail mill, great hall, sky freighter, and solar relay are original
+procedural meshes authored for the three circuits. Each GLB includes a surface atlas with
+patterns for sandstone strata, masonry, slate, wood grain, canvas, and metal panels.

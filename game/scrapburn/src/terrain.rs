@@ -99,13 +99,8 @@ fn height_with_distance(x: f32, z: f32, d: f32) -> f32 {
     let terraced = (rise * 4.0).floor() / 4.0 * 0.35 + rise * 0.65;
     let plateau = smoothstep(0.46, 0.60, value_noise(x / 110.0, z / 110.0));
     let canyon = terraced * (43.0 + ridge * 39.0 + plateau * 47.0);
-    // Eroded shelves leave occasional windows onto the distant mesas.
-    let fault = fbm(x + 67.0, z - 28.0, 105.0);
-    let foot = 21.0 + 27.0 * fault;
-    let wall = smoothstep(foot, foot + 10.0, d);
-    let cap = smoothstep(0.32, 0.61, fault);
-    let needles = smoothstep(0.57, 0.73, fault);
-    FLAT_Y + hills + canyon + wall * (cap * 24.0 + needles * 26.0)
+    // Gaps between the distant mesas leave long views across the valley.
+    FLAT_Y + hills * 0.52 + canyon * (0.22 + 0.78 * plateau)
 }
 
 /// Terrain height at `(x, z)`.
