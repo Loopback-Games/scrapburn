@@ -67,6 +67,8 @@ pub enum MenuAction {
     NextRace,
     /// Copy the private-race invite to the clipboard again.
     CopyInvite,
+    /// Download and install the release in `MenuState::update`, then restart.
+    Update,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -214,6 +216,8 @@ pub struct MenuState {
     pub invite_ready: bool,
     /// The address the last JoinGame action refers to.
     join_choice: Option<String>,
+    /// A newer release the title screen offers to install, e.g. "v0.2.0".
+    pub update: Option<String>,
 }
 
 impl MenuState {
@@ -233,6 +237,7 @@ impl MenuState {
             circuit_next: false,
             invite_ready: false,
             join_choice: None,
+            update: None,
         }
     }
 
@@ -299,16 +304,16 @@ impl MenuState {
             Preset::High => "HIGH",
         };
         match self.screen {
-            Screen::Title => [
-                "SOLO RACE",
-                "MULTIPLAYER",
-                "GARAGE",
-                "CONTROLS",
-                "SETTINGS",
-                "QUIT",
-            ]
-            .map(String::from)
-            .to_vec(),
+            Screen::Title => ["SOLO RACE", "MULTIPLAYER", "GARAGE", "CONTROLS", "SETTINGS"]
+                .map(String::from)
+                .into_iter()
+                .chain(
+                    self.update
+                        .as_ref()
+                        .map(|v| format!("UPDATE TO {}", v.to_ascii_uppercase())),
+                )
+                .chain(std::iter::once("QUIT".into()))
+                .collect(),
             Screen::RaceSetup => vec![
                 "START RACE".into(),
                 format!("MODE  < {} >", self.mode.name()),
@@ -447,6 +452,7 @@ impl MenuState {
                         2 => Screen::Garage,
                         3 => Screen::Controls,
                         4 => Screen::Settings,
+                        5 if self.update.is_some() => return MenuAction::Update,
                         _ => return MenuAction::Quit,
                     };
                     self.go(dest);
@@ -733,6 +739,33 @@ mod tests {
         assert_eq!(m.screen, Screen::Settings);
         assert_eq!(m.handle(press(|i| i.back = true), &mut s), MenuAction::None);
         assert_eq!(m.screen, Screen::Title, "back returns to the title");
+    }
+
+    #[test]
+    fn title_offers_an_available_update_above_quit() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Title);
+        let plain = m.items(&s);
+        assert_eq!(plain.last().map(String::as_str), Some("QUIT"));
+        m.selected = plain.len() - 1;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::Quit
+        );
+        m.update = Some("v0.2.0".into());
+        let items = m.items(&s);
+        assert_eq!(items.len(), plain.len() + 1);
+        assert_eq!(items[5], "UPDATE TO V0.2.0");
+        m.selected = 5;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::Update
+        );
+        m.selected = 6;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::Quit
+        );
     }
 
     #[test]

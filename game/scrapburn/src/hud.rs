@@ -993,7 +993,11 @@ pub fn draw_menu(
                 "Choose your chassis and paint.",
                 "Keyboard and gamepad bindings.",
                 "Graphics and race preferences.",
-                "Exit to desktop.",
+                if menu.update.is_some() && menu.selected == 5 {
+                    "Download the new version and restart."
+                } else {
+                    "Exit to desktop."
+                },
             ][menu.selected.min(5)],
         ),
         Screen::RaceSetup => (

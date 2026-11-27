@@ -80,6 +80,9 @@ def main() -> None:
                 shutil.copy2(path, stage / path)
         for path in ("LICENSE-APACHE", "LICENSE-MIT", "README.md"):
             shutil.copy2(path, stage / path)
+        # Marks a packaged install, which may update itself from GitHub Releases
+        # (game/scrapburn/src/update.rs). It names the release this archive is.
+        (stage / "scrapburn.release").write_text(version + "\n")
         # Preserve notices from the Go runtime and the modules linked into the helper.
         modules = subprocess.check_output(
             [
@@ -108,13 +111,10 @@ def main() -> None:
                     target = stage / "licenses" / module / file.name
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(file, target)
+        # Zip on every platform: the in-game updater reads exactly one format, and
+        # zipfile keeps the Unix executable bits.
         archive = Path(
-            shutil.make_archive(
-                str(Path(temporary) / name),
-                "zip" if windows else "gztar",
-                temporary,
-                name,
-            )
+            shutil.make_archive(str(Path(temporary) / name), "zip", temporary, name)
         )
         destination = dist / archive.name
         archive.replace(destination)

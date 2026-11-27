@@ -133,10 +133,25 @@ rather than the build host's glibc. The bundled helper is a static Go binary.
 with MinGW-w64 in a podman container. On Windows itself, `just package` builds natively.
 
 ```sh
-just package         # target/dist/scrapburn-<version>-linux-x86_64.tar.gz
+just package         # target/dist/scrapburn-<version>-linux-x86_64.zip
 just package-windows # target/dist/scrapburn-<version>-windows-x86_64.zip
 just ci              # fmt check, clippy, tests, cargo-audit and cargo-deny, release build
 ```
+
+## Releases and updates
+
+Bump `version` in the workspace `Cargo.toml`, merge it to `main`, then push a matching
+tag (`git tag v0.2.0 && git push origin v0.2.0`). The release workflow builds the Linux
+and Windows zips, writes `SHA256SUMS`, attests their provenance and publishes a GitHub
+release.
+
+A packaged install (one with a `scrapburn.release` file beside the game) checks for a
+newer release when it starts, in the background and with a short timeout, so it plays
+the same offline. When one exists, the title screen offers **UPDATE TO vX.Y.Z**. The
+game then downloads the zip for its platform, checks it against `SHA256SUMS`, swaps it
+into the install folder and restarts. Saves live in the user data folder and are not
+touched. Set `SCRAPBURN_NO_UPDATE=1` to turn the updater off. Builds run from a source
+checkout never update.
 
 ## The engine
 

@@ -26,6 +26,7 @@ pub mod sound;
 pub mod style;
 pub mod terrain;
 pub mod track;
+pub mod update;
 
 /// Fixed simulation tick.
 pub const TICK_DT: f64 = 1.0 / 60.0;

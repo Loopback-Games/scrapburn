@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 publish = false
-repository = "https://github.com/loopback-games/rivet"
+repository = "https://github.com/Loopback-Games/scrapburn"
 
 [workspace.dependencies]
 rivet-core = { path = "crates/rivet-core" }
@@ -35,6 +35,11 @@ cpal = "0.18.2"
 fontdue = "0.9.5"
 # Text only: copy and paste private-race invites.
 arboard = { version = "3.7.0", default-features = false }
+# In-game updater: HTTPS to GitHub Releases, verified with the OS trust store.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = "0.11.2"
+flate2 = "1.1.11"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

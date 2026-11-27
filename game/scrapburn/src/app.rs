@@ -34,6 +34,7 @@ use scrapburn::race::{Phase, Race, RaceEvent};
 use scrapburn::scenery;
 use scrapburn::sound::SoundDirector;
 use scrapburn::track::{TRACKS, Track, build_track};
+use scrapburn::update;
 use scrapburn::{MAX_STEPS, TICK_DT};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -65,6 +66,16 @@ struct App {
     game: Option<Game>,
     exit: ExitCode,
     launched: Instant,
+}
+
+/// Where this launch is with updating itself.
+enum Updating {
+    /// Not a packaged install, benchmarking, already current, or the check failed.
+    Off,
+    Checking(std::sync::mpsc::Receiver<update::Event>, std::path::PathBuf),
+    /// The title screen offers this release.
+    Offered(update::Release, std::path::PathBuf),
+    Installing(std::sync::mpsc::Receiver<update::Event>),
 }
 
 /// What the race on screen is for.
@@ -237,6 +248,8 @@ struct Game {
     knockout: Option<(usize, f64)>,
     net: Net,
     tunnel: Option<crate::tailcat::Tunnel>,
+    /// Self-update progress for a packaged install.
+    update: Updating,
     /// The private invite this host shares.
     invite: Option<String>,
     /// Kept open: on X11 copied text lasts only while its owner lives.
@@ -557,6 +570,10 @@ impl Game {
             knockout: None,
             net: Net::Off,
             tunnel: None,
+            update: match args.bench.is_none().then(update::install_dir).flatten() {
+                Some(dir) => Updating::Checking(update::spawn_check(dir.clone()), dir),
+                None => Updating::Off,
+            },
             invite: None,
             clipboard: None,
             launch_net: if args.host {
@@ -708,6 +725,77 @@ impl Game {
 
     fn show_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), self.attract_t));
+    }
+
+    /// Installs the offered release on a background thread.
+    fn start_update(&mut self) {
+        let Updating::Offered(release, dir) = std::mem::replace(&mut self.update, Updating::Off)
+        else {
+            return;
+        };
+        log::info!("installing {}", release.version);
+        self.menu.update = None;
+        self.show_toast("DOWNLOADING UPDATE");
+        self.update = Updating::Installing(update::spawn_install(release, dir));
+    }
+
+    /// Follows the update check or install. Returns an exit code once the new version
+    /// has been started and this one should close.
+    fn poll_update(&mut self) -> Option<ExitCode> {
+        let (rx, installing) = match &self.update {
+            Updating::Checking(rx, _) => (rx, false),
+            Updating::Installing(rx) => (rx, true),
+            Updating::Off | Updating::Offered(..) => return None,
+        };
+        let event = match rx.try_recv() {
+            Ok(event) => event,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.update = Updating::Off;
+                return None;
+            }
+        };
+        match event {
+            update::Event::Available(release) => {
+                log::info!("{} is available", release.version);
+                if let Updating::Checking(_, dir) =
+                    std::mem::replace(&mut self.update, Updating::Off)
+                {
+                    self.menu.update = Some(release.version.to_string());
+                    self.update = Updating::Offered(release, dir);
+                }
+            }
+            update::Event::Current => {
+                log::info!("up to date");
+                self.update = Updating::Off;
+            }
+            update::Event::Progress(p) => self.show_toast(format!("DOWNLOADING UPDATE {p}%")),
+            update::Event::Installed(exe) => {
+                self.update = Updating::Off;
+                let mut relaunch = std::process::Command::new(&exe);
+                relaunch.args(std::env::args_os().skip(1));
+                if let Some(dir) = exe.parent() {
+                    relaunch.current_dir(dir);
+                }
+                match relaunch.spawn() {
+                    Ok(_) => return Some(ExitCode::SUCCESS),
+                    Err(e) => {
+                        log::error!("starting {}: {e}", exe.display());
+                        self.show_toast("UPDATED. RESTART SCRAPBURN TO PLAY IT");
+                    }
+                }
+            }
+            update::Event::Failed(e) => {
+                self.update = Updating::Off;
+                if installing {
+                    log::error!("update failed: {e}");
+                    self.show_toast(format!("UPDATE FAILED: {e}").to_ascii_uppercase());
+                } else {
+                    log::warn!("update check failed: {e}");
+                }
+            }
+        }
+        None
     }
 
     /// Starts hosting and opens the lobby.
@@ -1138,6 +1226,9 @@ impl Game {
         self.poll_private();
         self.poll_peers();
         self.poll_resolve();
+        if let Some(code) = self.poll_update() {
+            return Some(code);
+        }
         let now = Instant::now();
         let frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
@@ -1251,6 +1342,7 @@ impl Game {
                     }
                     MenuAction::NextRace => self.next_round(),
                     MenuAction::CopyInvite => self.copy_invite(),
+                    MenuAction::Update => self.start_update(),
                     MenuAction::ToTitle if online && self.remote_still_racing() => {
                         self.show_toast("WAITING FOR EVERYONE TO FINISH")
                     }
