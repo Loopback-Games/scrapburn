@@ -17,7 +17,7 @@ use crate::combat::{CombatEvent, CombatNet, ItemKind};
 use crate::race::{Phase, Race, RaceEvent};
 
 /// Identifies Scrapburn and its network protocol version ("NAI" + 1).
-pub const GAME_ID: u32 = 0x4e41_4902;
+pub const GAME_ID: u32 = 0x4e41_4903;
 /// Default UDP port (a nod to the arena shooters of old).
 pub const DEFAULT_PORT: u16 = 27960;
 /// Remote players per host (the host makes eight).
@@ -277,6 +277,8 @@ pub struct RaceSetup {
     pub elimination: bool,
     pub laps: u8,
     pub rivals: u8,
+    /// The circuit round and points so far, when racing a circuit.
+    pub circuit: Option<crate::circuit::Circuit>,
 }
 
 /// Host → client while waiting in the lobby.
@@ -291,6 +293,17 @@ pub struct Lobby {
 
 fn put_setup(w: &mut Writer, s: &RaceSetup) {
     w.u8(s.track).bool(s.elimination).u8(s.laps).u8(s.rivals);
+    match &s.circuit {
+        None => {
+            w.u8(0);
+        }
+        Some(c) => {
+            w.u8(c.round + 1);
+            for p in c.points {
+                w.u8(p);
+            }
+        }
+    }
 }
 
 fn get_setup(r: &mut Reader) -> Result<RaceSetup, WireError> {
@@ -299,10 +312,24 @@ fn get_setup(r: &mut Reader) -> Result<RaceSetup, WireError> {
         elimination: r.bool()?,
         laps: r.u8()?,
         rivals: r.u8()?,
+        circuit: match r.u8()? {
+            0 => None,
+            round => {
+                let mut c = crate::circuit::Circuit {
+                    round: round - 1,
+                    ..Default::default()
+                };
+                for p in &mut c.points {
+                    *p = r.u8()?;
+                }
+                Some(c)
+            }
+        },
     };
     if s.track as usize >= crate::track::TRACKS.len()
         || s.laps == 0
         || s.rivals as usize >= MAX_RACERS
+        || s.circuit.is_some_and(|c| c.track() != s.track as usize)
     {
         return Err(WireError::Invalid("race setup"));
     }
@@ -1111,7 +1138,32 @@ mod tests {
             elimination: false,
             laps: 3,
             rivals: 3,
+            circuit: None,
         }
+    }
+
+    #[test]
+    fn circuit_standings_ride_along_with_the_lobby() {
+        let mut points = [0; crate::circuit::SEATS];
+        points[0] = 10;
+        points[3] = 18;
+        let l = Lobby {
+            setup: RaceSetup {
+                track: 1,
+                circuit: Some(crate::circuit::Circuit { round: 1, points }),
+                ..setup()
+            },
+            names: vec!["A".into(), "B".into()],
+            you: 1,
+        };
+        match ToClient::decode(&l.encode()) {
+            Ok(ToClient::Lobby(back)) => assert_eq!(back, l),
+            other => panic!("expected the lobby back, got {other:?}"),
+        }
+        // A circuit round on a different track than the one announced is refused.
+        let mut bad = l.clone();
+        bad.setup.track = 0;
+        assert!(ToClient::decode(&bad.encode()).is_err());
     }
 
     #[test]

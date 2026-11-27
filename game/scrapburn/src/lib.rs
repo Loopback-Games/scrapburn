@@ -6,6 +6,7 @@ pub mod autopilot;
 pub mod autotune;
 pub mod bench;
 pub mod camera;
+pub mod circuit;
 pub mod combat;
 pub mod controls;
 pub mod effects;

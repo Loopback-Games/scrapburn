@@ -13,7 +13,7 @@ just setup   # installs the pinned toolchain via mise
 just run     # title screen
 ```
 
-Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Open **Circuit** to preview a route, select it to equip it, then choose **Done** and **Start Race**.
+Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Set **Event** to **Single Track** and open **Track** to preview a route and equip it, or set it to **Circuit** to race every track in order. Circuits award 10, 8, 6, 5, 4, 3, 2 and 1 points per race, and the most points after the final round wins. Time Trial is always a single track.
 
 - **Multiplayer** opens private invites, direct hosting and joining, and your racer name.
 - **Garage** previews three chassis and eight finishes on your kart. Click a paint swatch or cycle finishes, then choose **Done** to save.
@@ -61,8 +61,10 @@ weapons; each player drives their own kart locally, so steering feels immediate 
 
 - **Host:** Multiplayer, then Host Game. Share your IP address or Tailscale name. The game uses
   UDP port 27960.
-- **Join:** Multiplayer, then type the address (`100.64.0.2`, `my-desktop`, `host:port`), or pick
-  one of your online Tailscale peers from the list.
+- **Join:** Multiplayer, then type the address (`100.64.0.2`, `my-desktop`, `host:port`), or open
+  **Tailscale** and pick one of your online peers.
+- In the lobby the host can choose **Single Track** or **Circuit**. Everyone advances to the next
+  circuit round when the host picks **Next Race**.
 - On the command line: `just run --host` or `just run --join 100.64.0.2`. Add
   `--name RUSTY` to override your saved name. First-time drivers receive a name like `RACER 4F`.
 

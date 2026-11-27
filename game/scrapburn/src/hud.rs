@@ -266,6 +266,18 @@ impl Minimap {
 /// One results line: name, kart tint, finish time.
 pub type ResultRow<'a> = (&'a str, [f32; 3], Option<f64>);
 
+/// One circuit standings line: name, kart tint, points this round, total points.
+pub type PointsRow<'a> = (&'a str, [f32; 3], u8, u8);
+
+/// Circuit progress for the race HUD.
+pub struct CircuitHud<'a> {
+    /// 1-based round.
+    pub round: usize,
+    pub rounds: usize,
+    /// Standings after this round, leader first.
+    pub table: Vec<PointsRow<'a>>,
+}
+
 /// Race-level HUD data.
 pub struct RaceHud<'a> {
     pub position: usize,
@@ -275,6 +287,8 @@ pub struct RaceHud<'a> {
     pub finished: Option<u32>,
     /// (name, tint, finish time) in final order, once the player has finished.
     pub results: Option<Vec<ResultRow<'a>>>,
+    /// Round and points, when the race is part of a circuit.
+    pub circuit: Option<CircuitHud<'a>>,
     pub track: &'a [glam::Vec3],
     /// (position, tint, is the player)
     pub karts: Vec<(glam::Vec3, [f32; 3], bool)>,
@@ -356,11 +370,35 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
         );
     }
 
+    if let Some(c) = &race.circuit {
+        text(
+            o,
+            26.0 * ui,
+            118.0 * ui,
+            2.2 * ui,
+            ACCENT,
+            &format!("CIRCUIT  ROUND {} / {}", c.round, c.rounds),
+        );
+    }
+
     // Results.
     if let Some(results) = &race.results {
-        let pw = 520.0 * ui;
+        let gap = 20.0 * ui;
+        let pw = if race.circuit.is_some() {
+            (520.0 * ui).min((w - 3.0 * gap) * 0.5)
+        } else {
+            520.0 * ui
+        };
         let ph = (90.0 + 40.0 * results.len() as f32) * ui;
-        let (x, y) = (w * 0.5 - pw * 0.5, h * 0.5 - ph * 0.5);
+        let x = if race.circuit.is_some() {
+            w * 0.5 - pw - gap * 0.5
+        } else {
+            w * 0.5 - pw * 0.5
+        };
+        let y = h * 0.5 - ph * 0.5;
+        if let Some(c) = &race.circuit {
+            draw_points(o, ui, (w * 0.5 + gap * 0.5, y), pw, c);
+        }
         o.rect(x, y, pw, ph, [0.04, 0.03, 0.02, 0.78]);
         o.rect(x, y, pw, 4.0 * ui, ACCENT);
         let title = race.finished.map_or_else(
@@ -369,7 +407,7 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
         );
         text(
             o,
-            w * 0.5 - width(&title, 4.0 * ui) * 0.5,
+            x + pw * 0.5 - width(&title, 4.0 * ui) * 0.5,
             y + 22.0 * ui,
             4.0 * ui,
             ACCENT,
@@ -397,6 +435,51 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
                 &t,
             );
         }
+    }
+}
+
+/// The circuit standings beside the race results.
+fn draw_points(o: &mut Overlay, ui: f32, (x, y): (f32, f32), pw: f32, c: &CircuitHud) {
+    let ph = (90.0 + 40.0 * c.table.len() as f32) * ui;
+    o.rect(x, y, pw, ph, [0.04, 0.03, 0.02, 0.78]);
+    o.rect(x, y, pw, 4.0 * ui, MINT);
+    let title = if c.round >= c.rounds {
+        c.table
+            .first()
+            .map_or_else(|| "CIRCUIT".into(), |l| format!("CHAMPION  {}", l.0))
+    } else {
+        format!("CIRCUIT  AFTER ROUND {} / {}", c.round, c.rounds)
+    };
+    let ts = (4.0 * ui).min((pw - 40.0 * ui) / width(&title, 1.0).max(1.0));
+    text(
+        o,
+        x + pw * 0.5 - width(&title, ts) * 0.5,
+        y + 22.0 * ui,
+        ts,
+        MINT,
+        &title,
+    );
+    for (k, (name, tint, gained, total)) in c.table.iter().enumerate() {
+        let ry = y + (80.0 + 40.0 * k as f32) * ui;
+        let col = [tint[0].min(1.0), tint[1].min(1.0), tint[2].min(1.0), 1.0];
+        o.rect(x + 30.0 * ui, ry, 14.0 * ui, 22.0 * ui, col);
+        text(
+            o,
+            x + 60.0 * ui,
+            ry,
+            3.0 * ui,
+            WHITE,
+            &format!("{}  {name}", ordinal(k + 1)),
+        );
+        let pts = format!("+{gained}  {total} PTS");
+        text(
+            o,
+            x + pw - 30.0 * ui - width(&pts, 3.0 * ui),
+            ry,
+            3.0 * ui,
+            if k == 0 { ACCENT } else { DIM },
+            &pts,
+        );
     }
 }
 
@@ -835,7 +918,7 @@ pub fn draw_track_card(
         let (px, py) = map.project(*start);
         o.rect(px - 2.0 * ui, py - 2.0 * ui, 7.0 * ui, 7.0 * ui, ACCENT);
     }
-    let head = format!("CIRCUIT {} / {}", index + 1, count);
+    let head = format!("TRACK {} / {}", index + 1, count);
     o.label(x + 24.0 * ui, y + 14.0 * ui, 1.5 * ui, ACCENT, &head);
     o.label(x + 24.0 * ui, y + 38.0 * ui, 3.4 * ui, WHITE, name);
     fit_label(
@@ -905,7 +988,7 @@ pub fn draw_menu(
             "SCRAPBURN",
             "MAIN MENU",
             [
-                "Choose a mode and circuit.",
+                "Pick a track or run a circuit.",
                 "Host a race or join friends.",
                 "Choose your chassis and paint.",
                 "Keyboard and gamepad bindings.",
@@ -913,11 +996,33 @@ pub fn draw_menu(
                 "Exit to desktop.",
             ][menu.selected.min(5)],
         ),
-        Screen::RaceSetup => ("Race setup", "SOLO RACE", menu.mode.description()),
+        Screen::RaceSetup => (
+            "Race setup",
+            "SOLO RACE",
+            if menu.selected == 2 {
+                match menu.solo_event() {
+                    crate::circuit::Event::Single => "One race on the track of your choice.",
+                    crate::circuit::Event::Circuit => {
+                        "Race every track in order. Points decide the champion."
+                    }
+                }
+            } else {
+                menu.mode.description()
+            },
+        ),
         Screen::Circuits => (
-            "Circuits",
-            "CIRCUIT SELECT",
-            "Browse the routes. Select a circuit to equip it.",
+            "Tracks",
+            "TRACK SELECT",
+            "Browse the routes. Select a track to equip it.",
+        ),
+        Screen::Tailscale => (
+            "Tailscale",
+            "MULTIPLAYER / TAILNET",
+            if menu.peers.is_empty() {
+                "No Tailscale peers online yet. The list refreshes every few seconds."
+            } else {
+                "Pick a device on your tailnet to join its race."
+            },
         ),
         Screen::Garage => ("Garage", "MOTOR POOL", "Choose a chassis and paint finish."),
         Screen::Online => (

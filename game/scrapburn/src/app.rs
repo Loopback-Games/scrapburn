@@ -17,12 +17,13 @@ use rivet_render::{
 use scrapburn::args::{Args, Mode};
 use scrapburn::bench::{Bench, BenchPhase};
 use scrapburn::camera::ChaseCamera;
+use scrapburn::circuit::{Circuit, Event};
 use scrapburn::combat::CombatEvent;
 use scrapburn::controls::{SteerRamp, actions, drive_input, menu_input, menu_input_typing};
 use scrapburn::effects::Effects;
 use scrapburn::fx_meshes;
 use scrapburn::ghost::{BestGhost, GhostRecorder};
-use scrapburn::hud::{self, HudInfo, RaceHud};
+use scrapburn::hud::{self, CircuitHud, HudInfo, RaceHud};
 use scrapburn::materials::{find_assets_dir, load_layers, shading};
 use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
 use scrapburn::netplay::{
@@ -209,6 +210,8 @@ struct Game {
     menu_rows: Option<(Screen, hud::MenuRows)>,
     pointer: Option<(f32, f32)>,
     clicked: Option<(Screen, usize, bool)>,
+    /// The circuit being raced, if any.
+    circuit: Option<Circuit>,
     settings: Settings,
     clock: FixedTimestep,
     camera: ChaseCamera,
@@ -522,6 +525,7 @@ impl Game {
             menu_rows: None,
             pointer: None,
             clicked: None,
+            circuit: None,
             settings,
             clock: FixedTimestep::new(TICK_DT, MAX_STEPS),
             camera: ChaseCamera::default(),
@@ -603,6 +607,9 @@ impl Game {
     }
 
     fn start(&mut self, session: Session) {
+        if matches!(session, Session::Attract) {
+            self.circuit = None;
+        }
         self.session = session;
         self.race = Self::make_race(&self.track, session, &self.settings, self.bench.is_some());
         self.fit_race_buffers();
@@ -621,6 +628,8 @@ impl Game {
         menu.peers = std::mem::take(&mut self.menu.peers);
         menu.lobby_host = self.menu.lobby_host;
         menu.lobby_elimination = self.menu.lobby_elimination;
+        menu.event = self.menu.event;
+        menu.circuit_next = self.circuit.is_some_and(|c| !c.is_final());
         self.menu = menu;
         // Hosting: everyone connected gets a seat; bots fill the rest.
         if let (Net::Host(h), Session::Play(mode)) = (&mut self.net, session) {
@@ -629,6 +638,7 @@ impl Game {
                 elimination: mode == Mode::Elimination,
                 laps: self.settings.laps as u8,
                 rivals: self.settings.rivals as u8,
+                circuit: self.circuit,
             };
             let count = h.racer_count();
             self.race = if mode == Mode::Elimination {
@@ -638,6 +648,37 @@ impl Game {
             };
             h.start(&mut self.race);
             self.fit_race_buffers();
+        }
+    }
+
+    /// Starts a race in `mode`: one race on the equipped track, or round one of a circuit.
+    fn begin(&mut self, mode: Mode, event: Event) {
+        self.circuit = (event == Event::Circuit && mode != Mode::TimeTrial).then(Circuit::default);
+        self.play_round(mode);
+    }
+
+    /// Starts the current circuit round (loading its track), or a plain race.
+    fn play_round(&mut self, mode: Mode) {
+        match self.circuit {
+            Some(c) if self.settings.track != c.track() => {
+                self.settings.track = c.track();
+                // load_track restarts the current session, which is now the race.
+                self.session = Session::Play(mode);
+                self.load_track();
+            }
+            _ => self.start(Session::Play(mode)),
+        }
+    }
+
+    /// Scores the round just run and starts the next one.
+    fn next_round(&mut self) {
+        let Session::Play(mode) = self.session else {
+            return;
+        };
+        let standings = self.race.standings(&self.track);
+        if let Some(next) = self.circuit.and_then(|c| c.next(&standings)) {
+            self.circuit = Some(next);
+            self.play_round(mode);
         }
     }
 
@@ -670,6 +711,7 @@ impl Game {
             elimination: self.menu.lobby_elimination,
             laps: self.settings.laps as u8,
             rivals: self.settings.rivals as u8,
+            circuit: None,
         };
         let addr = if loopback {
             ([127, 0, 0, 1], 0)
@@ -836,6 +878,7 @@ impl Game {
 
     /// A client builds its copy of the host's race from the first snapshot.
     fn start_client_race(&mut self, snap: &Snapshot) {
+        self.circuit = snap.setup.circuit;
         if snap.setup.track as usize != self.settings.track {
             self.settings.track = snap.setup.track as usize;
             self.load_track();
@@ -874,7 +917,10 @@ impl Game {
                 let racing = matches!(self.session, Session::Play(_)) && h.in_race();
                 let notes = h.poll(now, racing.then_some(&mut self.race));
                 if !h.in_race() {
-                    h.setup.track = self.settings.track as u8;
+                    // Clients see the planned event in the lobby; a circuit opens on its first track.
+                    h.setup.circuit = (self.menu.event == Event::Circuit).then(Circuit::default);
+                    h.setup.track =
+                        h.setup.circuit.map_or(self.settings.track, |c| c.track()) as u8;
                     h.setup.elimination = self.menu.lobby_elimination;
                     self.net_ticks += 1;
                     if self.net_ticks.is_multiple_of(6) {
@@ -890,7 +936,7 @@ impl Game {
                     }
                 }
                 if autostart {
-                    self.start(Session::Play(Mode::Race));
+                    self.begin(Mode::Race, Event::Single);
                 }
             }
             Net::Client { link, .. } => {
@@ -951,7 +997,7 @@ impl Game {
 
     /// Fetches tailnet peers in the background while the Online screen is open.
     fn poll_peers(&mut self) {
-        if self.menu.screen != Screen::Online {
+        if !matches!(self.menu.screen, Screen::Online | Screen::Tailscale) {
             return;
         }
         if let Some(rx) = &self.peers_rx {
@@ -1082,6 +1128,7 @@ impl Game {
             | Screen::Paused
             | Screen::Results
             | Screen::Online
+            | Screen::Tailscale
             | Screen::Lobby => {
                 // Online races can't be paused.
                 let online = !matches!(self.net, Net::Off);
@@ -1119,15 +1166,30 @@ impl Game {
                 }
                 match self.menu.handle(input, &mut self.settings) {
                     MenuAction::None => {}
-                    MenuAction::StartRace => self.start(Session::Play(Mode::Race)),
-                    MenuAction::StartTimeTrial => self.start(Session::Play(Mode::TimeTrial)),
-                    MenuAction::StartElimination => self.start(Session::Play(Mode::Elimination)),
+                    MenuAction::StartRace => self.begin(Mode::Race, self.menu.solo_event()),
+                    MenuAction::StartTimeTrial => self.begin(Mode::TimeTrial, Event::Single),
+                    MenuAction::StartElimination => {
+                        self.begin(Mode::Elimination, self.menu.solo_event())
+                    }
                     MenuAction::Resume => self.menu.go(Screen::Playing),
-                    MenuAction::Restart => match self.net {
+                    MenuAction::Restart => match (&self.net, self.session) {
                         // Only the host decides when to race again.
-                        Net::Client { .. } => {}
+                        (Net::Client { .. }, _) => {}
+                        // Racing again after the final round starts a fresh circuit.
+                        (_, Session::Play(mode))
+                            if self.circuit.is_some() && self.menu.screen == Screen::Results =>
+                        {
+                            self.begin(mode, Event::Circuit)
+                        }
                         _ => self.start(self.session),
                     },
+                    MenuAction::NextRace if matches!(self.net, Net::Client { .. }) => {
+                        self.show_toast("WAITING FOR THE HOST")
+                    }
+                    MenuAction::NextRace if online && self.remote_still_racing() => {
+                        self.show_toast("WAITING FOR EVERYONE TO FINISH")
+                    }
+                    MenuAction::NextRace => self.next_round(),
                     MenuAction::ToTitle if online && self.remote_still_racing() => {
                         self.show_toast("WAITING FOR EVERYONE TO FINISH")
                     }
@@ -1179,7 +1241,7 @@ impl Game {
                         } else {
                             Mode::Race
                         };
-                        self.start(Session::Play(mode));
+                        self.begin(mode, self.menu.event);
                     }
                     MenuAction::LeaveOnline => self.leave_online(),
                 }
@@ -1962,7 +2024,11 @@ impl Game {
                         } else {
                             format!("HOSTING ON PORT {}", host.port())
                         },
-                        def.name.to_string(),
+                        if self.menu.event == Event::Circuit {
+                            format!("CIRCUIT  ALL {} TRACKS", scrapburn::circuit::ROUNDS)
+                        } else {
+                            def.name.to_string()
+                        },
                         format!(
                             "{} RACERS ON THE GRID    {} BOTS",
                             host.racer_count(),
@@ -1976,9 +2042,13 @@ impl Game {
                         Some(l) => (
                             vec![
                                 format!("JOINED {}", link.server()),
-                                scrapburn::track::TRACKS[l.setup.track as usize % n_tracks]
-                                    .name
-                                    .to_string(),
+                                if l.setup.circuit.is_some() {
+                                    format!("CIRCUIT  ALL {} TRACKS", scrapburn::circuit::ROUNDS)
+                                } else {
+                                    scrapburn::track::TRACKS[l.setup.track as usize % n_tracks]
+                                        .name
+                                        .to_string()
+                                },
                                 if l.setup.elimination {
                                     "ELIMINATION"
                                 } else {
@@ -2053,6 +2123,24 @@ impl Game {
                 countdown,
                 finished: r.finish.map(|(p, _)| p),
                 results,
+                circuit: self.circuit.map(|c| {
+                    let totals = c.totals(&standings);
+                    CircuitHud {
+                        round: c.round as usize + 1,
+                        rounds: scrapburn::circuit::ROUNDS,
+                        table: scrapburn::circuit::table(&totals, &standings, race.racers.len())
+                            .into_iter()
+                            .map(|s| {
+                                (
+                                    race.racers[s].name.as_ref(),
+                                    race.racers[s].tint,
+                                    totals[s] - c.points[s],
+                                    totals[s],
+                                )
+                            })
+                            .collect(),
+                    }
+                }),
                 track: &self.track.centerline,
                 karts: race
                     .racers
@@ -2129,6 +2217,7 @@ impl Game {
                 | Screen::Title
                 | Screen::Playing
                 | Screen::Online
+                | Screen::Tailscale
                 | Screen::Lobby => {}
             }
         }

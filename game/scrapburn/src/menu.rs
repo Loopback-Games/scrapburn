@@ -18,6 +18,8 @@ pub enum Screen {
     Online,
     /// Waiting for the host to start.
     Lobby,
+    /// Online Tailscale peers to join.
+    Tailscale,
 }
 
 /// Edge-triggered menu input for one frame.
@@ -61,6 +63,8 @@ pub enum MenuAction {
     LobbyStart,
     /// Leave the online game (back to the title).
     LeaveOnline,
+    /// Run the next round of the circuit.
+    NextRace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -147,6 +151,11 @@ impl RaceMode {
 }
 /// Online screen: the typed address row.
 pub const ONLINE_ADDRESS: usize = 4;
+/// Online screen: the row that opens the Tailscale peer list.
+pub const ONLINE_TAILSCALE: usize = 5;
+/// Race setup and host lobby rows.
+const SETUP_EVENT: usize = 2;
+const SETUP_TRACK: usize = 3;
 /// Longest typed address.
 const MAX_ADDRESS: usize = 64;
 
@@ -161,6 +170,19 @@ const RIVAL_CHOICES: [usize; 3] = [3, 5, 7];
 fn cycle<T: PartialEq + Copy>(choices: &[T], current: T, dir: i32) -> T {
     let i = choices.iter().position(|c| *c == current).unwrap_or(0) as i32;
     choices[(i + dir).rem_euclid(choices.len() as i32) as usize]
+}
+
+/// The track row of race setup: the equipped track, or the circuit's route.
+fn track_row(event: crate::circuit::Event, track: usize) -> String {
+    match event {
+        crate::circuit::Event::Single => format!(
+            "TRACK  {}",
+            crate::track::TRACKS[track % crate::track::TRACKS.len()].name
+        ),
+        crate::circuit::Event::Circuit => {
+            format!("TRACKS  ALL {} IN ORDER", crate::circuit::ROUNDS)
+        }
+    }
 }
 
 /// Current screen and highlighted row. `return_to` is where Settings' Back goes.
@@ -180,6 +202,10 @@ pub struct MenuState {
     pub lobby_host: bool,
     /// The host picked Elimination for the online race.
     pub lobby_elimination: bool,
+    /// Single track or a full circuit.
+    pub event: crate::circuit::Event,
+    /// A circuit is under way and has another round after this one.
+    pub circuit_next: bool,
     /// The address the last JoinGame action refers to.
     join_choice: Option<String>,
 }
@@ -197,6 +223,8 @@ impl MenuState {
             peers: Vec::new(),
             lobby_host: false,
             lobby_elimination: false,
+            event: Default::default(),
+            circuit_next: false,
             join_choice: None,
         }
     }
@@ -228,6 +256,15 @@ impl MenuState {
         }
         if self.screen == Screen::Online && self.selected == ONLINE_ADDRESS {
             self.join_addr.pop();
+        }
+    }
+
+    /// The event a solo race runs: Time Trial is always a single track.
+    pub fn solo_event(&self) -> crate::circuit::Event {
+        if self.mode == RaceMode::TimeTrial {
+            crate::circuit::Event::Single
+        } else {
+            self.event
         }
     }
 
@@ -268,7 +305,8 @@ impl MenuState {
             Screen::RaceSetup => vec![
                 "START RACE".into(),
                 format!("MODE  < {} >", self.mode.name()),
-                format!("CIRCUIT  {}", crate::track::TRACKS[s.track].name),
+                format!("EVENT  < {} >", self.solo_event().name()),
+                track_row(self.solo_event(), s.track),
                 "BACK".into(),
             ],
             Screen::Circuits => crate::track::TRACKS
@@ -329,6 +367,9 @@ impl MenuState {
                 "MAIN MENU".into(),
                 "QUIT".into(),
             ],
+            Screen::Results if self.circuit_next => {
+                vec!["NEXT RACE".into(), "QUIT CIRCUIT".into()]
+            }
             Screen::Results => vec!["CONTINUE".into(), "RACE AGAIN".into()],
             Screen::Online => {
                 let mut v = vec![
@@ -342,10 +383,16 @@ impl MenuState {
                         format!("JOIN  {}_", self.join_addr.to_ascii_uppercase())
                     },
                 ];
-                v.extend(self.peers.iter().map(|(n, _)| format!("JOIN  {n}")));
+                v.push(format!("TAILSCALE  {} ONLINE", self.peers.len()));
                 v.push("BACK".into());
                 v
             }
+            Screen::Tailscale => self
+                .peers
+                .iter()
+                .map(|(n, _)| format!("JOIN  {n}"))
+                .chain(std::iter::once("BACK".into()))
+                .collect(),
             Screen::Lobby if self.lobby_host => vec![
                 "START RACE".into(),
                 format!(
@@ -356,10 +403,8 @@ impl MenuState {
                         "RACE"
                     }
                 ),
-                format!(
-                    "CIRCUIT  {}",
-                    crate::track::TRACKS[s.track % crate::track::TRACKS.len()].name
-                ),
+                format!("EVENT  < {} >", self.event.name()),
+                track_row(self.event, s.track),
                 "LEAVE".into(),
             ],
             Screen::Lobby => vec!["WAITING FOR THE HOST".into(), "LEAVE".into()],
@@ -396,7 +441,7 @@ impl MenuState {
                 MenuAction::None
             }
             Screen::RaceSetup => {
-                if input.back || (input.select && self.selected == 3) {
+                if input.back || (input.select && self.selected == 4) {
                     self.go(Screen::Title);
                 } else if self.selected == 0 && input.select {
                     return match self.mode {
@@ -410,7 +455,15 @@ impl MenuState {
                         self.mode,
                         if dir == 0 { 1 } else { dir },
                     );
-                } else if self.selected == 2 && input.select {
+                } else if self.selected == SETUP_EVENT
+                    && (dir != 0 || input.select)
+                    && self.mode != RaceMode::TimeTrial
+                {
+                    self.event = self.event.toggled();
+                } else if self.selected == SETUP_TRACK
+                    && input.select
+                    && self.solo_event() == crate::circuit::Event::Single
+                {
                     self.go(Screen::Circuits);
                     self.selected = s.track;
                 }
@@ -419,7 +472,7 @@ impl MenuState {
             Screen::Circuits => {
                 if input.back || (input.select && self.selected == n - 1) {
                     self.go(self.return_to);
-                    self.selected = 2;
+                    self.selected = SETUP_TRACK;
                 } else if input.select && s.track != self.selected {
                     s.track = self.selected;
                     return MenuAction::TrackChanged;
@@ -534,6 +587,10 @@ impl MenuState {
                     return MenuAction::None;
                 }
                 match self.selected {
+                    ONLINE_TAILSCALE => {
+                        self.go(Screen::Tailscale);
+                        MenuAction::None
+                    }
                     3 => MenuAction::HostGame,
                     0 => MenuAction::PrivateHost,
                     1 => MenuAction::PrivateJoin,
@@ -547,15 +604,23 @@ impl MenuState {
                         self.join_choice = Some(self.join_addr.clone());
                         MenuAction::JoinGame
                     }
-                    k => {
-                        self.join_choice =
-                            self.peers.get(k - ONLINE_ADDRESS - 1).map(|p| p.1.clone());
-                        if self.join_choice.is_some() {
-                            MenuAction::JoinGame
-                        } else {
-                            MenuAction::None
-                        }
-                    }
+                    _ => MenuAction::None,
+                }
+            }
+            Screen::Tailscale => {
+                if input.back || (input.select && self.selected == n - 1) {
+                    self.go(Screen::Online);
+                    self.selected = ONLINE_TAILSCALE;
+                    return MenuAction::None;
+                }
+                if !input.select {
+                    return MenuAction::None;
+                }
+                self.join_choice = self.peers.get(self.selected).map(|p| p.1.clone());
+                if self.join_choice.is_some() {
+                    MenuAction::JoinGame
+                } else {
+                    MenuAction::None
                 }
             }
             Screen::Lobby => {
@@ -566,12 +631,17 @@ impl MenuState {
                     if self.selected == 1 && (dir != 0 || input.select) {
                         self.lobby_elimination = !self.lobby_elimination;
                     }
-                    if self.selected == 2 && input.select {
+                    if self.selected == SETUP_EVENT && (dir != 0 || input.select) {
+                        self.event = self.event.toggled();
+                        return MenuAction::None;
+                    }
+                    let single = self.event == crate::circuit::Event::Single;
+                    if self.selected == SETUP_TRACK && input.select && single {
                         self.go(Screen::Circuits);
                         self.selected = s.track;
                         return MenuAction::None;
                     }
-                    if self.selected == 2 && dir != 0 {
+                    if self.selected == SETUP_TRACK && dir != 0 && single {
                         let tracks = crate::track::TRACKS.len() as i32;
                         s.track = (s.track as i32 + dir).rem_euclid(tracks) as usize;
                         return MenuAction::TrackChanged;
@@ -583,6 +653,11 @@ impl MenuState {
                 MenuAction::None
             }
             Screen::Results if input.back => MenuAction::ToTitle,
+            Screen::Results if self.circuit_next => match (input.select, self.selected) {
+                (true, 0) => MenuAction::NextRace,
+                (true, _) => MenuAction::ToTitle,
+                _ => MenuAction::None,
+            },
             Screen::Results => match (input.select, self.selected) {
                 (true, 0) => MenuAction::ToTitle,
                 (true, _) => MenuAction::Restart,
@@ -669,10 +744,10 @@ mod tests {
     }
 
     #[test]
-    fn circuit_picker_applies_choice_and_returns_to_setup() {
+    fn track_picker_applies_choice_and_returns_to_setup() {
         let mut s = Settings::default();
         let mut m = MenuState::new(Screen::RaceSetup);
-        m.selected = 2;
+        m.selected = 3;
         m.handle(press(|i| i.select = true), &mut s);
         assert_eq!(m.screen, Screen::Circuits);
         m.handle(press(|i| i.down = true), &mut s);
@@ -682,7 +757,40 @@ mod tests {
         );
         assert_eq!(s.track, 1);
         m.handle(press(|i| i.back = true), &mut s);
-        assert_eq!((m.screen, m.selected), (Screen::RaceSetup, 2));
+        assert_eq!((m.screen, m.selected), (Screen::RaceSetup, 3));
+    }
+
+    #[test]
+    fn circuit_event_runs_every_track_and_offers_the_next_race() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::RaceSetup);
+        m.selected = 2;
+        m.handle(press(|i| i.right = true), &mut s);
+        assert_eq!(m.solo_event(), crate::circuit::Event::Circuit);
+        assert!(m.items(&s)[3].contains("ALL"));
+        // The track browser stays closed: a circuit runs every track.
+        m.selected = 3;
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.screen, Screen::RaceSetup);
+        // Time Trial is always a single track.
+        m.mode = RaceMode::TimeTrial;
+        assert_eq!(m.solo_event(), crate::circuit::Event::Single);
+        m.selected = 2;
+        m.handle(press(|i| i.right = true), &mut s);
+        assert_eq!(m.event, crate::circuit::Event::Circuit, "unchanged");
+
+        let mut r = MenuState::new(Screen::Results);
+        r.circuit_next = true;
+        assert_eq!(r.items(&s)[0], "NEXT RACE");
+        assert_eq!(
+            r.handle(press(|i| i.select = true), &mut s),
+            MenuAction::NextRace
+        );
+        r.selected = 1;
+        assert_eq!(
+            r.handle(press(|i| i.select = true), &mut s),
+            MenuAction::ToTitle
+        );
     }
 
     #[test]
@@ -707,15 +815,28 @@ mod tests {
             MenuAction::JoinGame
         );
         assert_eq!(m.join_target().as_deref(), Some("100.64.0.2:27960"));
-        // Tailnet peers appear as their own rows.
-        m.peers = vec![("THINKPAD".into(), "100.64.0.9".into())];
-        m.selected = ONLINE_ADDRESS + 1;
-        assert!(m.items(&s)[m.selected].contains("THINKPAD"));
+        // Tailnet peers live on their own screen, however many there are.
+        m.peers = (0..30)
+            .map(|i| (format!("PEER {i}"), format!("100.64.0.{i}")))
+            .collect();
+        m.peers[0] = ("THINKPAD".into(), "100.64.0.9".into());
+        assert_eq!(
+            m.items(&s).len(),
+            7,
+            "the peer list stays off the Online screen"
+        );
+        m.selected = ONLINE_TAILSCALE;
+        assert!(m.items(&s)[m.selected].contains("30 ONLINE"));
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.screen, Screen::Tailscale);
+        assert!(m.items(&s)[0].contains("THINKPAD"));
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::JoinGame
         );
         assert_eq!(m.join_target().as_deref(), Some("100.64.0.9"));
+        m.handle(press(|i| i.back = true), &mut s);
+        assert_eq!((m.screen, m.selected), (Screen::Online, ONLINE_TAILSCALE));
         // An empty address does nothing; Back returns to the title.
         m.join_addr.clear();
         m.selected = ONLINE_ADDRESS;
@@ -804,8 +925,8 @@ mod tests {
         );
         assert!(m.lobby_elimination);
         assert!(m.items(&s)[1].contains("ELIMINATION"));
-        m.selected = 2;
-        assert!(m.items(&s)[2].contains(crate::track::TRACKS[0].name));
+        m.selected = 3;
+        assert!(m.items(&s)[3].contains(crate::track::TRACKS[0].name));
         assert_eq!(
             m.handle(press(|i| i.right = true), &mut s),
             MenuAction::TrackChanged
