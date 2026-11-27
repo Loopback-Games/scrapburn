@@ -1015,7 +1015,7 @@ pub fn garage_card(o: &mut Overlay, w: f32, h: f32, loadout: crate::kart::Loadou
     let x = w - pw - 44. * u;
     let y = h - 153. * u;
     o.rect(x, y, pw, 92. * u, INK);
-    let name = crate::kart::KARTS[loadout.design].name.to_ascii_uppercase();
+    let name = crate::kart::KARTS[loadout.design].label();
     o.label_centered(x + 16. * u, y + 27. * u, 2.8 * u, WHITE, &name);
     let finish = crate::kart::FINISHES[loadout.finish];
     o.label_centered(
@@ -1219,7 +1219,11 @@ pub fn draw_menu(
                 "Pick a device on your tailnet to join its race."
             },
         ),
-        Screen::Garage => ("Garage", "MOTOR POOL", "Choose a chassis and paint finish."),
+        Screen::Garage => (
+            "Garage",
+            "MOTOR POOL",
+            "Cars race trucks. ATVs race dirt bikes.",
+        ),
         Screen::Online => (
             "Multiplayer",
             "RACE NETWORK",

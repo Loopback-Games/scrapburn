@@ -32,6 +32,20 @@ pub struct Vertex {
 }
 
 impl Vertex {
+    /// Blend local joint transforms with the bind position, using six bits per joint.
+    pub fn set_joint_weights(&mut self, first: f32, second: f32) {
+        let a = (first.clamp(0., 1.) * 63.).round() as u32;
+        let b = ((second.clamp(0., 1.) * 63.).round() as u32).min(63 - a);
+        self.material = (self.material & 0x000f_ffff) | (a << 20) | (b << 26);
+    }
+
+    pub fn joint_weights(&self) -> [f32; 2] {
+        [
+            ((self.material >> 20) & 63) as f32 / 63.,
+            (self.material >> 26) as f32 / 63.,
+        ]
+    }
+
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,

@@ -7,7 +7,7 @@ use crate::particles::{Blend, Particle, ParticleSystem};
 use crate::style::tier_color;
 
 /// Rear wheel contact points and exhaust, in kart space (+Z forward, +X left).
-const REAR_WHEELS: [Vec3; 2] = [Vec3::new(0.75, -0.42, -0.8), Vec3::new(-0.75, -0.42, -0.8)];
+pub const REAR_WHEELS: [Vec3; 2] = [Vec3::new(0.75, -0.42, -0.8), Vec3::new(-0.75, -0.42, -0.8)];
 pub const EXHAUSTS: [Vec3; 2] = [Vec3::new(-0.38, 0.11, -1.37), Vec3::new(0.38, 0.11, -1.37)];
 const SPARK_RATE: f32 = 70.0;
 const FLAME_RATE: f32 = 140.0;
@@ -17,6 +17,8 @@ pub struct Effects {
     pub particles: ParticleSystem,
     rng: u64,
     pub dusty_road: bool,
+    pub rear_wheels: [Vec3; 2],
+    pub exhausts: [Vec3; 2],
     was_grounded: bool,
     last_vy: f32,
     accum: [f32; 3],
@@ -34,6 +36,8 @@ impl Effects {
             particles: ParticleSystem::new(1500),
             rng: 0x9e37_79b9_7f4a_7c15,
             dusty_road: false,
+            rear_wheels: REAR_WHEELS,
+            exhausts: EXHAUSTS,
             was_grounded: true,
             last_vy: 0.0,
             accum: [0.0; 3],
@@ -76,7 +80,7 @@ impl Effects {
             let c = tier_color(tier);
             let hot = if tier == 0 { 1.5 } else { 5.0 };
             for _ in 0..self.take(0, SPARK_RATE, dt) {
-                let wheel = REAR_WHEELS[(self.rand() * 2.0) as usize % 2];
+                let wheel = self.rear_wheels[(self.rand() * 2.0) as usize % 2];
                 let vel = back * (3.0 + self.rand() * 4.0)
                     + Vec3::Y * (1.5 + self.rand() * 2.5)
                     + self.jitter(1.5)
@@ -104,7 +108,7 @@ impl Effects {
             for _ in 0..self.take(1, FLAME_RATE, dt) {
                 let vel =
                     back * (6.0 + self.rand() * 4.0) + self.jitter(0.8) + state.velocity * 0.85;
-                let nozzle = EXHAUSTS[usize::from(self.rand() > 0.5)];
+                let nozzle = self.exhausts[usize::from(self.rand() > 0.5)];
                 let pos = at(nozzle) + self.jitter(0.035);
                 let life = 0.12 + self.rand() * 0.1;
                 self.particles.spawn(Particle {
@@ -127,7 +131,7 @@ impl Effects {
         if state.grounded && dust > 0.2 && speed > 4.0 {
             let rate = DUST_RATE * dust * (speed / params.max_speed).min(1.5);
             for _ in 0..self.take(2, rate, dt) {
-                let wheel = REAR_WHEELS[(self.rand() * 2.0) as usize % 2];
+                let wheel = self.rear_wheels[(self.rand() * 2.0) as usize % 2];
                 let vel = back * (1.0 + self.rand() * 2.0)
                     + Vec3::Y * (0.8 + self.rand())
                     + self.jitter(0.6)

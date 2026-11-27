@@ -2,6 +2,10 @@
 
 use std::path::Path;
 
+mod offroad;
+mod trail_wheel;
+pub use offroad::TrailModel;
+
 use glam::{Mat4, Vec3};
 use rivet_assets::{GlbError, GlbMesh, Rgba8Image, load_glb};
 use rivet_render::{MeshData, Vertex, material};
@@ -10,6 +14,7 @@ use crate::materials::KART_LAYER;
 
 /// Bumper-to-bumper length (m).
 pub const KART_LENGTH: f32 = 2.8;
+const NORTH_STAR_LENGTH: f32 = 2.108;
 /// Distance from the physics body center down to the tire contact patch (= ride height).
 pub const GROUND_OFFSET: f32 = 0.45;
 /// Rotation (radians about +Y) that turns the model's long axis/front toward +Z.
@@ -70,31 +75,126 @@ pub fn normalize(g: &GlbMesh, length: f32, extra_yaw: f32) -> MeshData {
     m
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VehicleType {
+    Car,
+    Truck,
+    Atv,
+    DirtBike,
+}
+
+impl VehicleType {
+    const ALL: [Self; 4] = [Self::Car, Self::Truck, Self::Atv, Self::DirtBike];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Car => "CAR",
+            Self::Truck => "TRUCK",
+            Self::Atv => "ATV",
+            Self::DirtBike => "DIRT BIKE",
+        }
+    }
+
+    pub fn trail(self) -> bool {
+        matches!(self, Self::Atv | Self::DirtBike)
+    }
+}
+
 /// A kart design: model file, the yaw that points its nose down +Z, and its tire size.
 #[derive(Debug, Clone, Copy)]
 pub struct KartModel {
     pub name: &'static str,
+    pub kind: VehicleType,
+    pub trail_model: Option<TrailModel>,
     pub yaw: f32,
     /// Wheel radius relative to the kart's length.
     pub wheel_ratio: f32,
 }
 
-/// The kart designs: the scrapper (all-rounder), the war-rig (heavy) and the speedster (light).
-pub const KARTS: [KartModel; 3] = [
+impl KartModel {
+    fn import_length(&self) -> f32 {
+        if self.kind == VehicleType::Atv {
+            NORTH_STAR_LENGTH
+        } else {
+            KART_LENGTH
+        }
+    }
+
+    /// Suspension footprint (half track, half wheelbase) and wall contact radius.
+    pub fn contacts(&self) -> (f32, f32, f32) {
+        match self.trail_model {
+            Some(model) => {
+                let (track, radius) = if model == TrailModel::Jackrabbit {
+                    (0.54, 0.71)
+                } else {
+                    (0.045, 0.41)
+                };
+                (
+                    track * model.scale(),
+                    model.axle() * model.scale(),
+                    radius * model.scale(),
+                )
+            }
+            None if self.kind == VehicleType::Atv => (0.461, 0.642, 0.61),
+            None => (0.60, 0.90, 0.80),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        self.name.replace('-', " ").to_ascii_uppercase()
+    }
+}
+
+/// Stable chassis order used in network packets. Garage saves use model names.
+pub const KARTS: [KartModel; 7] = [
     KartModel {
         name: "scrapper",
+        kind: VehicleType::Car,
+        trail_model: None,
         yaw: 0.0,
         wheel_ratio: WHEEL_RADIUS_RATIO,
     },
     KartModel {
         name: "warrig",
+        kind: VehicleType::Truck,
+        trail_model: None,
         yaw: 0.0,
         wheel_ratio: 0.19,
     },
     KartModel {
         name: "speedster",
+        kind: VehicleType::Car,
+        trail_model: None,
         yaw: 0.0,
         wheel_ratio: 0.13,
+    },
+    KartModel {
+        name: "north-star-570",
+        kind: VehicleType::Atv,
+        trail_model: None,
+        yaw: 0.0,
+        wheel_ratio: 0.15,
+    },
+    KartModel {
+        name: "jackrabbit",
+        kind: VehicleType::Atv,
+        trail_model: Some(TrailModel::Jackrabbit),
+        yaw: 0.0,
+        wheel_ratio: 0.15,
+    },
+    KartModel {
+        name: "redline-250",
+        kind: VehicleType::DirtBike,
+        trail_model: Some(TrailModel::Redline),
+        yaw: 0.0,
+        wheel_ratio: 0.15,
+    },
+    KartModel {
+        name: "ridgeback-450",
+        kind: VehicleType::DirtBike,
+        trail_model: Some(TrailModel::Ridgeback),
+        yaw: 0.0,
+        wheel_ratio: 0.15,
     },
 ];
 
@@ -110,6 +210,31 @@ pub struct Loadout {
 }
 
 impl Loadout {
+    pub fn cycle_type(&mut self, step: i32) {
+        let types = VehicleType::ALL;
+        let current = types
+            .iter()
+            .position(|&t| t == KARTS[self.design].kind)
+            .unwrap_or_default();
+        let kind = types[(current as i32 + step).rem_euclid(types.len() as i32) as usize];
+        if kind != KARTS[self.design].kind {
+            self.design = KARTS
+                .iter()
+                .position(|k| k.kind == kind)
+                .expect("each type has a chassis");
+        }
+    }
+
+    pub fn cycle_chassis(&mut self, step: i32) {
+        let kind = KARTS[self.design].kind;
+        loop {
+            self.design = (self.design as i32 + step).rem_euclid(KARTS.len() as i32) as usize;
+            if KARTS[self.design].kind == kind {
+                break;
+            }
+        }
+    }
+
     pub fn read(dir: &Path) -> Self {
         let Ok(data) = std::fs::read_to_string(dir.join("garage")) else {
             return Self::default();
@@ -152,6 +277,76 @@ pub fn model_for(mass_ratio: f32, is_player: bool) -> usize {
     }
 }
 
+/// Pick a rival within the equipped race class. Trail grids alternate quads and bikes.
+pub fn rival_design(equipped: usize, seat: usize, mass_ratio: f32) -> usize {
+    if !KARTS[equipped].kind.trail() {
+        return model_for(mass_ratio, false);
+    }
+    let quad_first = KARTS[equipped].kind == VehicleType::Atv;
+    let kind = if seat.is_multiple_of(2) == quad_first {
+        VehicleType::Atv
+    } else {
+        VehicleType::DirtBike
+    };
+    let mut models = KARTS.iter().enumerate().filter(|(_, k)| k.kind == kind);
+    let index = (seat / 2) % models.clone().count();
+    models.nth(index).expect("trail types have chassis").0
+}
+
+pub fn imported_parts(design: usize, mesh: &MeshData, tex: Option<&Rgba8Image>) -> KartParts {
+    let model = &KARTS[design];
+    let mut parts = split_wheels_textured(mesh, model.import_length() * model.wheel_ratio, tex);
+    if !model.kind.trail() {
+        add_marker_lamps(&mut parts.body);
+        fit_buggy_frame(&mut parts.body, design);
+    }
+    parts
+}
+
+pub fn load_rider(assets: &Path, layer: u32) -> Result<(MeshData, Option<Rgba8Image>), GlbError> {
+    let g = load_glb(&assets.join("models/karts/rider-seated.glb"))?;
+    let rot = Mat4::from_rotation_y(MODEL_YAW);
+    let mut mesh = MeshData {
+        vertices: g
+            .positions
+            .iter()
+            .zip(&g.normals)
+            .zip(&g.uvs)
+            .map(|((p, n), uv)| Vertex {
+                pos: rot.transform_point3(Vec3::from_array(*p)).to_array(),
+                normal: rot.transform_vector3(Vec3::from_array(*n)).to_array(),
+                uv: *uv,
+                color: [1., 1., 1., 0.],
+                material: material(layer, layer, 0),
+            })
+            .collect(),
+        indices: g.indices,
+    };
+    let weights = include_bytes!("../../../assets/models/karts/rider-seated.weights");
+    if weights.len() != mesh.vertices.len() * 2 {
+        return Err(GlbError::Malformed(
+            "seated rider weights do not match the mesh".into(),
+        ));
+    }
+    for (v, w) in mesh.vertices.iter_mut().zip(weights.as_chunks::<2>().0) {
+        v.set_joint_weights(w[0] as f32 / 255., w[1] as f32 / 255.);
+    }
+    Ok((mesh, g.base_color))
+}
+
+pub fn mount_north_star_rider(parts: &mut KartParts, rider: &MeshData) {
+    // Seat socket and steering-column pivot in the original meter-scale model.
+    let seat = Vec3::new(0., 0.848 - GROUND_OFFSET, -0.26);
+    parts.rig = Some(SteeringRig {
+        seat,
+        pivot: Vec3::new(0., 0.96427 - GROUND_OFFSET, 0.34542),
+        axis: Vec3::Y,
+        exhaust: Vec3::new(-0.418, 0.655 - GROUND_OFFSET, -0.918),
+        limit: 18_f32.to_radians(),
+    });
+    offroad::mount_rider(&mut parts.body, rider, seat, 1.);
+}
+
 /// Loads `models/karts/<name>.glb`: the mesh (textured from `layer`) and its base color.
 pub fn load(
     assets: &Path,
@@ -165,10 +360,24 @@ pub fn load(
             .join(format!("{}.glb", kart.name)),
     )?;
     let tex = g.base_color.clone();
-    let mut m = normalize(&g, KART_LENGTH, kart.yaw);
+    let north_star = kart.name == "north-star-570";
+    let mut m = normalize(&g, kart.import_length(), kart.yaw);
     let mat = material(layer, layer, 0);
     for v in &mut m.vertices {
         v.material = mat;
+    }
+    if north_star {
+        let mask = include_bytes!("../../../assets/models/karts/north-star-controls.mask");
+        if m.vertices.len().div_ceil(8) != mask.len() {
+            return Err(GlbError::Malformed(
+                "North Star controls do not match the mesh".into(),
+            ));
+        }
+        for (i, v) in m.vertices.iter_mut().enumerate() {
+            if mask[i / 8] & (1 << (i % 8)) != 0 {
+                v.set_joint_weights(1., 0.);
+            }
+        }
     }
     Ok((m, tex))
 }
@@ -310,9 +519,30 @@ pub fn add_marker_lamps(body: &mut MeshData) {
 /// Wheel radius relative to the kart's length (the scrap kart's chunky tires).
 pub const WHEEL_RADIUS_RATIO: f32 = 0.16;
 
+#[derive(Debug, Clone, Copy)]
+pub struct SteeringRig {
+    pub seat: Vec3,
+    pub pivot: Vec3,
+    pub exhaust: Vec3,
+    pub axis: Vec3,
+    pub limit: f32,
+}
+
+impl SteeringRig {
+    pub fn joints(self, turn: f32, lean: f32) -> [Mat4; 2] {
+        let steer = Mat4::from_axis_angle(self.axis, turn * self.limit);
+        let torso = Mat4::from_rotation_z(lean) * Mat4::from_rotation_y(turn * 0.12);
+        [
+            Mat4::from_translation(self.pivot) * steer * Mat4::from_translation(-self.pivot),
+            Mat4::from_translation(self.seat) * torso * Mat4::from_translation(-self.seat),
+        ]
+    }
+}
+
 /// The kart split for animation: body plus four wheels stored around their hubs.
 /// Wheel order: front-left(+X), front-right(-X), rear-left(+X), rear-right(-X).
 pub struct KartParts {
+    pub rig: Option<SteeringRig>,
     pub body: MeshData,
     pub wheels: [MeshData; 4],
     pub hubs: [Vec3; 4],
@@ -527,6 +757,7 @@ pub fn split_wheels_textured(m: &MeshData, radius: f32, tex: Option<&Rgba8Image>
         }
     }
     KartParts {
+        rig: None,
         body,
         wheels,
         hubs,
@@ -538,6 +769,73 @@ pub fn split_wheels_textured(m: &MeshData, radius: f32, tex: Option<&Rgba8Image>
 #[cfg(test)]
 mod model_tests {
     use super::*;
+
+    #[test]
+    fn fleet_dimensions_and_trail_rigs() {
+        let assets = crate::materials::find_assets_dir().expect("assets directory");
+        let (rider, _) = load_rider(&assets, 1).expect("seated rider");
+        assert!(rider.vertices.iter().any(|v| v.joint_weights() == [1., 0.]));
+        assert!(rider.vertices.iter().any(|v| v.joint_weights() == [0., 1.]));
+        for (design, model) in KARTS.iter().enumerate() {
+            let parts = if let Some(trail) = model.trail_model {
+                trail.parts(&MeshData::default(), 2)
+            } else {
+                let (mesh, tex) = load(&assets, model, 2).expect(model.name);
+                let mut parts = imported_parts(design, &mesh, tex.as_ref());
+                if model.kind.trail() {
+                    mount_north_star_rider(&mut parts, &MeshData::default());
+                }
+                parts
+            };
+            let (min, max) = bounds(&parts.body.vertices);
+            let (mut lo, mut hi) = (Vec3::from_array(min), Vec3::from_array(max));
+            for (wheel, hub) in parts.wheels.iter().zip(parts.hubs) {
+                for vertex in &wheel.vertices {
+                    let p = hub + Vec3::from_array(vertex.pos);
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+            }
+            let size = hi - lo;
+            println!(
+                "{}  length {:.2} m  width {:.2} m  height {:.2} m",
+                model.name, size.z, size.x, size.y
+            );
+            assert!((lo.y + GROUND_OFFSET).abs() < 0.025, "{}", model.name);
+            if let Some(rig) = parts.rig {
+                assert!((1.9..2.4).contains(&size.z));
+                assert!((0.78..1.0).contains(&(rig.seat.y + GROUND_OFFSET)));
+                assert!(
+                    parts
+                        .body
+                        .vertices
+                        .iter()
+                        .any(|v| v.joint_weights() == [1., 0.])
+                );
+                for turn in [-1., 0., 1.] {
+                    let [steer, lean] = rig.joints(turn, -0.2 * turn);
+                    assert!(steer.transform_point3(rig.pivot).distance(rig.pivot) < 1e-5);
+                    assert!(lean.transform_point3(rig.seat).distance(rig.seat) < 1e-5);
+                }
+            } else {
+                // Car bodies normalize to KART_LENGTH; the Scrapper's exhaust frame adds ~0.2 m.
+                assert!((2.75..3.05).contains(&size.z), "{}", model.name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_chassis_races_its_class_and_trail_duels_mix_types() {
+        for (design, model) in KARTS.iter().enumerate() {
+            for seat in 1..12 {
+                let rival = &KARTS[rival_design(design, seat, 1.)];
+                assert_eq!(rival.kind.trail(), model.kind.trail());
+                if seat == 1 && model.kind.trail() {
+                    assert_ne!(rival.kind, model.kind);
+                }
+            }
+        }
+    }
 
     #[test]
     fn heavy_rivals_drive_war_rigs_light_ones_speedsters() {
@@ -554,10 +852,15 @@ mod model_tests {
     #[test]
     fn every_shipped_kart_splits_into_four_corner_wheels() {
         let assets = crate::materials::find_assets_dir().expect("assets directory");
-        for (d, k) in KARTS.iter().enumerate() {
+        for (d, k) in KARTS
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| k.trail_model.is_none())
+        {
             let (mesh, tex) = load(&assets, k, 20 + d as u32).expect(k.name);
             assert!(tex.is_some(), "{} has a texture", k.name);
-            let parts = split_wheels_textured(&mesh, KART_LENGTH * k.wheel_ratio, tex.as_ref());
+            let parts =
+                split_wheels_textured(&mesh, k.import_length() * k.wheel_ratio, tex.as_ref());
             let (lo, hi) = bounds(&parts.body.vertices);
             for (w, wheel) in parts.wheels.iter().enumerate() {
                 let tris = wheel.indices.len() / 3;

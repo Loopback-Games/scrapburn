@@ -1,9 +1,6 @@
 // Opaque meshes: textured materials, sun + shadow, hemispheric ambient, specular, height fog.
 
-struct Model {
-    model: mat4x4<f32>,
-    tint: vec4<f32>,
-};
+
 
 struct MaterialParams {
     // x = specular strength, y = gloss exponent, z = triplanar scale (1/m)
@@ -17,7 +14,7 @@ struct MaterialParams {
 @group(0) @binding(4) var shadow_samp: sampler_comparison;
 @group(0) @binding(5) var<uniform> mats: MaterialParams;
 @group(0) @binding(6) var clouds: texture_2d<f32>;
-@group(1) @binding(0) var<uniform> obj: Model;
+
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -44,11 +41,11 @@ const FLAG_DITHER: u32 = 8u;
 
 @vertex
 fn vs_main(v: VsIn) -> VsOut {
-    let world = obj.model * vec4<f32>(v.pos, 1.0);
+    let world = obj.model * posed(vec4<f32>(v.pos, 1.0), v.material);
     var o: VsOut;
     o.clip = g.view_proj * world;
     o.world = world.xyz;
-    o.normal = normalize((obj.model * vec4<f32>(v.normal, 0.0)).xyz);
+    o.normal = normalize((obj.model * posed(vec4<f32>(v.normal, 0.0), v.material)).xyz);
     o.uv = v.uv;
     o.color = vec4<f32>(pow(v.color.rgb, vec3<f32>(2.2)) * obj.tint.rgb, v.color.a);
     o.material = v.material;
