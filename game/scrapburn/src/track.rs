@@ -1,6 +1,8 @@
 //! The desert loop: a closed spline road with curbs, barriers, a banked turn, a jump and boost
 //! pads, set in dunes and canyon walls.
 
+mod castle;
+
 use glam::{Mat4, Quat, Vec2, Vec3};
 use rivet_physics::{Surface, TriMesh};
 use rivet_render::{EMISSIVE, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material};
@@ -1234,6 +1236,22 @@ pub fn build_track(def: &TrackDef) -> Track {
         let frame =
             Mat4::from_rotation_translation(Quat::from_rotation_y(fwd.x.atan2(fwd.z)), center);
         sector_structure(&mut road, def, frame);
+        if def.id == TrackId::Grindstone {
+            castle::gate_standards(&mut road, frame);
+        }
+    }
+
+    if def.id == TrackId::Grindstone {
+        for (i, at) in [0.027, 0.055, 0.085, 0.115].into_iter().enumerate() {
+            let (center, fwd, _, _) = frames[(n as f32 * at) as usize];
+            let frame =
+                Mat4::from_rotation_translation(Quat::from_rotation_y(fwd.x.atan2(fwd.z)), center);
+            if i == 3 {
+                castle::sun_gate(&mut road, frame);
+            } else {
+                castle::pennant_line(&mut road, frame, i);
+            }
+        }
     }
 
     if def.id == TrackId::Dustbowl {

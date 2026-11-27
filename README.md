@@ -25,7 +25,7 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 | Driver’s view | Circuit |
 |---|---|
 | ![An open canyon road leading to a skull-banner gate, with a sandstone arch on the left](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** Race across an open canyon floor past a sandstone arch and a rusted refinery. Eight-meter sand shoulders give you room to run wide and still cross a checkpoint, but the loose surface costs speed. |
-| ![A sail windmill above a low stone parapet beside the castle straight](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** A sail windmill marks the opening straight. Look over the low parapet for the slate-roofed great hall midway around the lap, then follow the torchlit ramparts to the drawbridge jump. |
+| ![Tournament pennants over the approach to the sun-wheel gate](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** Race beneath tournament pennants past the windmill and through a jeweled sun-wheel gate. Look over the low parapet for the slate-roofed great hall midway around the lap, then follow the torchlit ramparts to the drawbridge jump. |
 | ![A cargo airship above the neon launch straight under an aurora](docs/media/skyway-zero.jpg) | **Skyway Zero.** Launch alongside a cargo airship and follow the banked neon deck above the city. A solar relay marks the far S-bends, and four boost strips reward a clean line. |
 
 ### Weapons
