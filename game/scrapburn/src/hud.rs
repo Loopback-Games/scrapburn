@@ -1177,7 +1177,7 @@ pub fn draw_menu(
     let (heading, section, help) = match menu.screen {
         Screen::Title => (
             "SCRAPBURN",
-            "MAIN MENU",
+            concat!("MAIN MENU   v", env!("CARGO_PKG_VERSION")),
             [
                 "Pick a track or run a circuit.",
                 "Host a race or join friends.",
