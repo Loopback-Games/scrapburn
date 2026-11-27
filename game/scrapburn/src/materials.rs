@@ -22,11 +22,12 @@ pub enum Layer {
     CityFacade = 11,
     WoodPlanks = 12,
     CanyonStandard = 13,
+    SandstoneBeds = 14,
 }
 
 impl Layer {
     /// Layers loaded from `LAYER_FILES`.
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 15;
 }
 
 /// The kart's own texture, appended after the file layers.
@@ -47,6 +48,7 @@ pub const LAYER_FILES: [&str; Layer::COUNT] = [
     "city_facade.png",
     "wood_planks.png",
     "canyon_standard.png",
+    "sandstone_beds.png",
 ];
 
 /// Specular, gloss and triplanar scale per layer.
@@ -71,6 +73,7 @@ pub fn shading() -> [MaterialShading; Layer::COUNT + 1] {
         m(0.50, 48.0, 0.03), // skyscraper facades
         m(0.06, 12.0, 0.30), // planks
         m(0.015, 8.0, 0.20), // faded canvas
+        m(0.03, 9.0, 0.048), // cross-bedded canyon sandstone
         m(0.30, 32.0, 0.25), // kart paint and metal
     ]
 }

@@ -1,6 +1,9 @@
 //! The desert loop: a closed spline road with curbs, barriers, a banked turn, a jump and boost
 //! pads, set in dunes and canyon walls.
 
+pub mod canyon;
+mod castle;
+
 use glam::{Mat4, Quat, Vec2, Vec3};
 use rivet_physics::{Surface, TriMesh};
 use rivet_render::{EMISSIVE, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material};
@@ -188,7 +191,7 @@ pub const TRACKS: [TrackDef; 3] = [
     TrackDef {
         id: TrackId::Dustbowl,
         name: "DUSTBOWL LOOP",
-        tagline: "RED CANYON AT SUNDOWN. MIND THE REFINERY.",
+        tagline: "PAST THE GIANT BONES. UNDER THE ORE TRAM.",
         points: &DUSTBOWL_POINTS,
         height: desert_height,
         bank: Some(bank_weight),
@@ -346,6 +349,7 @@ pub struct Checkpoint {
 }
 
 pub struct Track {
+    pub canyon: Option<canyon::Canyon>,
     pub id: TrackId,
     pub name: &'static str,
     pub box_rows: Vec<f32>,
@@ -747,7 +751,11 @@ fn canyon_gate(mesh: &mut MeshData, frame: Mat4) {
 /// Wind-cut sandstone pillars with overhanging caprock and irregular sediment ledges.
 fn sandstone_pillar(mesh: &mut MeshData, center: Vec3, radius: f32, height: f32, seed: u64) {
     let mut rng = Rng(seed);
-    let rock = material(Layer::Rock as u32, Layer::Rock as u32, TRIPLANAR_B);
+    let rock = material(
+        Layer::SandstoneBeds as u32,
+        Layer::SandstoneBeds as u32,
+        TRIPLANAR_B,
+    );
     let mut outline = [Vec3::ZERO; 10];
     for (i, p) in outline.iter_mut().enumerate() {
         let angle = (i as f32 + 0.32 * rng.next()) * std::f32::consts::TAU / 10.0;
@@ -775,9 +783,9 @@ fn sandstone_pillar(mesh: &mut MeshData, center: Vec3, radius: f32, height: f32,
     };
     for (band, w) in levels.windows(2).enumerate() {
         let tint = if band == 2 || band == 6 {
-            [0.86, 0.62, 0.52, 1.0]
+            [0.91, 0.83, 0.78, 1.0]
         } else {
-            [0.77, 0.60, 0.54, 1.0]
+            [1.0, 0.92, 0.85, 1.0]
         };
         for i in 0..outline.len() {
             let j = (i + 1) % outline.len();
@@ -954,7 +962,11 @@ pub fn build_track(def: &TrackDef) -> Track {
     let u_total = 2.0 * ROAD_HALF_WIDTH / road_tex;
     // Lateral strips across the road (-1 = left edge, 1 = right edge): the edge material drifts
     // in at the sides and a worn groove darkens the middle.
-    const STRIPS: [f32; 6] = [-1.0, -0.62, -0.22, 0.22, 0.62, 1.0];
+    let strips: &[f32] = if def.id == TrackId::Dustbowl {
+        &[-1.0, -0.68, -0.30, -0.15, 0.0, 0.15, 0.30, 0.68, 1.0]
+    } else {
+        &[-1.0, -0.62, -0.22, 0.22, 0.62, 1.0]
+    };
     let corner = |side: f32, sample: usize| -> [f32; 4] {
         let edge_mix = match st.road_edge {
             Some(_) => ((side.abs() - 0.45) / 0.55).clamp(0.0, 1.0).powf(1.4) * 0.9,
@@ -963,15 +975,20 @@ pub fn build_track(def: &TrackDef) -> Track {
         let p = frames[sample % n].0;
         let drift = (p.x * 0.065 + p.z * 0.042).sin();
         let groove = (1.0 - (side - 0.20 * drift).abs()).clamp(0.0, 1.0);
-        let dark = 1.0 - groove * (1.0 - st.groove);
+        let mut dark = 1.0 - groove * (1.0 - st.groove);
+        if def.id == TrackId::Dustbowl {
+            // Twin wheel ruts fade where wind carries fresh sand across the racing line.
+            let rut = (1.0 - (side.abs() - 0.15).abs() / 0.15).max(0.0);
+            dark *= 1.0 - rut * (0.16 + 0.07 * drift);
+        }
         let edge_mix = edge_mix * (0.75 + 0.25 * (p.x * 0.13 - p.z * 0.09 + side).sin());
         let t = st.road_tint;
         [t[0] * dark, t[1] * dark, t[2] * dark, edge_mix]
     };
 
     // Road surface first, strip by strip (each strip contiguous, so its UVs can be checked).
-    for k in 0..STRIPS.len() - 1 {
-        let (a, b) = (STRIPS[k], STRIPS[k + 1]);
+    for strip in strips.windows(2) {
+        let (a, b) = (strip[0], strip[1]);
         let (ua, ub) = ((a + 1.0) * 0.5 * u_total, (b + 1.0) * 0.5 * u_total);
         for i in 0..n {
             let (v0, v1) = (
@@ -1037,10 +1054,13 @@ pub fn build_track(def: &TrackDef) -> Track {
                 [0.5, s1 / 2.0],
                 [0.0, s1 / 2.0],
             ];
-            if side < 0.0 {
-                quad(&mut road, [o0, i0, i1, o1], uv, curb, curb_mat);
-            } else {
-                quad(&mut road, [i0, o0, o1, i1], uv, curb, curb_mat);
+            if wall_h > 0.0 {
+                let points = if side < 0.0 {
+                    [o0, i0, i1, o1]
+                } else {
+                    [i0, o0, o1, i1]
+                };
+                quad(&mut road, points, uv, curb, curb_mat);
             }
 
             // Paint paired diagonal approach marks along the outside of upcoming bends.
@@ -1234,18 +1254,33 @@ pub fn build_track(def: &TrackDef) -> Track {
         let frame =
             Mat4::from_rotation_translation(Quat::from_rotation_y(fwd.x.atan2(fwd.z)), center);
         sector_structure(&mut road, def, frame);
+        if def.id == TrackId::Grindstone {
+            castle::gate_standards(&mut road, frame);
+        }
+    }
+
+    if def.id == TrackId::Grindstone {
+        for (i, at) in [0.027, 0.055, 0.085, 0.115].into_iter().enumerate() {
+            let (center, fwd, _, _) = frames[(n as f32 * at) as usize];
+            let frame =
+                Mat4::from_rotation_translation(Quat::from_rotation_y(fwd.x.atan2(fwd.z)), center);
+            if i == 3 {
+                castle::sun_gate(&mut road, frame);
+            } else {
+                castle::pennant_line(&mut road, frame, i);
+            }
+        }
     }
 
     if def.id == TrackId::Dustbowl {
-        for at in [0.07, 0.46, 0.83] {
-            let (c, f, right, _) = frames[(n as f32 * at) as usize];
-            flames.push(c + right * 8.4 + Vec3::Y * 5.9);
-            flames.push(c - right * 8.4 + Vec3::Y * 5.9);
-            canyon_gate(
-                &mut road,
-                Mat4::from_rotation_translation(Quat::from_rotation_y(f.x.atan2(f.z)), c),
-            );
-        }
+        let at = 0.83;
+        let (c, f, right, _) = frames[(n as f32 * at) as usize];
+        flames.push(c + right * 8.4 + Vec3::Y * 5.9);
+        flames.push(c - right * 8.4 + Vec3::Y * 5.9);
+        canyon_gate(
+            &mut road,
+            Mat4::from_rotation_translation(Quat::from_rotation_y(f.x.atan2(f.z)), c),
+        );
     }
 
     // Checkered start line across the road at checkpoint 0.
@@ -1431,6 +1466,8 @@ pub fn build_track(def: &TrackDef) -> Track {
         rocks.push(pos);
     }
 
+    let canyon =
+        (def.id == TrackId::Dustbowl).then(|| canyon::Canyon::build(&mut props, &centerline));
     if def.id == TrackId::Dustbowl {
         for (i, &(c, _, side, _)) in frames.iter().enumerate().step_by(39) {
             let sign = if (i / 39) % 2 == 0 { -1.0 } else { 1.0 };
@@ -1589,6 +1626,7 @@ pub fn build_track(def: &TrackDef) -> Track {
     let spawn = (sp, sf.x.atan2(sf.z));
 
     Track {
+        canyon,
         id: def.id,
         name: def.name,
         box_rows: def.box_rows.to_vec(),
@@ -1879,7 +1917,7 @@ mod tests {
     fn castle_torches_and_canyon_gate_flares_burn() {
         let c = build_track(&TRACKS[1]);
         assert!(c.flames.len() >= 20, "{} torches", c.flames.len());
-        assert_eq!(build_track(&TRACKS[0]).flames.len(), 6);
+        assert_eq!(build_track(&TRACKS[0]).flames.len(), 2);
         assert!(build_track(&TRACKS[2]).flames.is_empty());
     }
 
