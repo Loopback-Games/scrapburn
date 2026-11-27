@@ -237,6 +237,10 @@ struct Game {
     knockout: Option<(usize, f64)>,
     net: Net,
     tunnel: Option<crate::tailcat::Tunnel>,
+    /// The private invite this host shares.
+    invite: Option<String>,
+    /// Kept open: on X11 copied text lasts only while its owner lives.
+    clipboard: Option<arboard::Clipboard>,
     launch_net: Option<LaunchNet>,
     /// Name shown to other players online.
     player_name: String,
@@ -553,6 +557,8 @@ impl Game {
             knockout: None,
             net: Net::Off,
             tunnel: None,
+            invite: None,
+            clipboard: None,
             launch_net: if args.host {
                 Some(LaunchNet::Host {
                     loopback: args.host_loopback,
@@ -739,6 +745,17 @@ impl Game {
 
     fn private_game(&mut self, host: bool) {
         self.resolving = None;
+        let invite = if host {
+            None
+        } else {
+            match self.paste_invite() {
+                Some(invite) => Some(invite),
+                None => {
+                    self.show_toast("COPY YOUR HOST'S INVITE, THEN TRY AGAIN");
+                    return;
+                }
+            }
+        };
         let port = if host {
             self.host_game(true);
             let Net::Host(h) = &self.net else { return };
@@ -746,9 +763,47 @@ impl Game {
         } else {
             None
         };
-        match crate::tailcat::Tunnel::start(port) {
+        match crate::tailcat::Tunnel::start(port, invite.as_deref()) {
             Ok(tunnel) => self.tunnel = Some(tunnel),
             Err(_) => self.close_private("BUNDLED TAILCAT HELPER COULD NOT START"),
+        }
+    }
+
+    /// The clipboard, opened on first use.
+    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new()
+                .inspect_err(|e| log::warn!("clipboard unavailable: {e}"))
+                .ok();
+        }
+        self.clipboard.as_mut()
+    }
+
+    /// A Tailcat invite from the clipboard, if it holds one.
+    fn paste_invite(&mut self) -> Option<String> {
+        let text = self.clipboard()?.get_text().ok()?;
+        let invite = text.trim();
+        let plausible = invite.len() <= 8192
+            && invite.starts_with("tc")
+            && invite
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        plausible.then(|| invite.to_string())
+    }
+
+    fn copy_invite(&mut self) {
+        let Some(invite) = self.invite.clone() else {
+            return;
+        };
+        let copied = self
+            .clipboard()
+            .is_some_and(|c| c.set_text(invite.as_str()).is_ok());
+        if copied {
+            self.show_toast("INVITE COPIED. PASTE IT TO YOUR FRIENDS");
+        } else {
+            // Still shareable: the host can copy it from the terminal.
+            println!("Scrapburn private race invite: {invite}");
+            self.show_toast("COULDN'T COPY. THE INVITE IS IN THE TERMINAL");
         }
     }
 
@@ -761,6 +816,10 @@ impl Game {
     }
 
     fn poll_private(&mut self) {
+        if self.tunnel.is_none() {
+            self.invite = None;
+        }
+        self.menu.invite_ready = self.invite.is_some() && matches!(self.net, Net::Host(_));
         let Some(tunnel) = self.tunnel.as_mut() else {
             return;
         };
@@ -769,9 +828,10 @@ impl Game {
             return;
         }
         match tunnel.poll() {
+            Some(crate::tailcat::Event::Invite(invite)) => self.invite = Some(invite),
             Some(crate::tailcat::Event::Hosted) => {
                 tunnel.ready = true;
-                self.show_toast("INVITE SAVED. SHARE THE FILE WITH YOUR GUESTS");
+                self.copy_invite();
             }
             Some(crate::tailcat::Event::Join(port)) => {
                 tunnel.ready = true;
@@ -1190,6 +1250,7 @@ impl Game {
                         self.show_toast("WAITING FOR EVERYONE TO FINISH")
                     }
                     MenuAction::NextRace => self.next_round(),
+                    MenuAction::CopyInvite => self.copy_invite(),
                     MenuAction::ToTitle if online && self.remote_still_racing() => {
                         self.show_toast("WAITING FOR EVERYONE TO FINISH")
                     }
@@ -1995,7 +2056,7 @@ impl Game {
                     let lines = [
                         format!("YOUR NAME  {}", self.player_name),
                         if self.tunnel.is_some() {
-                            "OPEN YOUR INVITE FILE. ESC TO CANCEL"
+                            "JOINING WITH YOUR INVITE. ESC TO CANCEL"
                         } else {
                             "PRIVATE RACE INVITES WORK ACROSS NETWORKS"
                         }
@@ -2014,9 +2075,9 @@ impl Game {
                     let lines = [
                         if let Some(tunnel) = &self.tunnel {
                             if tunnel.ready {
-                                "SHARE YOUR SAVED INVITE FILE"
+                                "PASTE YOUR COPIED INVITE TO FRIENDS"
                             } else {
-                                "SAVE YOUR PRIVATE INVITE. ESC TO CANCEL"
+                                "CREATING YOUR PRIVATE INVITE. ESC TO CANCEL"
                             }
                             .into()
                         } else if host.is_loopback() {

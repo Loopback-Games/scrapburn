@@ -1,9 +1,13 @@
 //! Own the bundled private-race helper for the lifetime of one online session.
-use std::io::{self, BufRead, BufReader};
+//! The host's helper prints an invite for the game to copy; a guest's helper is
+//! handed the pasted invite on stdin.
+use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub enum Event {
+    /// The private invite friends paste to join.
+    Invite(String),
     Hosted,
     Join(u16),
     Closed(String),
@@ -16,7 +20,8 @@ pub struct Tunnel {
 }
 
 impl Tunnel {
-    pub fn start(host_port: Option<u16>) -> io::Result<Self> {
+    /// Hosts for the game on `host_port`, or joins with a pasted `invite`.
+    pub fn start(host_port: Option<u16>, invite: Option<&str>) -> io::Result<Self> {
         let helper = std::env::current_exe()?
             .with_file_name(format!("scrapburn-tailcat{}", std::env::consts::EXE_SUFFIX));
         let mut command = Command::new(helper);
@@ -32,11 +37,18 @@ impl Tunnel {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
+        if let (None, Some(invite), Some(stdin)) = (host_port, invite, child.stdin.as_mut()) {
+            writeln!(stdin, "{}", invite.trim())?;
+        }
         let output = child.stdout.take().expect("stdout was piped");
         let (tx, events) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(output).lines().map_while(Result::ok) {
-                let event = if line == "READY" && host_port.is_some() {
+                let event = if let Some(invite) =
+                    line.strip_prefix("INVITE ").filter(|_| host_port.is_some())
+                {
+                    Event::Invite(invite.to_string())
+                } else if line == "READY" && host_port.is_some() {
                     Event::Hosted
                 } else if let Some(port) = line
                     .strip_prefix("PORT ")

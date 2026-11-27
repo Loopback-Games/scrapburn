@@ -65,6 +65,8 @@ pub enum MenuAction {
     LeaveOnline,
     /// Run the next round of the circuit.
     NextRace,
+    /// Copy the private-race invite to the clipboard again.
+    CopyInvite,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -156,6 +158,8 @@ pub const ONLINE_TAILSCALE: usize = 5;
 /// Race setup and host lobby rows.
 const SETUP_EVENT: usize = 2;
 const SETUP_TRACK: usize = 3;
+/// Host lobby: Copy Invite sits after the track row when there is an invite.
+const LOBBY_COPY: usize = 4;
 /// Longest typed address.
 const MAX_ADDRESS: usize = 64;
 
@@ -206,6 +210,8 @@ pub struct MenuState {
     pub event: crate::circuit::Event,
     /// A circuit is under way and has another round after this one.
     pub circuit_next: bool,
+    /// This host has a private invite to copy.
+    pub invite_ready: bool,
     /// The address the last JoinGame action refers to.
     join_choice: Option<String>,
 }
@@ -225,6 +231,7 @@ impl MenuState {
             lobby_elimination: false,
             event: Default::default(),
             circuit_next: false,
+            invite_ready: false,
             join_choice: None,
         }
     }
@@ -374,7 +381,7 @@ impl MenuState {
             Screen::Online => {
                 let mut v = vec![
                     "HOST PRIVATE RACE".into(),
-                    "OPEN RACE INVITE".into(),
+                    "PASTE INVITE & JOIN".into(),
                     "CHANGE RACER NAME".into(),
                     "HOST GAME".into(),
                     if self.join_addr.is_empty() {
@@ -393,20 +400,26 @@ impl MenuState {
                 .map(|(n, _)| format!("JOIN  {n}"))
                 .chain(std::iter::once("BACK".into()))
                 .collect(),
-            Screen::Lobby if self.lobby_host => vec![
-                "START RACE".into(),
-                format!(
-                    "MODE  < {} >",
-                    if self.lobby_elimination {
-                        "ELIMINATION"
-                    } else {
-                        "RACE"
-                    }
-                ),
-                format!("EVENT  < {} >", self.event.name()),
-                track_row(self.event, s.track),
-                "LEAVE".into(),
-            ],
+            Screen::Lobby if self.lobby_host => {
+                let mut v: Vec<String> = vec![
+                    "START RACE".into(),
+                    format!(
+                        "MODE  < {} >",
+                        if self.lobby_elimination {
+                            "ELIMINATION"
+                        } else {
+                            "RACE"
+                        }
+                    ),
+                    format!("EVENT  < {} >", self.event.name()),
+                    track_row(self.event, s.track),
+                ];
+                if self.invite_ready {
+                    v.push("COPY INVITE".into());
+                }
+                v.push("LEAVE".into());
+                v
+            }
             Screen::Lobby => vec!["WAITING FOR THE HOST".into(), "LEAVE".into()],
             Screen::Playing => vec![],
         }
@@ -628,6 +641,9 @@ impl MenuState {
                     return MenuAction::LeaveOnline;
                 }
                 if self.lobby_host {
+                    if self.invite_ready && self.selected == LOBBY_COPY && input.select {
+                        return MenuAction::CopyInvite;
+                    }
                     if self.selected == 1 && (dir != 0 || input.select) {
                         self.lobby_elimination = !self.lobby_elimination;
                     }
@@ -894,7 +910,7 @@ mod tests {
         let rows = menu.items(&settings);
         for (label, action) in [
             ("HOST PRIVATE RACE", MenuAction::PrivateHost),
-            ("OPEN RACE INVITE", MenuAction::PrivateJoin),
+            ("PASTE INVITE & JOIN", MenuAction::PrivateJoin),
         ] {
             menu.selected = rows.iter().position(|row| row == label).unwrap();
             assert_eq!(
@@ -902,6 +918,26 @@ mod tests {
                 action
             );
         }
+    }
+
+    #[test]
+    fn host_lobby_offers_copy_invite_only_with_an_invite() {
+        let mut s = Settings::default();
+        let mut m = MenuState::new(Screen::Lobby);
+        m.lobby_host = true;
+        assert!(!m.items(&s).iter().any(|r| r == "COPY INVITE"));
+        m.invite_ready = true;
+        let rows = m.items(&s);
+        m.selected = rows.iter().position(|r| r == "COPY INVITE").unwrap();
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::CopyInvite
+        );
+        m.selected = rows.len() - 1;
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::LeaveOnline
+        );
     }
 
     #[test]

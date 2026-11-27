@@ -81,14 +81,14 @@ Online play is meant for friends. Clients are trusted to report their own kart h
 Extract the full distribution and launch **scrapburn**. Private multiplayer is built
 into **Multiplayer**. Players do not need a Tailscale account, Go, Tailcat, or just installed.
 
-- **Host Private Race** opens a file picker. Choose where to save the invite, then send
-  the saved file to your friends. Start the race when everyone appears in the lobby.
-- **Open Race Invite** lets a guest select the file they received and joins the lobby.
+- **Host Private Race** creates an invite and copies it to your clipboard. Paste it to
+  your friends in any chat app; **Copy Invite** in the lobby copies it again. Start the
+  race when everyone appears in the lobby.
+- Guests copy the invite, then choose **Paste Invite & Join**.
 - The invite contains a private connection key. Share it with your guests only.
   Leaving the host session expires the invite.
 
-Keep the bundled `scrapburn-tailcat` helper next to the game executable. On Linux,
-the file picker uses the desktop's XDG file chooser portal. Tailcat uses an outbound
+Keep the bundled `scrapburn-tailcat` helper next to the game executable. Tailcat uses an outbound
 relay to establish the tunnel and attempts a direct path between players.
 [Tailcat networking documentation](https://github.com/tailscale/tailcat#how-it-works)
 

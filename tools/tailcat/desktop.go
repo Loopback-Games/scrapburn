@@ -1,15 +1,16 @@
-// Desktop mode is owned by the game process. Only readiness and loopback ports
-// cross stdout. The private invite travels in a file selected by the player.
+// Desktop mode is owned by the game process. The host prints its private invite
+// on stdout for the game to copy; a guest receives the invite as the first line on
+// stdin. Closing stdin ends the session.
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,37 +19,57 @@ import (
 	"tailscale.com/types/logger"
 )
 
-// Replace the selected file only after the complete private invite has been written.
-func saveInvite(path string, addr tailcat.Addr) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".scrapburn-invite-*")
+// maxInvite bounds the pasted invite line; real addresses are a few hundred bytes.
+const maxInvite = 8192
+
+// compactInvite drops the relay nodes' IP addresses from an invite, keeping their
+// hostnames, which guests resolve with DNS. Keys and the pre-shared secret are kept,
+// so the invite is shorter to paste without being any weaker.
+func compactInvite(addr tailcat.Addr) tailcat.Addr {
+	ci, err := tailcat.ParseAddr(addr)
 	if err != nil {
-		return err
+		return addr
 	}
-	defer os.Remove(file.Name())
-	_, writeErr := fmt.Fprintln(file, addr)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return writeErr
+	for _, r := range ci.Region {
+		for _, n := range r.Nodes {
+			if n.HostName == "" {
+				return addr // Without a hostname the IPs are the only way to reach it.
+			}
+			n.IPv4, n.IPv6 = "", ""
+		}
 	}
-	if closeErr != nil {
-		return closeErr
+	return ci.Addr()
+}
+
+// readInvite takes the first stdin line as a Tailcat address.
+func readInvite(in *bufio.Reader) (tailcat.Addr, error) {
+	line, err := in.ReadString('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", errors.New("missing invite")
 	}
-	return os.Rename(file.Name(), path)
+	if len(line) > maxInvite {
+		return "", errors.New("invalid invite")
+	}
+	addr := tailcat.Addr(strings.TrimSpace(line))
+	if _, err := tailcat.ParseAddr(addr); err != nil {
+		return "", errors.New("invalid invite")
+	}
+	return addr, nil
 }
 
 func desktop(ctx context.Context, hostPort string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() { io.Copy(io.Discard, os.Stdin); cancel() }()
+	in := bufio.NewReaderSize(os.Stdin, maxInvite+1)
 	hosting := hostPort != ""
-	path, err := invitePath(ctx, hosting)
-	if err != nil {
-		return errors.New("could not open the desktop file picker")
+	var addr tailcat.Addr
+	if !hosting {
+		var err error
+		if addr, err = readInvite(in); err != nil {
+			return err
+		}
 	}
-	if path == "" {
-		fmt.Println("CANCEL")
-		return nil
-	}
+	go func() { io.Copy(io.Discard, in); cancel() }()
 	startup, stop := context.WithTimeout(ctx, 45*time.Second)
 	defer stop()
 	if hosting {
@@ -61,29 +82,10 @@ func desktop(ctx context.Context, hostPort string) error {
 			return errors.New("could not reach Tailcat")
 		}
 		defer srv.Close()
-		if err := saveInvite(path, srv.TailcatAddr()); err != nil {
-			return errors.New("could not save invite file")
-		}
+		fmt.Printf("INVITE %s\n", compactInvite(srv.TailcatAddr()))
 		fmt.Println("READY")
 		<-ctx.Done()
 		return nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return errors.New("could not open invite file")
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
-		return errors.New("invalid invite file")
-	}
-	data, err := io.ReadAll(io.LimitReader(f, 8193))
-	if err != nil || len(data) > 8192 {
-		return errors.New("invalid invite file")
-	}
-	addr := tailcat.Addr(strings.TrimSpace(string(data)))
-	if _, err := tailcat.ParseAddr(addr); err != nil {
-		return errors.New("invalid invite file")
 	}
 	client := tailcat.NewClient(addr)
 	client.Logf = logger.Discard

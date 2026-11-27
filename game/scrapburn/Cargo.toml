@@ -23,6 +23,7 @@ wgpu.workspace = true
 log.workspace = true
 env_logger.workspace = true
 anyhow.workspace = true
+arboard.workspace = true
 
 [dev-dependencies]
 image.workspace = true

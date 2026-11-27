@@ -3,7 +3,6 @@ module loopback.games/rivet/scrapburn-tailcat
 go 1.27.4
 
 require (
-	github.com/godbus/dbus/v5 v5.2.2
 	github.com/tailscale/tailcat v0.8.0
 	tailscale.com v1.105.0-pre.0.20261118173401-6a92f86aceb2
 )
@@ -23,6 +22,7 @@ require (
 	github.com/gaissmai/bart v0.29.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/go4org/hashtriemap v0.0.0-20260925222741-44e5305f85d9 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
