@@ -206,6 +206,7 @@ struct Game {
     track: Track,
     track_meshes: [GpuMesh; 3],
     service_bay: GpuMesh,
+    ore_skip: GpuMesh,
     route_previews: Vec<Vec<Vec3>>,
     /// Loaded kart designs (index into `kart::KARTS` order; missing ones are skipped).
     karts: Vec<KartGpu>,
@@ -448,6 +449,7 @@ impl Game {
         let track = build_track(&TRACKS[settings.track]);
         let track_meshes =
             [&track.road, &track.terrain, &track.props].map(|m| GpuMesh::new(&ctx.device, m));
+        let ore_skip = GpuMesh::new(&ctx.device, &scrapburn::track::canyon::ore_skip());
         let parts = scrapburn::kart::split_wheels(
             &kart_data,
             scrapburn::kart::KART_LENGTH * scrapburn::kart::WHEEL_RADIUS_RATIO,
@@ -522,6 +524,7 @@ impl Game {
             layers,
             shading_table,
             prop_gpu,
+            ore_skip,
             flame_points: flame_points(&track, &placements),
             route_previews: TRACKS.iter().map(scrapburn::track::route_preview).collect(),
             placements,
@@ -1906,6 +1909,16 @@ impl Game {
             }
             // Scenery: frustum-culled; small props dropped far away; shadows only near the focus.
             let frustum = rivet_render::Frustum::from_view_proj(&(view.proj * view.view));
+            if self.settings.scenery
+                && let Some(canyon) = &self.track.canyon
+            {
+                for model in canyon.skips(view.time) {
+                    if frustum.sphere_visible(model.transform_point3(-Vec3::Y * 2.5), 5.6) {
+                        draws.push(Draw::new(&self.ore_skip, model));
+                    }
+                }
+                canyon.dust_devil(view.time, eye, &mut alpha_p);
+            }
             for p in &self.placements {
                 let Some(mesh) = self.prop_gpu[p.kind].as_ref() else {
                     continue;

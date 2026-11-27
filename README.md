@@ -24,7 +24,7 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 
 | Driver’s view | Circuit |
 |---|---|
-| ![An open canyon road leading to a skull-banner gate, with a sandstone arch on the left](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** Race across an open canyon floor past a sandstone arch and a rusted refinery. Eight-meter sand shoulders give you room to run wide and still cross a checkpoint, but the loose surface costs speed. |
+| ![Giant fossil ribs curl over the dirt straight opposite a sandstone arch](docs/media/dustbowl-loop.jpg) | **Dustbowl Loop.** Follow the wheel ruts under a leviathan’s ribs, then race the ore buckets across the refinery bend. A dust devil spins beside the back straight. The eight-meter sand shoulders give you room to run wide and still cross a checkpoint. |
 | ![Tournament pennants over the approach to the sun-wheel gate](docs/media/castle-grindstone.jpg) | **Castle Grindstone.** Race beneath tournament pennants past the windmill and through a jeweled sun-wheel gate. Look over the low parapet for the slate-roofed great hall midway around the lap, then follow the torchlit ramparts to the drawbridge jump. |
 | ![A cargo airship above the neon launch straight under an aurora](docs/media/skyway-zero.jpg) | **Skyway Zero.** Launch alongside a cargo airship and follow the banked neon deck above the city. A solar relay marks the far S-bends, and four boost strips reward a clean line. |
 
@@ -117,8 +117,8 @@ From a graphical session, use `--offscreen` to benchmark a GPU without a monitor
 just bench --adapter integrated --offscreen --screenshot shot.png
 ```
 
-With eight karts on an Intel UHD 730 at 1600×900 and Medium settings, Dustbowl averaged
-131 fps, Castle 139 fps, and Skyway 175 fps. [Benchmark results and reproduction steps](docs/perf/2026-11-27-circuit-scenery.md)
+In the benchmark at commit `3b12caa`, eight karts on an Intel UHD 730 at 1600×900 and Medium settings averaged
+131 fps on Dustbowl, 139 on Castle, and 175 on Skyway. [Benchmark results and reproduction steps](docs/perf/2026-11-27-circuit-scenery.md)
 
 ## Building
 

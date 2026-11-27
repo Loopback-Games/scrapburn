@@ -141,7 +141,7 @@ pub fn build_kind(
     let h = |i: usize, j: usize| heights[j.min(nz - 1) * nx + i.min(nx - 1)];
     let mat = match kind {
         TerrainKind::Hills => material(Layer::Grass as u32, Layer::Rock as u32, TRIPLANAR_B),
-        _ => material(Layer::Sand as u32, Layer::Rock as u32, TRIPLANAR_B),
+        _ => material(Layer::Sand as u32, Layer::SandstoneBeds as u32, TRIPLANAR_B),
     };
     let mut mesh = MeshData::default();
     let mut positions = Vec::with_capacity(nx * nz);

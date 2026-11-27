@@ -28,3 +28,5 @@ The canyon standard was generated with the built-in imagegen tool for Dustbowl's
 > A square, edge-to-edge game texture atlas tile depicting a single battered oxblood-red canvas battle standard, laid completely flat, facing square-on. A large, original ivory skull insignia is hand-stenciled in flaking paint at the center. Thick off-white bold silhouette, black eye sockets, chipped teeth, subtly asymmetric jaw. Red oxide canvas surrounds it all the way to every edge. Subtle sun-bleached vertical streaks, grime, woven fibers and seams. No poles, background, text, lettering, border, or light gradient. Flat diffuse albedo map for a rusty canyon racing game; the skull must read clearly from a distance.
 
 The five procedural landmarks carry their surface atlases inside the GLB files. [Landmark model credits](../models/PROVENANCE.md#scenery-props)
+
+The Dustbowl cliff material, `sandstone_beds.png`, combines grain from `rock.png` with procedurally drawn sediment layers and pale mineral seams.
