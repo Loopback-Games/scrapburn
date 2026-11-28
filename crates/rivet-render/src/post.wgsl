@@ -1,9 +1,15 @@
-// Post: bloom prefilter/down/up, composite (exposure, ACES, vignette), FXAA.
+// Post: bloom prefilter/down/up, composite (exposure, ACES, vignette), FXAA, and the menu
+// backdrop (tonemapped 1/4-resolution copy, then two Kawase blurs).
 struct PostParams {
     texel: vec4<f32>,  // xy = 1/source size
     a: vec4<f32>,      // x = threshold, y = knee, z = intensity, w = exposure
     b: vec4<f32>,      // x = vignette strength, y = saturation
+    // The wash (composite only, `scene::Wash`): rgb = linear color, w = 1 while on.
+    wash_color: vec4<f32>,
+    wash_a: vec4<f32>,  // x, y = opacity at the left and right; z, w = top band opacity, height
+    wash_b: vec4<f32>,  // x, y = bottom band opacity, height; z, w = right band opacity, width
 };
+// Kawase passes reuse `a.x` as the tap offset in source texels.
 
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -68,17 +74,65 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// HDR scene plus bloom to display color: exposure, ACES, saturation (no vignette).
+fn grade(hdr: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
+    let c = aces((hdr + bloom * pp.a.z) * pp.a.w);
+    let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(vec3<f32>(luma), c, pp.b.y);
+}
+
 @fragment
 fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     let hdr = textureSample(src, samp, in.uv).rgb;
     let bloom = textureSample(src2, samp, in.uv).rgb;
-    var c = (hdr + bloom * pp.a.z) * pp.a.w;
-    c = aces(c);
-    let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-    c = mix(vec3<f32>(luma), c, pp.b.y);
+    var c = grade(hdr, bloom);
     let r = length(in.uv - 0.5);
     c = c * mix(1.0, smoothstep(0.95, 0.3, r), pp.b.x);
+    if (pp.wash_color.w > 0.0) {
+        let u = in.uv;
+        let across = mix(pp.wash_a.x, pp.wash_a.y, u.x);
+        let top = pp.wash_a.z * max(1.0 - u.y / pp.wash_a.w, 0.0);
+        let bottom = pp.wash_b.x * max((u.y - 1.0) / pp.wash_b.y + 1.0, 0.0);
+        let right = pp.wash_b.z * max((u.x - 1.0) / pp.wash_b.w + 1.0, 0.0);
+        let keep = (1.0 - across) * (1.0 - top) * (1.0 - bottom) * (1.0 - right);
+        c = mix(pp.wash_color.rgb, c, keep);
+    }
     return vec4<f32>(c, 1.0);
+}
+
+// Menu backdrop, first pass: downsample the HDR scene (texel = scene texel) and grade it like
+// the composite. UVs keep it independent of the render scale.
+@fragment
+fn fs_backdrop_down(in: FsIn) -> @location(0) vec4<f32> {
+    let bloom = textureSample(src2, samp, in.uv).rgb;
+    return vec4<f32>(grade(box4(in.uv), bloom), 1.0);
+}
+
+// Dual-Kawase downsample kernel, run at one resolution: the center and four diagonals.
+@fragment
+fn fs_kawase_down(in: FsIn) -> @location(0) vec4<f32> {
+    let o = pp.texel.xy * pp.a.x;
+    var s = textureSample(src, samp, in.uv).rgb * 4.0;
+    s += textureSample(src, samp, in.uv + vec2<f32>(-o.x, -o.y)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(o.x, -o.y)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(-o.x, o.y)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(o.x, o.y)).rgb;
+    return vec4<f32>(s / 8.0, 1.0);
+}
+
+// Dual-Kawase upsample kernel, run at one resolution: a ring of eight taps.
+@fragment
+fn fs_kawase_up(in: FsIn) -> @location(0) vec4<f32> {
+    let o = pp.texel.xy * pp.a.x;
+    var s = textureSample(src, samp, in.uv + vec2<f32>(-2.0 * o.x, 0.0)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(2.0 * o.x, 0.0)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(0.0, -2.0 * o.y)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(0.0, 2.0 * o.y)).rgb;
+    s += textureSample(src, samp, in.uv + vec2<f32>(-o.x, -o.y)).rgb * 2.0;
+    s += textureSample(src, samp, in.uv + vec2<f32>(o.x, -o.y)).rgb * 2.0;
+    s += textureSample(src, samp, in.uv + vec2<f32>(-o.x, o.y)).rgb * 2.0;
+    s += textureSample(src, samp, in.uv + vec2<f32>(o.x, o.y)).rgb * 2.0;
+    return vec4<f32>(s / 12.0, 1.0);
 }
 
 fn fxaa_luma(c: vec3<f32>) -> f32 {

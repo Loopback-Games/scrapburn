@@ -7,12 +7,19 @@ pub use rivet_render::{PresentChoice, Preset};
 pub struct Args {
     pub adapter: AdapterPreference,
     pub size: (u32, u32),
+    /// `--size` was on the command line: this run is windowed, whatever display mode is saved.
+    pub size_given: bool,
     pub present: PresentChoice,
+    /// `--present` was on the command line: it beats the saved V-sync setting for this run.
+    pub present_given: bool,
     /// Seconds of measured benchmark after warmup; the autopilot drives.
     pub bench: Option<u32>,
     /// Render to an offscreen image instead of the window (bench only). For GPUs that can
     /// render but not present to this display, e.g. an iGPU when the monitor is on a dGPU.
     pub offscreen: bool,
+    /// Frame cap for a benchmark (`--bench-cap HZ`), to measure the limiter. Benchmarks
+    /// otherwise ignore the saved cap.
+    pub bench_cap: Option<u32>,
     /// Write the last offscreen bench frame here as PNG.
     pub screenshot: Option<std::path::PathBuf>,
     /// `None`: pick automatically (benchmarks use Medium).
@@ -32,6 +39,70 @@ pub struct Args {
     pub join: Option<String>,
     /// Player name shown to others online.
     pub name: Option<String>,
+    /// Open this menu screen at launch (for offscreen screenshots of the menus).
+    pub menu: Option<MenuShot>,
+    /// Reduced motion: the menu embers and the molten flow stand still.
+    pub no_motion: bool,
+}
+
+/// A menu screen `--menu` opens. Names match the design mockup's screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuShot {
+    Title,
+    RaceSetup,
+    Tracks,
+    Garage,
+    Multiplayer,
+    /// A stand-in host lobby (no network).
+    Lobby,
+    /// A race paused at the start.
+    Pause,
+    /// The results of a race that has not finished.
+    Results,
+    Graphics,
+    Audio,
+    Controls,
+    Camera,
+    Gameplay,
+}
+
+impl MenuShot {
+    pub const ALL: [(MenuShot, &'static str); 13] = [
+        (MenuShot::Title, "title"),
+        (MenuShot::RaceSetup, "race-setup"),
+        (MenuShot::Tracks, "tracks"),
+        (MenuShot::Garage, "garage"),
+        (MenuShot::Multiplayer, "multiplayer"),
+        (MenuShot::Lobby, "lobby"),
+        (MenuShot::Pause, "pause"),
+        (MenuShot::Results, "results"),
+        (MenuShot::Graphics, "graphics"),
+        (MenuShot::Audio, "audio"),
+        (MenuShot::Controls, "controls"),
+        (MenuShot::Camera, "camera"),
+        (MenuShot::Gameplay, "gameplay"),
+    ];
+
+    /// Pause and Results sit on top of a race; the rest open from the title screen.
+    pub fn in_race(self) -> bool {
+        matches!(self, MenuShot::Pause | MenuShot::Results)
+    }
+}
+
+impl std::str::FromStr for MenuShot {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.to_ascii_lowercase();
+        Self::ALL
+            .iter()
+            .find(|(_, name)| *name == s)
+            .map(|(m, _)| *m)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Self::ALL.iter().map(|(_, n)| *n).collect();
+                format!("unknown menu '{s}' (use {})", names.join(", "))
+            })
+    }
 }
 
 /// What to play.
@@ -62,7 +133,16 @@ impl std::str::FromStr for Mode {
 }
 
 pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway|orchard|helios] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway|orchard|helios] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--no-motion] \
+[--menu title|race-setup|tracks|garage|multiplayer|lobby|pause|results|graphics|audio|controls|camera|gameplay] \
+[--bench SECS [--bench-cap HZ] [--offscreen [--screenshot FILE.png]]]
+
+  --size WxH  window size; the game also starts windowed, whatever display mode is saved
+  --present vsync|immediate  V-sync for this run, whatever is saved
+  --preset low|medium|high  graphics preset for this run, whatever is saved
+  --bench-cap HZ  cap a benchmark's frame rate (to measure the frame limiter)
+  --no-motion  reduced motion: the menu embers and the molten flow stand still
+  --menu NAME  open that menu screen at launch (with --bench --offscreen, for screenshots)";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -72,9 +152,11 @@ pub fn parse(
     let mut adapter =
         env_adapter.map(|s| s.parse().expect("AdapterPreference parsing is infallible"));
     let mut size = (1600, 900);
+    let mut size_given = false;
     let mut present = None;
     let mut bench = None;
     let mut offscreen = false;
+    let mut bench_cap = None;
     let mut screenshot = None;
     let mut preset = None;
     let mut mode = Mode::Race;
@@ -85,6 +167,8 @@ pub fn parse(
     let mut host_loopback = false;
     let mut join = None;
     let mut name = None;
+    let mut menu: Option<MenuShot> = None;
+    let mut no_motion = false;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -104,6 +188,7 @@ pub fn parse(
                         .ok_or_else(|| format!("--size expects WxH (64..16384), got '{v}'"))
                 };
                 size = (parse_dim(w)?, parse_dim(h)?);
+                size_given = true;
             }
             "--present" => present = Some(value()?.parse::<PresentChoice>()?),
             "--bench" => {
@@ -116,6 +201,15 @@ pub fn parse(
                 );
             }
             "--offscreen" => offscreen = true,
+            "--bench-cap" => {
+                let v = value()?;
+                bench_cap = Some(
+                    v.parse::<u32>()
+                        .ok()
+                        .filter(|c| (1..=1000).contains(c))
+                        .ok_or_else(|| format!("--bench-cap expects 1..1000 Hz, got '{v}'"))?,
+                );
+            }
             "--preset" => preset = Some(value()?.parse()?),
             "--mode" => mode = value()?.parse()?,
             "--garage" => garage = true,
@@ -127,6 +221,8 @@ pub fn parse(
             "--host" => host = true,
             "--join" => join = Some(value()?),
             "--name" => name = Some(value()?),
+            "--menu" => menu = Some(value()?.parse()?),
+            "--no-motion" => no_motion = true,
             "--track" => {
                 let v = value()?.to_ascii_lowercase();
                 track = crate::track::TRACKS
@@ -144,11 +240,19 @@ pub fn parse(
     if offscreen && bench.is_none() {
         return Err(format!("--offscreen only works with --bench\n{USAGE}"));
     }
+    if bench_cap.is_some() && bench.is_none() {
+        return Err(format!("--bench-cap only works with --bench\n{USAGE}"));
+    }
     if screenshot.is_some() && !offscreen {
         return Err(format!(
             "--screenshot needs --bench and --offscreen\n{USAGE}"
         ));
     }
+    // The title-screen menus run over the attract race.
+    if menu.is_some_and(|m| !m.in_race()) {
+        attract = true;
+    }
+    let present_given = present.is_some();
     let present = present.unwrap_or(if bench.is_some() {
         PresentChoice::Immediate
     } else {
@@ -157,9 +261,12 @@ pub fn parse(
     Ok(Args {
         adapter: adapter.unwrap_or_default(),
         size,
+        size_given,
         present,
+        present_given,
         bench,
         offscreen,
+        bench_cap,
         screenshot,
         preset,
         mode,
@@ -170,6 +277,8 @@ pub fn parse(
         host_loopback,
         join,
         name,
+        menu,
+        no_motion,
     })
 }
 
@@ -211,6 +320,43 @@ mod tests {
         assert_eq!(a.present, PresentChoice::Immediate);
         let a = parse_strs(&["--bench", "30", "--present", "vsync"], None).unwrap();
         assert_eq!(a.present, PresentChoice::Vsync);
+    }
+
+    #[test]
+    fn args_size_given_only_when_on_the_command_line() {
+        assert!(!parse_strs(&[], None).unwrap().size_given);
+        assert!(
+            parse_strs(&["--size", "1280x720"], None)
+                .unwrap()
+                .size_given
+        );
+        assert!(USAGE.contains("--size WxH  "));
+    }
+
+    #[test]
+    fn args_present_given_only_when_on_the_command_line() {
+        assert!(!parse_strs(&[], None).unwrap().present_given);
+        assert!(!parse_strs(&["--bench", "30"], None).unwrap().present_given);
+        assert!(
+            parse_strs(&["--present", "immediate"], None)
+                .unwrap()
+                .present_given
+        );
+    }
+
+    #[test]
+    fn args_bench_cap() {
+        assert_eq!(parse_strs(&[], None).unwrap().bench_cap, None);
+        let a = parse_strs(&["--bench", "10", "--bench-cap", "144"], None).unwrap();
+        assert_eq!(a.bench_cap, Some(144));
+        assert!(
+            parse_strs(&["--bench-cap", "60"], None)
+                .unwrap_err()
+                .contains("--bench")
+        );
+        for bad in ["0", "fast", "1001"] {
+            assert!(parse_strs(&["--bench", "10", "--bench-cap", bad], None).is_err());
+        }
     }
 
     #[test]
@@ -291,6 +437,29 @@ mod tests {
         assert_eq!(parse_strs(&["--track", "skyway"], None).unwrap().track, 2);
         assert_eq!(parse_strs(&["--track", "castle"], None).unwrap().track, 1);
         assert!(parse_strs(&["--track", "moon"], None).is_err());
+    }
+
+    #[test]
+    fn args_menu() {
+        assert_eq!(parse_strs(&[], None).unwrap().menu, None);
+        let a = parse_strs(&["--menu", "race-setup"], None).unwrap();
+        assert_eq!(a.menu, Some(MenuShot::RaceSetup));
+        assert!(a.attract, "title-screen menus run over the attract race");
+        let a = parse_strs(&["--menu", "pause"], None).unwrap();
+        assert_eq!(a.menu, Some(MenuShot::Pause));
+        assert!(!a.attract, "pause sits on a race");
+        for (m, name) in MenuShot::ALL {
+            assert_eq!(name.parse::<MenuShot>(), Ok(m));
+        }
+        assert!(parse_strs(&["--menu", "options"], None).is_err());
+        assert!(parse_strs(&["--menu"], None).is_err());
+    }
+
+    #[test]
+    fn args_no_motion() {
+        assert!(!parse_strs(&[], None).unwrap().no_motion);
+        assert!(parse_strs(&["--no-motion"], None).unwrap().no_motion);
+        assert!(USAGE.contains("--no-motion"));
     }
 
     #[test]

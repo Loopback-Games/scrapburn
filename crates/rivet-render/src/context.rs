@@ -62,6 +62,8 @@ enum Target {
     Window {
         surface: wgpu::Surface<'static>,
         needs_reconfigure: bool,
+        /// What the surface supports, for `set_present`.
+        present_modes: Vec<wgpu::PresentMode>,
     },
     /// Renders into a texture that is never shown; frames in flight are capped at two,
     /// like a swapchain, so timing stays honest.
@@ -187,6 +189,26 @@ fn configure_checked(
     }
 }
 
+/// The present mode for `choice` among the surface's `supported` modes. V-sync is Fifo,
+/// which every surface supports; Immediate falls back to Mailbox, then Fifo.
+fn resolve_present(choice: PresentChoice, supported: &[wgpu::PresentMode]) -> wgpu::PresentMode {
+    match choice {
+        PresentChoice::Vsync => wgpu::PresentMode::Fifo,
+        PresentChoice::Immediate => [wgpu::PresentMode::Immediate, wgpu::PresentMode::Mailbox]
+            .into_iter()
+            .find(|m| supported.contains(m))
+            .unwrap_or(wgpu::PresentMode::Fifo),
+    }
+}
+
+/// A device, its queue, the surface configuration, and the present modes the surface supports.
+type WindowSetup = (
+    wgpu::Device,
+    wgpu::Queue,
+    wgpu::SurfaceConfiguration,
+    Vec<wgpu::PresentMode>,
+);
+
 /// Creates a device on `adapter` and configures `surface`, catching "can render, can't
 /// present" (e.g. an iGPU when the monitor is attached to the dGPU).
 fn try_window(
@@ -195,7 +217,7 @@ fn try_window(
     present: PresentChoice,
     w: u32,
     h: u32,
-) -> Result<(wgpu::Device, wgpu::Queue, wgpu::SurfaceConfiguration), RenderError> {
+) -> Result<WindowSetup, RenderError> {
     let (device, queue) = request_device(adapter)?;
     let caps = surface.get_capabilities(adapter);
     let format = caps
@@ -205,13 +227,7 @@ fn try_window(
         .find(|f| f.is_srgb())
         .or_else(|| caps.formats.first().copied())
         .ok_or(RenderError::NoSurfaceFormat)?;
-    let present_mode = match present {
-        PresentChoice::Vsync => wgpu::PresentMode::Fifo,
-        PresentChoice::Immediate => [wgpu::PresentMode::Immediate, wgpu::PresentMode::Mailbox]
-            .into_iter()
-            .find(|m| caps.present_modes.contains(m))
-            .unwrap_or(wgpu::PresentMode::Fifo),
-    };
+    let present_mode = resolve_present(present, &caps.present_modes);
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -241,7 +257,7 @@ fn try_window(
                 .to_string(),
         });
     }
-    Ok((device, queue, config))
+    Ok((device, queue, config, caps.present_modes))
 }
 
 impl GpuContext {
@@ -295,8 +311,8 @@ impl GpuContext {
             let mut chosen = None;
             for (n, &i) in order.iter().enumerate() {
                 match try_window(&all[i], &surface, present, w, h) {
-                    Ok((device, queue, config)) => {
-                        chosen = Some((i, device, queue, config));
+                    Ok((device, queue, config, modes)) => {
+                        chosen = Some((i, device, queue, config, modes));
                         break;
                     }
                     Err(e @ RenderError::CannotPresent { .. })
@@ -307,7 +323,8 @@ impl GpuContext {
                     Err(e) => return Err(e),
                 }
             }
-            let (i, device, queue, config) = chosen.ok_or(RenderError::NoSurfaceFormat)?;
+            let (i, device, queue, config, present_modes) =
+                chosen.ok_or(RenderError::NoSurfaceFormat)?;
             let adapter = all
                 .into_iter()
                 .nth(i)
@@ -315,6 +332,7 @@ impl GpuContext {
             let target = Target::Window {
                 surface,
                 needs_reconfigure: false,
+                present_modes,
             };
             (adapter, device, queue, target, config)
         };
@@ -368,6 +386,32 @@ impl GpuContext {
         &self.depth_view
     }
 
+    /// Switches between V-sync (Fifo) and uncapped (Immediate, else Mailbox, else Fifo) and
+    /// reconfigures the surface. Offscreen targets keep their mode. While the window has
+    /// no area (minimized) the change waits for the next presented frame.
+    pub fn set_present(&mut self, choice: PresentChoice) {
+        let Target::Window {
+            surface,
+            needs_reconfigure,
+            present_modes,
+        } = &mut self.target
+        else {
+            return;
+        };
+        let mode = resolve_present(choice, present_modes);
+        if mode == self.surface_config.present_mode {
+            return;
+        }
+        self.surface_config.present_mode = mode;
+        let size = self.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            *needs_reconfigure = true;
+        } else {
+            configure_checked(&self.device, surface, &self.surface_config);
+        }
+        log::info!("present: {}", self.present_label());
+    }
+
     /// Resizes the target. Zero sizes (minimized) are ignored.
     pub fn resize(&mut self, w: u32, h: u32) {
         if w == 0 || h == 0 || (w, h) == self.size() {
@@ -397,6 +441,7 @@ impl GpuContext {
             Target::Window {
                 surface,
                 needs_reconfigure,
+                ..
             } => (surface, needs_reconfigure),
         };
         let texture = match surface.get_current_texture() {
@@ -508,6 +553,7 @@ impl GpuContext {
         if let Target::Window {
             surface,
             needs_reconfigure,
+            ..
         } = &mut self.target
             && *needs_reconfigure
         {
@@ -540,6 +586,34 @@ mod tests {
             submission_index: None,
             timeout: None,
         });
+    }
+
+    #[test]
+    fn vsync_is_always_fifo() {
+        use wgpu::PresentMode as P;
+        assert_eq!(resolve_present(PresentChoice::Vsync, &[P::Fifo]), P::Fifo);
+        assert_eq!(
+            resolve_present(PresentChoice::Vsync, &[P::Immediate, P::Mailbox, P::Fifo]),
+            P::Fifo
+        );
+    }
+
+    #[test]
+    fn immediate_falls_back_to_mailbox_then_fifo() {
+        use wgpu::PresentMode as P;
+        let all = [P::Fifo, P::Mailbox, P::Immediate];
+        assert_eq!(
+            resolve_present(PresentChoice::Immediate, &all),
+            P::Immediate
+        );
+        assert_eq!(
+            resolve_present(PresentChoice::Immediate, &[P::Fifo, P::Mailbox]),
+            P::Mailbox
+        );
+        assert_eq!(
+            resolve_present(PresentChoice::Immediate, &[P::Fifo]),
+            P::Fifo
+        );
     }
 
     #[test]

@@ -1,0 +1,967 @@
+<title>Scrapburn Menu Studies</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=Big+Shoulders+Stencil+Display:wght@600;800;900&family=Chakra+Petch:wght@400;500;600;700&family=Dela+Gothic+One&family=Familjen+Grotesk:wght@400;600;700&family=Bodoni+Moda:ital,opsz,wght@1,6..96,500;1,6..96,700;1,6..96,800&family=Saira+Semi+Condensed:wght@300;400;500;600&display=swap">
+<style>
+/* Layout: page chrome is a quiet workbench; the 1280x720 stage is the art.
+   Chrome commits to one dark look so the three directions read against a neutral ground. */
+:root{
+  --wb-bg:#16181b; --wb-panel:#1e2125; --wb-line:#30343a; --wb-fg:#e6e3dc; --wb-dim:#9a9ea5; --wb-hi:#f2b544;
+  --wb-font:"Archivo",system-ui,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--wb-bg);color:var(--wb-fg);font-family:var(--wb-font);font-size:15px;line-height:1.5}
+.wrap{max-width:1360px;margin:0 auto;padding-block:28px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:20px}
+header.top{display:grid;gap:6px}
+header.top h1{margin:0;font-size:clamp(26px,3.2vw,38px);font-weight:800;font-stretch:112%;letter-spacing:-.01em;text-wrap:balance}
+header.top p{margin:0;color:var(--wb-dim);max-width:70ch}
+.dirs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.grp{grid-column:1/-1;margin:6px 0 -2px;font-size:13px;color:var(--wb-dim);font-weight:600}
+.dirbtn{all:unset;cursor:pointer;display:grid;gap:2px;padding:12px 14px;border:1px solid var(--wb-line);border-radius:6px;background:var(--wb-panel);min-width:0}
+.dirbtn b{font-size:16px;font-stretch:110%}
+.dirbtn span{color:var(--wb-dim);font-size:13px}
+.dirbtn[aria-pressed="true"]{border-color:var(--wb-hi);box-shadow:inset 0 0 0 1px var(--wb-hi)}
+.dirbtn:focus-visible,.chip:focus-visible,.tg:focus-visible{outline:2px solid var(--wb-hi);outline-offset:2px}
+.screens{display:flex;flex-wrap:wrap;gap:6px}
+.chip{all:unset;cursor:pointer;padding:5px 10px;border-radius:999px;border:1px solid var(--wb-line);font-size:13px;color:var(--wb-dim)}
+.chip[aria-pressed="true"]{color:var(--wb-bg);background:var(--wb-fg);border-color:var(--wb-fg)}
+.chip.group{margin-left:8px}
+.stage-wrap{position:relative;width:100%;max-width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:4px;background:#000;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.stage-wrap:focus-visible{outline:2px solid var(--wb-hi);outline-offset:3px}
+.belowbar{display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center;justify-content:space-between;color:var(--wb-dim);font-size:13px}
+.keys kbd{font-family:var(--wb-font);font-size:12px;border:1px solid var(--wb-line);border-bottom-width:2px;border-radius:4px;padding:0 5px;margin-right:3px;color:var(--wb-fg)}
+.tg{display:inline-flex;gap:8px;align-items:center;cursor:pointer}
+.notes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:20px}
+.notes section{background:var(--wb-panel);border:1px solid var(--wb-line);border-radius:6px;padding:18px 20px;min-width:0}
+.notes h2{margin:0 0 8px;font-size:18px;font-stretch:110%}
+.notes p{margin:0 0 10px;color:var(--wb-dim);max-width:68ch}
+.swatches{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.sw{display:grid;gap:4px;font-size:12px;color:var(--wb-dim)}
+.sw i{display:block;width:54px;height:34px;border-radius:3px;border:1px solid rgba(255,255,255,.12)}
+.fontline{font-size:13px;color:var(--wb-dim);margin:2px 0}
+.fontline b{color:var(--wb-fg);font-weight:600}
+.build{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.build li{display:grid;grid-template-columns:34px minmax(0,1fr);gap:10px;align-items:start}
+.sz{font-weight:800;font-size:12px;text-align:center;border-radius:3px;padding:2px 0;color:#16181b}
+.sz.S{background:#7fd1a0}.sz.M{background:#f2b544}.sz.L{background:#ef7a5a}
+.build li span{color:var(--wb-dim)}
+.build li b{color:var(--wb-fg);font-weight:600}
+@media (max-width:820px){.dirs{grid-template-columns:1fr}.notes{grid-template-columns:1fr}}
+
+/* ============ STAGE (shared skeleton) ============ */
+.stage{position:absolute;left:0;top:0;width:1280px;height:720px;transform-origin:0 0;transform:scale(var(--k,1));overflow:hidden;user-select:none}
+.bg{position:absolute;inset:-16% -16% -12%;background-size:cover;background-position:center 55%}
+.morehint{position:absolute;font-size:12px;letter-spacing:.2em;opacity:.75;text-transform:uppercase}
+.layer{position:absolute;inset:0;pointer-events:none}
+#embers{position:absolute;inset:0;pointer-events:none}
+.hdr,.rows,.feat,.foot,.tabs,.deco{position:absolute}
+.row{position:relative;cursor:pointer}
+.row .lab,.row .val{white-space:nowrap}
+.new{display:none}
+.show-new .new{display:inline-block}
+.feat svg{display:block;overflow:visible}
+.kicker,.heading,.help{margin:0}
+
+/* ============ A. BLUEPRINT ============ */
+.d-blueprint{
+  --ink:#0b2438; --ink2:#0f3150; --line:#9bd6ff; --dim:rgba(155,214,255,.42); --faint:rgba(155,214,255,.14); --paper:#eaf6ff; --red:#ff9b54;
+  --disp:"Big Shoulders Stencil Display",Impact,sans-serif; --txt:"Chakra Petch",system-ui,sans-serif;
+  font-family:var(--txt);color:var(--line);background:var(--ink)
+}
+.d-blueprint .bg{filter:grayscale(1) contrast(1.15) brightness(.55) blur(1.5px);mix-blend-mode:luminosity;opacity:.55}
+.d-blueprint .tint{background:linear-gradient(90deg,rgba(11,36,56,.96) 0%,rgba(11,36,56,.86) 46%,rgba(11,36,56,.55) 100%)}
+.d-blueprint .grid{background-image:
+  linear-gradient(var(--faint) 1px,transparent 1px),linear-gradient(90deg,var(--faint) 1px,transparent 1px),
+  linear-gradient(rgba(155,214,255,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(155,214,255,.06) 1px,transparent 1px);
+  background-size:80px 80px,80px 80px,16px 16px,16px 16px}
+.d-blueprint .sheet{inset:22px;border:1.5px solid var(--dim)}
+.d-blueprint .sheet::before{content:"";position:absolute;inset:6px;border:1px solid var(--faint)}
+.d-blueprint .ticks{inset:22px}
+.d-blueprint .ticks span{position:absolute;font-size:10px;color:var(--dim);letter-spacing:.1em}
+.d-blueprint .hdr{left:64px;top:56px;width:560px}
+.d-blueprint .kicker{font-size:13px;letter-spacing:.22em;color:var(--red);display:flex;gap:10px;align-items:center}
+.d-blueprint .kicker::before{content:"";width:28px;height:1.5px;background:var(--red)}
+.d-blueprint .heading{font-family:var(--disp);font-weight:900;font-size:104px;line-height:.9;color:var(--paper);letter-spacing:.01em;margin-top:8px;text-transform:uppercase}
+.d-blueprint.sub .heading{font-size:72px}
+.d-blueprint .help{margin-top:12px;font-size:16px;color:var(--line);max-width:46ch;min-height:24px}
+.d-blueprint .tabs{left:64px;top:200px;display:flex;gap:0;border:1px solid var(--dim)}
+.d-blueprint .tab{padding:6px 14px;font-size:13px;letter-spacing:.14em;color:var(--dim);border-right:1px solid var(--dim);cursor:pointer;text-transform:uppercase}
+.d-blueprint .tab:last-child{border-right:0}
+.d-blueprint .tab.on{color:var(--ink);background:var(--line)}
+.d-blueprint .rows{left:64px;top:270px;width:540px;display:grid;gap:4px}
+.d-blueprint.title .rows{top:300px}
+.d-blueprint.dense .rows{gap:0}
+.d-blueprint .row{display:flex;align-items:center;gap:10px;height:44px;padding:0 16px;font-size:21px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--line)}
+.d-blueprint.dense .row{height:31px;font-size:16px}
+.d-blueprint.dense .rows{top:256px}
+.d-blueprint.settings .feat{height:384px}
+.d-blueprint .sethelp{left:660px;top:524px;width:560px}
+.d-blueprint .morehint{left:80px;top:640px;color:var(--dim)}
+.d-blueprint .row .lead{flex:1;height:0;border-bottom:1.5px dotted var(--dim);margin:0 4px;transform:translateY(6px)}
+.d-blueprint .row .val{font-weight:500;color:var(--paper)}
+.d-blueprint .row .num{font-size:11px;color:var(--dim);width:22px;letter-spacing:.05em}
+.d-blueprint .row.sel{color:var(--paper);background:rgba(155,214,255,.10)}
+.d-blueprint .row.sel::before,.d-blueprint .row.sel::after{content:"";position:absolute;top:-3px;bottom:-3px;width:12px;border:2px solid var(--red)}
+.d-blueprint .row.sel::before{left:-4px;border-right:0}
+.d-blueprint .row.sel::after{right:-4px;border-left:0}
+.d-blueprint .row.sel .trace{position:absolute;left:0;bottom:-2px;height:2px;background:var(--red);animation:bp-trace .5s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes bp-trace{from{width:0}to{width:100%}}
+.d-blueprint .row .arr{color:var(--red);opacity:0}
+.d-blueprint .row.sel .arr{opacity:1}
+.d-blueprint .new{font-size:10px;letter-spacing:.14em;padding:1px 5px;border:1px solid var(--red);color:var(--red);font-weight:600}
+.d-blueprint .bar{width:150px;height:8px;border:1px solid var(--dim);position:relative}
+.d-blueprint .bar i{position:absolute;inset:1px auto 1px 1px;background:var(--line)}
+.d-blueprint .row.sel .bar i{background:var(--red)}
+.d-blueprint .feat{left:660px;top:120px;width:560px;height:440px}
+.d-blueprint .feat .frame{position:absolute;inset:0;border:1px solid var(--dim)}
+.d-blueprint .feat .frame::before{content:attr(data-label);position:absolute;left:12px;top:-9px;background:var(--ink);padding:0 8px;font-size:11px;letter-spacing:.2em;color:var(--line)}
+.d-blueprint .tblock{right:46px;bottom:46px;width:360px;display:grid;grid-template-columns:1.1fr 1fr 1fr;border:1.5px solid var(--dim);font-size:10px;letter-spacing:.12em;color:var(--dim);background:rgba(11,36,56,.8)}
+.d-blueprint .tblock div{border-right:1px solid var(--faint);border-bottom:1px solid var(--faint);padding:4px 7px}
+.d-blueprint .tblock div b{display:block;color:var(--paper);font-size:13px;letter-spacing:.06em;font-weight:600}
+.d-blueprint .tblock .wide{grid-column:span 3;font-family:var(--disp);font-size:20px;color:var(--paper);letter-spacing:.08em;font-weight:800}
+.d-blueprint .foot{left:64px;bottom:46px;display:flex;gap:22px;font-size:13px;letter-spacing:.12em;color:var(--dim);text-transform:uppercase}
+.d-blueprint .foot b{color:var(--ink);background:var(--line);padding:0 6px;margin-right:6px;font-weight:600}
+.d-blueprint .f-s{stroke:var(--line);fill:none;stroke-width:1.5}
+.d-blueprint .f-fill{fill:rgba(155,214,255,.08);stroke:var(--line);stroke-width:1.5}
+.d-blueprint .f-acc{stroke:var(--red);fill:none;stroke-width:2}
+.d-blueprint .f-accfill{fill:var(--red)}
+.d-blueprint .f-dim{stroke:var(--dim);fill:none;stroke-width:1;stroke-dasharray:4 4}
+.d-blueprint .f-t{fill:var(--line);font-family:var(--txt);font-size:12px;letter-spacing:.12em}
+.d-blueprint .f-tb{fill:var(--paper);font-family:var(--disp);font-weight:800;letter-spacing:.04em}
+.d-blueprint .f-ta{fill:var(--red);font-family:var(--txt);font-size:12px;letter-spacing:.12em}
+.d-blueprint .tint-sw{stroke:var(--line);stroke-width:1.5}
+
+/* ============ B. RALLY SCREENPRINT ============ */
+.d-print{
+  --bone:#ece2cb; --bone2:#d9cba9; --soot:#1c1916; --rust:#c7401a; --teal:#1d6b73; --ochre:#e3a62a;
+  --disp:"Dela Gothic One",Impact,sans-serif; --txt:"Familjen Grotesk",system-ui,sans-serif;
+  font-family:var(--txt);color:var(--soot);background:var(--rust)
+}
+.d-print .bg{filter:grayscale(1) contrast(1.9) brightness(1.05) blur(.6px);mix-blend-mode:multiply;opacity:.9}
+.d-print .tint{background:var(--rust);mix-blend-mode:normal;z-index:-1}
+.d-print .halftone{background-image:radial-gradient(circle,rgba(28,25,22,.55) 1.4px,transparent 1.7px);background-size:7px 7px;mask-image:linear-gradient(100deg,transparent 30%,#000 75%);-webkit-mask-image:linear-gradient(100deg,transparent 30%,#000 75%)}
+.d-print .grain{opacity:.35;mix-blend-mode:multiply;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .1 0 0 0 0 .09 0 0 0 0 .08 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+.d-print .slab{left:-60px;top:-40px;width:760px;height:820px;background:var(--bone);transform:rotate(-7deg);transform-origin:0 0;clip-path:polygon(0 0,100% 0,96% 8%,99% 17%,95% 30%,98% 41%,94% 55%,97% 68%,93% 80%,96% 92%,92% 100%,0 100%);box-shadow:none}
+.d-print .slab::after{content:"";position:absolute;inset:0;background-image:radial-gradient(circle,rgba(199,64,26,.22) 1.2px,transparent 1.5px);background-size:9px 9px;mask-image:linear-gradient(180deg,transparent 55%,#000);-webkit-mask-image:linear-gradient(180deg,transparent 55%,#000)}
+.d-print .hdr{left:58px;top:34px;width:640px}
+.d-print .kicker{font-family:var(--txt);font-weight:700;font-size:15px;letter-spacing:.08em;color:var(--rust);display:flex;align-items:center;gap:10px}
+.d-print .kicker .no{background:var(--soot);color:var(--bone);padding:1px 8px;font-family:var(--disp);font-size:13px;letter-spacing:.04em}
+.d-print .heading{font-family:var(--disp);font-size:100px;line-height:.86;color:var(--soot);margin-top:64px;transform:rotate(-7deg);transform-origin:0 100%;text-transform:uppercase;letter-spacing:-.02em;position:relative}
+.d-print .heading::after{content:attr(data-text);position:absolute;left:5px;top:4px;color:var(--rust);z-index:-1;mix-blend-mode:multiply}
+.d-print.sub .heading{font-size:80px;margin-top:40px}
+.d-print .help{margin-top:22px;font-size:17px;font-weight:600;max-width:40ch;min-height:26px;transform:rotate(-7deg);transform-origin:0 0}
+.d-print .tabs{left:70px;top:236px;display:flex;gap:6px;transform:rotate(-7deg);transform-origin:0 0}
+.d-print .tab{font-family:var(--disp);font-size:14px;padding:4px 10px;background:var(--bone2);color:var(--soot);cursor:pointer;text-transform:uppercase}
+.d-print .tab.on{background:var(--soot);color:var(--bone)}
+.d-print .rows{left:66px;top:300px;width:540px;display:grid;gap:10px;transform:rotate(-7deg);transform-origin:0 0}
+.d-print.title .rows{top:340px}
+.d-print.dense .rows{gap:4px;top:300px}
+.d-print .row{display:flex;align-items:center;gap:12px;height:46px;padding:0 18px;background:var(--soot);color:var(--bone);font-family:var(--disp);font-size:22px;text-transform:uppercase;clip-path:polygon(0 4%,22% 0,48% 6%,73% 1%,100% 5%,99% 96%,76% 100%,50% 94%,25% 100%,1% 95%);transition:transform .12s}
+.d-print.dense .row{height:36px;font-size:16px}
+.d-print .row:nth-child(even){transform:rotate(.6deg)}
+.d-print .row .lead{flex:1}
+.d-print .row .val{font-family:var(--txt);font-weight:700;font-size:.85em;letter-spacing:.04em;color:var(--ochre)}
+.d-print .row .num{display:none}
+.d-print .row.sel{background:var(--rust);color:var(--bone);transform:translateX(22px) rotate(-1deg);text-shadow:3px 2px 0 var(--teal)}
+.d-print .row.sel .val{color:var(--bone)}
+.d-print .row .arr{display:none}
+.d-print .row.sel .arr{display:inline;font-family:var(--txt);font-weight:700}
+.d-print .new{font-family:var(--txt);font-weight:700;font-size:11px;background:var(--ochre);color:var(--soot);padding:0 5px;text-shadow:none}
+.d-print .bar{width:140px;height:12px;background:var(--bone);position:relative;clip-path:polygon(0 0,100% 20%,100% 80%,0 100%)}
+.d-print .bar i{position:absolute;inset:0 auto 0 0;background:var(--ochre)}
+.d-print .row.sel .bar i{background:var(--soot)}
+.d-print .feat{left:720px;top:96px;width:500px;height:470px}
+.d-print .feat .frame{position:absolute;inset:0;background:var(--bone);transform:rotate(2.2deg);box-shadow:10px 12px 0 var(--soot)}
+.d-print .feat .frame::before{content:attr(data-label);position:absolute;left:18px;top:14px;font-family:var(--disp);font-size:14px;color:var(--rust);text-transform:uppercase}
+.d-print .feat .inner{position:absolute;inset:28px 0 0 0!important;transform:rotate(2.2deg)}
+.d-print .sethelp{left:760px;top:604px;width:420px;color:var(--bone);font-weight:600;font-size:17px}
+.d-print .morehint{left:430px;top:612px;color:var(--soot);font-weight:700;transform:rotate(-7deg)}
+.d-print .stamp{right:52px;bottom:38px;width:150px;height:150px;border-radius:50%;border:4px solid var(--soot);display:grid;place-items:center;text-align:center;font-family:var(--disp);font-size:15px;line-height:1.05;color:var(--soot);transform:rotate(-14deg);opacity:.82;text-transform:uppercase}
+.d-print .stamp::before{content:"";position:absolute;inset:7px;border-radius:50%;border:1.5px solid var(--soot)}
+.d-print .foot{left:40px;bottom:22px;display:flex;gap:18px;font-weight:700;font-size:14px;color:var(--soot);text-transform:uppercase;letter-spacing:.04em}
+.d-print .foot b{background:var(--soot);color:var(--bone);padding:0 6px;margin-right:5px;font-family:var(--disp);font-weight:400}
+.d-print .f-s{stroke:var(--soot);fill:none;stroke-width:3}
+.d-print .f-fill{fill:var(--soot);stroke:var(--soot);stroke-width:2}
+.d-print .f-acc{stroke:var(--rust);fill:none;stroke-width:5}
+.d-print .f-accfill{fill:var(--rust)}
+.d-print .f-dim{stroke:rgba(28,25,22,.4);fill:none;stroke-width:2;stroke-dasharray:2 6;stroke-linecap:round}
+.d-print .f-t{fill:var(--soot);font-family:var(--txt);font-weight:700;font-size:14px}
+.d-print .f-tb{fill:var(--soot);font-family:var(--disp);text-transform:uppercase}
+.d-print .f-ta{fill:var(--rust);font-family:var(--txt);font-weight:700;font-size:14px}
+.d-print .tint-sw{stroke:var(--soot);stroke-width:3}
+
+/* ============ C. FORGE ============ */
+.d-forge{
+  --char:#140d0a; --glass:rgba(26,16,12,.52); --ash:#cdbfb2; --ashdim:rgba(205,191,178,.5); --ember:#ff6a1a; --gold:#ffc35c; --hot:#fff1d6;
+  --molten:linear-gradient(90deg,#ff3a0a,#ff8a1f 40%,#ffd36b 70%,#fff1d6);
+  --disp:"Bodoni Moda",Didot,Georgia,serif; --txt:"Saira Semi Condensed",system-ui,sans-serif;
+  font-family:var(--txt);color:var(--ash);background:var(--char)
+}
+.d-forge .bg{filter:saturate(.75) sepia(.35) brightness(.5) contrast(1.1) blur(2px)}
+.d-forge.settings .bg{filter:saturate(.7) sepia(.4) brightness(.38) contrast(1.1) blur(5px)}
+.d-forge .tint{background:radial-gradient(120% 90% at 20% 110%,rgba(255,90,20,.35),transparent 55%),radial-gradient(100% 100% at 50% 40%,transparent 35%,rgba(10,6,4,.9) 100%),linear-gradient(0deg,rgba(14,8,6,.9),transparent 45%)}
+.d-forge .glow{left:-120px;bottom:-180px;width:760px;height:420px;background:radial-gradient(closest-side,rgba(255,110,30,.35),transparent);filter:blur(10px)}
+.d-forge .hdr{left:72px;bottom:120px;width:640px}
+.d-forge .kicker{font-size:14px;letter-spacing:.32em;color:var(--gold);font-weight:500;text-transform:uppercase}
+.d-forge .heading{font-family:var(--disp);font-style:italic;font-weight:800;font-size:136px;line-height:.95;background:var(--molten);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 22px rgba(255,110,30,.45));letter-spacing:-.02em;padding-right:.1em}
+.d-forge.sub .heading{font-size:92px}
+.d-forge .help{font-size:18px;font-weight:300;color:var(--ash);max-width:40ch;min-height:28px;margin-top:6px}
+.d-forge .tabs{right:60px;top:52px;display:flex;gap:26px}
+.d-forge .tab{font-size:14px;letter-spacing:.24em;text-transform:uppercase;color:var(--ashdim);cursor:pointer;padding-bottom:6px;font-weight:500}
+.d-forge .tab.on{color:var(--hot);box-shadow:inset 0 -2px 0 var(--ember)}
+.d-forge .panel{right:60px;top:96px;width:470px;bottom:96px;background:var(--glass);backdrop-filter:blur(18px) saturate(1.2);-webkit-backdrop-filter:blur(18px) saturate(1.2);border:1px solid rgba(255,190,130,.16);border-radius:2px}
+.d-forge .panel::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;background:var(--molten);opacity:.7}
+.d-forge .rows{right:84px;top:130px;width:422px;display:grid;gap:2px}
+
+.d-forge.title .rows{top:auto;bottom:126px}
+.d-forge.dense .rows{top:118px}
+.d-forge .row{display:flex;align-items:center;gap:10px;height:50px;padding:0 14px;font-size:20px;font-weight:500;letter-spacing:.14em;color:var(--ashdim);text-transform:uppercase}
+.d-forge.dense .row{height:39px;font-size:15px;letter-spacing:.1em}
+.d-forge .row .lead{flex:1}
+.d-forge .row .val{color:var(--ash);font-weight:400;letter-spacing:.06em}
+.d-forge .row .num{display:none}
+.d-forge .row::after{content:"";position:absolute;left:14px;right:14px;bottom:6px;height:2px;background:var(--molten);background-size:200% 100%;transform:scaleX(0);transform-origin:0 50%;transition:transform .35s cubic-bezier(.2,.7,.2,1)}
+.d-forge .row.sel{color:var(--hot);text-shadow:0 0 18px rgba(255,140,50,.7)}
+.d-forge .row.sel::after{transform:scaleX(1);animation:forge-flow 2.4s linear infinite;box-shadow:0 0 14px rgba(255,120,30,.9)}
+.d-forge .row.sel .val{color:var(--gold)}
+@keyframes forge-flow{from{background-position:0 0}to{background-position:200% 0}}
+.d-forge .row .arr{display:none}
+.d-forge .new{font-size:10px;letter-spacing:.2em;color:var(--ember);border:1px solid rgba(255,106,26,.6);padding:0 5px;border-radius:2px}
+.d-forge .bar{width:130px;height:2px;background:rgba(205,191,178,.25);position:relative}
+.d-forge .bar i{position:absolute;inset:0 auto 0 0;background:var(--molten)}
+.d-forge .bar i::after{content:"";position:absolute;right:-5px;top:-4px;width:10px;height:10px;border-radius:50%;background:var(--hot);box-shadow:0 0 10px var(--ember)}
+.d-forge .feat{left:72px;top:70px;width:600px;height:380px}
+.d-forge.title .feat{display:none}
+.d-forge .feat .frame{position:absolute;inset:0}
+.d-forge .feat .frame::before{content:attr(data-label);position:absolute;left:0;top:-4px;font-size:12px;letter-spacing:.3em;color:var(--gold);text-transform:uppercase}
+.d-forge.sub .hdr{bottom:64px}
+.d-forge.sub .heading{font-size:84px}
+.d-forge .morehint{right:84px;top:600px;color:var(--gold)}
+.d-forge .foot{right:60px;bottom:44px;display:flex;gap:22px;font-size:13px;letter-spacing:.2em;color:var(--ashdim);text-transform:uppercase}
+.d-forge .foot b{color:var(--hot);margin-right:6px;font-weight:600}
+.d-forge .f-s{stroke:var(--ash);fill:none;stroke-width:1.4}
+.d-forge .f-fill{fill:rgba(255,200,150,.05);stroke:var(--gold);stroke-width:1.4;filter:drop-shadow(0 0 6px rgba(255,120,30,.5))}
+.d-forge .f-acc{stroke:var(--ember);fill:none;stroke-width:2.5;filter:drop-shadow(0 0 6px rgba(255,106,26,.9))}
+.d-forge .f-accfill{fill:var(--ember);filter:drop-shadow(0 0 6px rgba(255,106,26,.9))}
+.d-forge .f-dim{stroke:rgba(205,191,178,.3);fill:none;stroke-width:1}
+.d-forge .f-t{fill:var(--ash);font-family:var(--txt);font-size:13px;letter-spacing:.14em}
+.d-forge .f-tb{fill:var(--hot);font-family:var(--disp);font-style:italic;font-weight:700}
+.d-forge .f-ta{fill:var(--gold);font-family:var(--txt);font-size:13px;letter-spacing:.14em}
+.d-forge .tint-sw{stroke:var(--hot);stroke-width:1.5}
+
+/* ============ ROUND 2: forge variants with the stencil title ============ */
+.v-foundry,.v-crucible,.v-plate{--sten:"Big Shoulders Stencil Display",Impact,sans-serif}
+.v-foundry .f-tb,.v-crucible .f-tb,.v-plate .f-tb{font-family:var(--sten);font-style:normal;font-weight:800;text-transform:uppercase;letter-spacing:.02em}
+.v-foundry .heading,.v-crucible .heading,.v-plate .heading{white-space:nowrap;font-family:var(--sten);font-style:normal;font-weight:900;text-transform:uppercase;letter-spacing:.015em;line-height:.86;padding-right:0}
+/* Foundry */
+.d-forge.v-foundry .hdr{width:700px}
+.d-forge.v-foundry .heading{font-size:138px}
+.d-forge.v-foundry.sub .heading{font-size:96px}
+/* Crucible */
+.d-forge.v-crucible{font-family:"Chakra Petch",system-ui,sans-serif}
+.d-forge.v-crucible .bg{filter:saturate(.85) sepia(.25) brightness(.62) contrast(1.05) blur(1px)}
+.d-forge.v-crucible .tint{background:linear-gradient(90deg,rgba(14,8,6,.55),transparent 60%),radial-gradient(100% 100% at 70% 40%,transparent 40%,rgba(10,6,4,.85))}
+.d-forge.v-crucible .panel,.d-forge.v-crucible .edge{left:0;top:0;bottom:0;right:auto;border:0;border-radius:0;clip-path:polygon(0 0,100% 0,86% 100%,0 100%)}
+.d-forge.v-crucible .panel{width:620px;background:linear-gradient(180deg,rgba(16,10,8,.78),rgba(24,12,8,.7))}
+.d-forge.v-crucible .panel::before{display:none}
+.d-forge.v-crucible .edge{width:628px;background:linear-gradient(180deg,#fff1d6,#ffc35c 25%,#ff8a1f 60%,#ff3a0a);filter:drop-shadow(0 0 12px rgba(255,110,30,.9))}
+.d-forge.v-crucible .glow{left:-200px;bottom:-200px}
+.d-forge.v-crucible .hdr{left:56px;top:46px;bottom:auto;width:520px}
+.d-forge.v-crucible .kicker{letter-spacing:.3em;font-size:13px}
+.d-forge.v-crucible .heading{font-size:112px;margin-top:4px}
+.d-forge.v-crucible.sub .heading{font-size:86px}
+.d-forge.v-crucible .help{font-size:16px;font-weight:400;margin-top:10px;max-width:42ch}
+.d-forge.v-crucible .tabs{left:56px;right:auto;top:222px;gap:18px}
+.d-forge.v-crucible .tab{font-size:12px;letter-spacing:.16em}
+.d-forge.v-crucible .rows{left:40px;right:auto;top:300px;bottom:auto;width:470px;gap:4px}
+.d-forge.v-crucible.title .rows{top:330px;bottom:auto}
+.d-forge.v-crucible.dense .rows{top:262px;gap:0}
+.d-forge.v-crucible .row{height:48px;padding:0 16px;font-size:20px;font-weight:600;letter-spacing:.1em;color:var(--ash)}
+.d-forge.v-crucible.dense .row{height:34px;font-size:15px}
+.d-forge.v-crucible .row::after{display:none}
+.d-forge.v-crucible .row.sel{color:var(--char);text-shadow:none;background:linear-gradient(90deg,#ff3a0a,#ff8a1f 35%,#ffc35c 75%,#fff1d6);box-shadow:0 0 26px rgba(255,110,30,.55);clip-path:polygon(0 0,100% 0,97% 100%,0 100%)}
+.d-forge.v-crucible .row.sel .val{color:var(--char);font-weight:600}
+.d-forge.v-crucible .row.sel .new{color:var(--char);border-color:var(--char)}
+.d-forge.v-crucible .row.sel .bar{background:rgba(20,13,10,.3)}
+.d-forge.v-crucible .row.sel .bar i{background:var(--char)}
+.d-forge.v-crucible .row.sel .bar i::after{background:var(--char);box-shadow:none}
+.d-forge.v-crucible .row .arr{display:inline;opacity:0;font-weight:700}
+.d-forge.v-crucible .row.sel .arr{opacity:1}
+.d-forge.v-crucible .feat,.d-forge.v-crucible.title .feat{display:block;left:660px;top:110px;width:570px;height:430px}
+.d-forge.v-crucible .tbl{left:660px;top:110px;width:560px}
+.d-forge.v-crucible .foot{left:56px;right:auto;bottom:34px}
+.d-forge.v-crucible .morehint{left:56px;right:auto;top:612px}
+/* Riveted plate */
+.d-forge.v-plate{--plate:repeating-linear-gradient(0deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px),linear-gradient(160deg,#3b4149,#23272d 60%,#2d3238);
+  --rivets:radial-gradient(circle,#b3bcc6 0 2px,#5d656f 3px,#14171a 4.5px,transparent 5.5px) left 9px top 9px/12px 12px no-repeat,radial-gradient(circle,#b3bcc6 0 2px,#5d656f 3px,#14171a 4.5px,transparent 5.5px) right 9px top 9px/12px 12px no-repeat,radial-gradient(circle,#b3bcc6 0 2px,#5d656f 3px,#14171a 4.5px,transparent 5.5px) left 9px bottom 9px/12px 12px no-repeat,radial-gradient(circle,#b3bcc6 0 2px,#5d656f 3px,#14171a 4.5px,transparent 5.5px) right 9px bottom 9px/12px 12px no-repeat;
+  --cold:#9aa3ad}
+.d-forge.v-plate .bg{filter:grayscale(.75) brightness(.42) contrast(1.15) blur(2px)}
+.d-forge.v-plate.settings .bg{filter:grayscale(.8) brightness(.32) contrast(1.1) blur(5px)}
+.d-forge.v-plate .tint{background:linear-gradient(180deg,rgba(18,28,40,.55),rgba(10,14,20,.75)),radial-gradient(100% 100% at 50% 40%,transparent 40%,rgba(6,8,12,.85))}
+.d-forge.v-plate .glow{opacity:.55}
+.d-forge.v-plate .panel{background:var(--rivets),var(--plate);backdrop-filter:none;-webkit-backdrop-filter:none;border:1px solid #4a525c;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.14),inset 0 -2px 0 rgba(0,0,0,.4),0 22px 50px rgba(0,0,0,.65)}
+.d-forge.v-plate .panel::before{display:none}
+.d-forge.v-plate .hdr{width:auto;max-width:640px;padding:20px 30px 22px;background:var(--rivets),var(--plate);border:1px solid #4a525c;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 22px 50px rgba(0,0,0,.65)}
+.d-forge.v-plate .kicker{color:var(--cold);letter-spacing:.34em;font-size:13px}
+.d-forge.v-plate .heading{font-size:122px;filter:drop-shadow(0 0 14px rgba(255,110,30,.65)) drop-shadow(0 -1px 0 rgba(0,0,0,.9));margin-top:4px}
+.d-forge.v-plate.sub .heading{font-size:80px}
+.d-forge.v-plate .help{color:var(--cold);font-size:16px}
+.d-forge.v-plate .tabs{gap:6px;top:50px}
+.d-forge.v-plate .tab{padding:6px 12px;background:#2a2f35;border:1px solid #4a525c;color:var(--cold);font-size:12px;letter-spacing:.16em;box-shadow:inset 0 1px 0 rgba(255,255,255,.1)}
+.d-forge.v-plate .tab.on{background:linear-gradient(180deg,#ffc35c,#ff6a1a);color:var(--char);border-color:#ff8a1f;box-shadow:0 0 14px rgba(255,110,30,.6)}
+.d-forge.v-plate .row{color:var(--cold)}
+.d-forge.v-plate .row .val{color:#c4cbd3}
+.d-forge.v-plate .row::after{display:none}
+.d-forge.v-plate .row.sel{color:var(--hot);background:radial-gradient(60% 140% at 22% 50%,rgba(255,120,30,.55),rgba(255,70,10,.18) 55%,transparent 80%);text-shadow:0 0 14px rgba(255,140,50,.9);box-shadow:inset 0 0 0 1px rgba(255,140,60,.35)}
+.d-forge.v-plate .row.sel .val{color:var(--gold)}
+.d-forge.v-plate .bar{height:4px;background:#15181b;box-shadow:inset 0 1px 1px rgba(0,0,0,.8)}
+.d-forge.v-plate .foot b{background:#2a2f35;border:1px solid #4a525c;padding:0 6px;border-radius:2px}
+.d-forge.v-plate .f-s{stroke:var(--cold)}
+.d-forge.v-plate .f-t{fill:var(--cold)}
+
+/* results table (all) */
+.tbl{position:absolute;display:grid}
+.tbl .tr{display:grid;grid-template-columns:52px 1fr 130px 70px;align-items:center}
+.d-blueprint .tbl{left:64px;top:240px;width:640px;border:1px solid var(--dim)}
+.d-blueprint .tbl .tr{height:34px;border-bottom:1px solid var(--faint);padding:0 14px;font-size:16px;letter-spacing:.06em;font-variant-numeric:tabular-nums}
+.d-blueprint .tbl .tr.me{background:rgba(255,155,84,.15);color:var(--paper)}
+.d-blueprint .tbl .th{font-size:11px;letter-spacing:.2em;color:var(--dim);height:28px}
+.d-print .tbl{left:70px;top:214px;width:620px;transform:rotate(-7deg);transform-origin:0 0;gap:3px}
+.d-print .tbl .tr{height:32px;padding:0 14px;background:var(--bone2);font-weight:700;font-size:17px;font-variant-numeric:tabular-nums}
+.d-print .tbl .tr.me{background:var(--soot);color:var(--bone)}
+.d-print .tbl .th{background:none;font-size:12px;height:22px;color:var(--rust)}
+.d-forge .tbl{left:72px;top:70px;width:620px}
+.d-forge .tbl .tr{height:38px;padding:0 6px;font-size:18px;letter-spacing:.1em;border-bottom:1px solid rgba(255,190,130,.12);font-variant-numeric:tabular-nums;color:var(--ash)}
+.d-forge .tbl .tr.me{color:var(--hot);text-shadow:0 0 14px rgba(255,140,50,.7)}
+.d-forge .tbl .th{font-size:11px;letter-spacing:.3em;color:var(--gold);height:28px}
+.tbl .tr span:nth-child(3),.tbl .tr span:nth-child(4){text-align:right}
+
+@media (prefers-reduced-motion:reduce){
+  .d-blueprint .row.sel .trace{animation:none;width:100%}
+  .d-forge .row.sel::after{animation:none}
+  .eq rect{animation:none!important}
+}
+.eq rect{transform-box:fill-box;transform-origin:50% 100%;animation:eq 1s ease-in-out infinite alternate}
+@keyframes eq{from{transform:scaleY(.25)}to{transform:scaleY(1)}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Scrapburn menu studies</h1>
+    <p>Round 2 keeps Forge's heat and glass and sets the titles in Blueprint's stencil face, in three variations. The first three directions are still below for comparison. Every direction covers every screen plus full Graphics, Audio, Controls, and Camera &amp; View settings. Click into the stage and drive it like the game. Backdrops are real race captures. In the game they would be the live attract camera.</p>
+  </header>
+
+  <nav class="dirs" id="dirs" aria-label="Art direction"></nav>
+  <nav class="screens" id="screens" aria-label="Screen"></nav>
+
+  <div class="stage-wrap" id="wrap" tabindex="0" aria-label="Menu mockup. Use arrow keys, Enter, Escape, Q and E.">
+    <div class="stage" id="stage"></div>
+  </div>
+
+  <div class="belowbar">
+    <div class="keys"><kbd>↑</kbd><kbd>↓</kbd> move &nbsp; <kbd>←</kbd><kbd>→</kbd> change &nbsp; <kbd>Enter</kbd> select &nbsp; <kbd>Esc</kbd> back &nbsp; <kbd>Q</kbd><kbd>E</kbd> settings tab &nbsp; <kbd>1</kbd>–<kbd>6</kbd> direction</div>
+    <label class="tg"><input type="checkbox" id="shownew" checked> Mark settings the game doesn't have yet</label>
+  </div>
+
+  <div class="notes">
+    <section id="about"></section>
+    <section><h2>To build in the engine</h2><p id="buildintro"></p><ul class="build" id="build"></ul></section>
+  </div>
+</div>
+
+<script>
+(() => {
+const $ = s => document.querySelector(s);
+const FORGES = new Set(['forge','foundry','crucible','plate']);
+const F = () => FORGES.has(S.dir);
+const MEDIA = {
+  dust:'../../media/dustbowl-loop.jpg', castle:'../../media/castle-grindstone.jpg', sky:'../../media/skyway-zero.jpg',
+  glass:'../../media/glass-orchard.jpg', helios:'../../media/helios-crown.jpg', online:'../../media/online.jpg', elim:'../../media/elimination.jpg'
+};
+
+/* ---------- real game data (from game/scrapburn and rivet-audio) ---------- */
+const TRACKS = [
+  {name:'Dustbowl Loop', img:MEDIA.dust, song:'Crossover rock', key:'E minor', bpm:168,
+   path:'M38,34 C40,12 128,10 160,22 C196,36 192,104 156,108 C118,112 108,74 78,76 C48,78 40,112 24,94 C10,76 36,56 38,34Z'},
+  {name:'Castle Grindstone', img:MEDIA.castle, song:'Galloping metal', key:'D minor', bpm:176,
+   path:'M22,66 L44,22 L92,30 L120,12 L180,34 L172,70 L188,98 L120,108 L100,80 L64,104 L30,96 Z'},
+  {name:'Skyway Zero', img:MEDIA.sky, song:'Bright synth-rock', key:'F♯ minor', bpm:150,
+   path:'M36,62 C36,18 98,20 100,62 C102,104 164,106 164,62 C164,18 102,20 100,62 C98,104 36,106 36,62Z'},
+  {name:'Glass Orchard', img:MEDIA.glass, song:'Glass Orchard theme', key:'', bpm:142,
+   path:'M30,26 C70,10 110,40 150,26 C186,14 192,60 162,70 C132,80 162,112 112,106 C70,102 62,82 40,96 C14,112 8,40 30,26Z'},
+  {name:'Helios Crown', img:MEDIA.helios, song:'Helios Crown theme', key:'', bpm:160,
+   path:'M100,12 L122,40 L172,28 L156,68 L188,94 L132,100 L100,112 L68,100 L12,94 L44,68 L28,28 L78,40 Z'},
+];
+const TYPES = ['Car','Truck','ATV','Dirt bike'];
+const KARTS = [
+  {name:'Scrapper',kind:0,wheel:.16},{name:'Warrig',kind:1,wheel:.19},{name:'Speedster',kind:0,wheel:.13},
+  {name:'North Star 570',kind:2,wheel:.15},{name:'Jackrabbit',kind:2,wheel:.15},
+  {name:'Redline 250',kind:3,wheel:.15},{name:'Ridgeback 450',kind:3,wheel:.15}];
+const FINISHES = [['Factory','#d9d4c7'],['Glacier','#8cc8ff'],['Oxide','#d0674f'],['Moss','#8bbf5a'],['Brass','#d8b44a'],['Violet','#b479d6'],['Graphite','#6b6d74'],['Ember','#e8853a']];
+const RIVALS = ['You','Rust','Volt','Moss','Brass','Hex','Ash','Ember'];
+const MODES = [['Grand Prix','Battle the pack to the finish line.'],['Time Trial','Chase your own best lap.'],['Elimination','Stay out of last place to survive.']];
+
+/* ---------- state ---------- */
+const V = {mode:0,event:0,track:0,laps:1,rivals:2,type:0,chassis:0,finish:7,
+  preset:1,auto:0,scale:100,shadows:1,bloom:2,fxaa:1,tex:1,aniso:3,display:1,vsync:1,cap:1,fps:0,
+  master:80,music:65,sfx:85,engine:70,ui:55,soundtrack:1,theme:0,
+  device:0,sens:50,dead:12,vib:1,smooth:60,
+  dist:6.5,height:2.2,fov:75,shake:60,speedfov:1,hud:100,minimap:1,speedo:1,units:0,names:1};
+let S = {dir:'crucible', screen:'title', sel:0, stack:[]};
+try { const d = localStorage.getItem('sb-crucible'); if (d) S.dir = d; } catch(e) {}
+
+const SET_TABS = ['graphics','audio','controls','camera','gameplay'];
+const TAB_NAME = {graphics:'Graphics',audio:'Audio',controls:'Controls',camera:'Camera & view',gameplay:'Gameplay'};
+const SCREEN_LIST = [
+  ['title','Title'],['race-setup','Race setup'],['tracks','Tracks'],['garage','Garage'],['multiplayer','Multiplayer'],
+  ['lobby','Lobby'],['pause','Pause'],['results','Results'],['graphics','Graphics'],['audio','Audio'],['controls','Controls'],['camera','Camera & view']];
+
+/* ---------- row helpers ---------- */
+const go = (label, to, help, extra={}) => ({kind:'go', label, to, help, ...extra});
+const ch = (label, key, opts, help, extra={}) => ({kind:'choice', label, key, opts, help, ...extra});
+const sl = (label, key, min, max, step, fmt, help, extra={}) => ({kind:'slider', label, key, min, max, step, fmt, help, ...extra});
+const tg = (label, key, help, extra={}) => ({kind:'choice', label, key, opts:['Off','On'], help, ...extra});
+const bd = (label, kb, pad, kbKeys, padKeys, help, extra={}) => ({kind:'bind', label, kb, pad, kbKeys, padKeys, help, ...extra});
+const pct = v => v + '%';
+
+function settingsRows(tab){
+  if (tab==='graphics') return [
+    ch('Quality preset','preset',['Low','Medium','High','Custom'],'Low targets Intel UHD 620 laptops. High doubles the shadow map.'),
+    tg('Pick automatically','auto','Measures frame time on the first race and picks a preset.'),
+    sl('Render scale','scale',50,100,5,pct,'3D resolution relative to the window. The menus and HUD stay sharp.',{isNew:1}),
+    ch('Shadows','shadows',['1024²','2048²','4096²'],'Shadow map size. Bigger is crisper and costs GPU time.',{isNew:1}),
+    ch('Bloom','bloom',['Off','4 mips','5 mips','6 mips'],'Glow around bright lights, boost flames, and crystals.',{isNew:1}),
+    tg('Anti-aliasing (FXAA)','fxaa','Smooths jagged edges for almost no cost.',{isNew:1}),
+    ch('Texture detail','tex',['Half','Full'],'Half skips the top mip level to save video memory.',{isNew:1}),
+    ch('Anisotropic filtering','aniso',['Off','2×','4×','8×','16×'],'Keeps the road texture sharp at a distance.',{isNew:1}),
+    ch('Display mode','display',['Windowed','Borderless','Fullscreen'],'Borderless switches apps fastest.',{isNew:1}),
+    tg('V-sync','vsync','Stops tearing. Adds a little input delay.',{isNew:1}),
+    ch('Frame cap','cap',['30','60','120','144','None'],'Caps frames per second to save power on laptops.',{isNew:1}),
+    ch('Show FPS','fps',['Off','Counter','Graph'],'F3 or View cycles this during a race.'),
+  ];
+  if (tab==='audio') return [
+    sl('Master','master',0,100,5,pct,'Everything Scrapburn plays.',{isNew:1}),
+    sl('Music','music',0,100,5,pct,'The soundtrack. Each track has its own song.',{isNew:1}),
+    sl('Effects','sfx',0,100,5,pct,'Items, impacts, boosts, and the countdown.',{isNew:1}),
+    sl('Engines','engine',0,100,5,pct,'Your engine and the pack around you.',{isNew:1}),
+    sl('Menus','ui',0,100,5,pct,'Menu clicks and confirmations.',{isNew:1}),
+    tg('Soundtrack','soundtrack','Turn the race music on or off.'),
+    ch('Listen to','theme',['Menu','Dustbowl','Grindstone','Skyway','Glass Orchard','Helios'],'Preview any song from the soundtrack.',{isNew:1}),
+  ];
+  if (tab==='controls') return [
+    ch('Device','device',['Keyboard','Gamepad'],'Bindings for the selected device.'),
+    bd('Accelerate','W  /  ↑','RT  or  A',['W','↑'],['RT','A'],'Hold to drive. On a gamepad the trigger is analog.'),
+    bd('Brake & reverse','S  /  ↓','LT',['S','↓'],['LT'],'Hold to brake, keep holding to reverse.'),
+    bd('Steer','A D  /  ← →','Left stick',['A','D','←','→'],['LS'],'Keyboard steering eases in so taps don\'t snap the kart.'),
+    bd('Drift & hop','Space  /  Shift','LB  or  RB',['Space','Shift'],['LB','RB'],'Tap to hop. Hold through a corner to charge a drift boost.'),
+    bd('Use item','E  /  Ctrl  /  J','X',['E','Ctrl','J'],['X'],'Fire or drop the item you\'re holding.'),
+    bd('Respawn','R','B',['R'],['B'],'Back on the track at the last checkpoint.'),
+    bd('Look behind','Q','Y',['Q'],['Y'],'Hold to watch the pack behind you.',{isNew:1}),
+    bd('Pause','Esc','Menu',['Esc'],['MENU'],'Opens the race menu.'),
+    sl('Steering sensitivity','sens',0,100,5,pct,'How far the wheels turn for a given stick angle.',{isNew:1}),
+    sl('Stick dead zone','dead',0,30,1,pct,'Ignore small stick movement from a worn controller.',{isNew:1}),
+    tg('Vibration','vib','Rumble on impacts, boosts, and landings.',{isNew:1}),
+  ];
+  if (tab==='camera') return [
+    sl('Camera distance','dist',4,10,0.5,v=>v.toFixed(1)+' m','How far the chase camera trails the kart.',{isNew:1}),
+    sl('Camera height','height',1,4,0.2,v=>v.toFixed(1)+' m','Height of the camera above the road.',{isNew:1}),
+    sl('Field of view','fov',60,100,1,v=>v+'°','Wider shows more track and feels faster.',{isNew:1}),
+    tg('Widen at speed','speedfov','The view opens up a little while boosting.',{isNew:1}),
+    sl('Camera shake','shake',0,100,10,pct,'Jolts from landings and hits.',{isNew:1}),
+    sl('HUD scale','hud',70,130,5,pct,'Size of the race display.',{isNew:1}),
+    tg('Minimap','minimap','Track map in the lower-left corner.',{isNew:1}),
+    tg('Speedometer','speedo','Speed readout in the lower-right corner.',{isNew:1}),
+    ch('Speed units','units',['km/h','mph'],'Units for the speedometer.',{isNew:1}),
+    tg('Rival names','names','Name tags over the karts ahead.',{isNew:1}),
+  ];
+  return [
+    ch('Laps','laps',['1','3','5'],'Laps per race.'),
+    ch('Rivals','rivals',['3','5','7'],'How many computer drivers line up.'),
+    go('Racer name','multiplayer','The name other players see online.'),
+  ];
+}
+
+const isSet = s => SET_TABS.includes(s);
+
+function screenDef(s){
+  const sc = s.screen;
+  if (sc==='title') return {kicker:'Main menu', heading:'Scrapburn', rows:[
+    go('Solo race','race-setup','Pick a track or run a circuit.'),
+    go('Multiplayer','multiplayer','Host a race or join friends.'),
+    go('Garage','garage','Choose your chassis and paint.'),
+    go('Settings','graphics','Graphics, audio, controls, and camera.'),
+    go('Quit',null,'Exit to desktop.'),
+  ]};
+  if (sc==='race-setup') return {kicker:'Solo race', heading:'Race setup', rows:[
+    go('Start race',null,MODES[V.mode][1]),
+    ch('Mode','mode',MODES.map(m=>m[0]), MODES[V.mode][1]),
+    ch('Event','event',['Single race','Circuit'], V.event? 'Race every track in order. Points decide the champion.':'One race on the track of your choice.'),
+    go('Track','tracks','Browse the routes and pick one.',{value: V.event?'All 5 in order':TRACKS[V.track].name}),
+    ch('Laps','laps',['1','3','5'],'Laps per race.'),
+    ch('Rivals','rivals',['3','5','7'],'How many computer drivers line up.'),
+    go('Back','back','Back to the main menu.'),
+  ]};
+  if (sc==='tracks') return {kicker:'Track select', heading:'Tracks', dense:0, rows:[
+    ...TRACKS.map((t,i)=>go(t.name,'pick-track','Select to equip this track.',{track:i, value: i===V.track?'Equipped':''})),
+    go('Done','back','Back to race setup.'),
+  ]};
+  if (sc==='garage') { const list = KARTS.map((k,i)=>[k,i]).filter(([k])=>k.kind===V.type);
+    return {kicker:'Motor pool', heading:'Garage', rows:[
+    ch('Type','type',TYPES,'Cars race trucks. ATVs race dirt bikes.'),
+    {kind:'choice',label:'Chassis',key:'chassis',opts:list.map(([k])=>k.name),help:'Every chassis in a class handles a little differently.'},
+    ch('Finish','finish',FINISHES.map(f=>f[0]),'Paint is cosmetic. Everyone sees it online.'),
+    go('Done','back','Save and go back.'),
+  ]};}
+  if (sc==='multiplayer') return {kicker:'Race network', heading:'Multiplayer', rows:[
+    go('Host private race','lobby','Makes an invite you can paste to friends.'),
+    go('Paste invite & join','lobby','Join with an invite a friend sent you.'),
+    go('Racer name',null,'The name other players see.',{value:'Rivethead'}),
+    go('Host game','lobby','Host on your local network.'),
+    go('Join address',null,'Type an IP address or host name.',{value:'192.168.1.40_'}),
+    go('Tailscale',null,'Pick a device on your tailnet to join its race.',{value:'3 online'}),
+    go('Back','back','Back to the main menu.'),
+  ]};
+  if (sc==='lobby') return {kicker:'Multiplayer', heading:'Race lobby', rows:[
+    go('Start race',null,'Everyone on the grid races now.'),
+    ch('Mode','mode',['Race','Elimination'].concat(),'Pick the race mode for everyone.'),
+    ch('Event','event',['Single race','Circuit'],'One race, or every track for points.'),
+    go('Track','tracks','Pick the track.',{value: V.event?'All 5 in order':TRACKS[V.track].name}),
+    go('Copy invite',null,'Copies the invite again so you can share it.'),
+    go('Leave','back','Close the lobby.'),
+  ]};
+  if (sc==='pause') return {kicker:'Race menu', heading:'Paused', rows:[
+    go('Resume','back','Back to the race.'), go('Restart',null,'Start this race over from the grid.'),
+    go('Settings','graphics','Change settings without leaving the race.'),
+    go('Main menu','title','Leave the race.'), go('Quit',null,'Exit to desktop.'),
+  ]};
+  if (sc==='results') return {kicker:'Circuit round 2 of 5', heading:'Results', results:1, rows:[
+    go('Next race',null,'Round 3: Skyway Zero.'), go('Quit circuit','title','Leave the circuit. Points are lost.'),
+  ]};
+  return {kicker:'Settings', heading:TAB_NAME[sc], settings:1, dense: settingsRows(sc).length>7, rows:settingsRows(sc)};
+}
+
+/* ---------- value formatting ---------- */
+function rowValue(r){
+  if (r.kind==='choice'){ const o=r.opts; const i=Math.min(V[r.key]??0,o.length-1); return o[i]; }
+  if (r.kind==='slider') return r.fmt(V[r.key]);
+  if (r.kind==='bind') return V.device? r.pad : r.kb;
+  return r.value ?? '';
+}
+function rowHTML(r,i,sel){
+  const v = rowValue(r);
+  const isChoice = r.kind==='choice'||r.kind==='slider';
+  const bar = r.kind==='slider' ? `<span class="bar"><i style="width:${(V[r.key]-r.min)/(r.max-r.min)*100}%"></i></span>` : '';
+  const nw = r.isNew ? '<span class="new">NEW</span>' : '';
+  const val = v ? `<span class="val">${isChoice&&sel?'‹ ':''}${esc(v)}${isChoice&&sel?' ›':''}</span>` : '';
+  return `<div class="row${sel?' sel':''}" data-i="${i}"><span class="num">${String(i+1).padStart(2,'0')}</span><span class="lab">${esc(r.label)}</span>${nw}<span class="lead"></span>${bar}${val}<span class="arr">${r.kind==='go'?'›':''}</span>${S.dir==='blueprint'?'<span class="trace"></span>':''}</div>`;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- features (SVG) ---------- */
+function vehicleSVG(kind, color, opts={}){
+  const W=420,H=230; const g=[];
+  const wheel=(x,y,r)=>`<circle class="f-fill" cx="${x}" cy="${y}" r="${r}"/><circle class="f-s" cx="${x}" cy="${y}" r="${r*.5}"/><circle class="f-accfill" cx="${x}" cy="${y}" r="3"/>`;
+  let body='', wheels='', dims={};
+  if (kind===0){ // buggy car
+    body=`<path class="tint-sw" fill="${color}" d="M70,150 L96,118 L170,108 L208,78 L282,76 L322,110 L362,118 L370,150 Z"/>
+      <path class="f-s" d="M190,108 L214,56 L290,54 L312,110 M214,56 L250,108 M290,54 L262,108"/>
+      <path class="f-s" d="M362,126 L384,128 M64,140 L44,136"/>`;
+    wheels=wheel(118,160,36)+wheel(320,160,36); dims={a:118,b:320,top:54,ground:196};
+  } else if (kind===1){ // truck
+    body=`<path class="tint-sw" fill="${color}" d="M54,146 L58,96 L180,94 L196,52 L292,50 L318,94 L374,98 L380,146 Z"/>
+      <path class="f-s" d="M204,58 L212,92 L300,92 L290,58 Z M70,96 L70,140 M100,96 L100,140 M130,96 L130,140"/>`;
+    wheels=wheel(110,160,42)+wheel(320,160,42); dims={a:110,b:320,top:50,ground:202};
+  } else if (kind===2){ // atv
+    body=`<path class="tint-sw" fill="${color}" d="M86,138 L110,112 L170,108 L190,92 L268,90 L292,110 L344,116 L352,138 Z"/>
+      <path class="f-s" d="M196,90 L210,70 L262,70 L272,90 M300,110 L318,66 L300,60 M318,66 L338,64"/>`;
+    wheels=wheel(124,160,34)+wheel(316,160,34); dims={a:124,b:316,top:60,ground:194};
+  } else { // dirt bike
+    body=`<path class="f-s" d="M110,160 L170,110 L250,108 L300,160 M170,110 L196,150 L250,108 M298,74 L326,160 M286,70 L312,70"/>
+      <path class="tint-sw" fill="${color}" d="M164,104 L188,86 L262,84 L296,74 L300,96 L250,110 L176,114 Z"/>
+      <path class="tint-sw" fill="${color}" d="M90,120 L150,108 L160,118 L104,132 Z"/>`;
+    wheels=wheel(110,160,40)+wheel(326,160,40); dims={a:110,b:326,top:70,ground:200};
+  }
+  g.push(`<line class="f-dim" x1="20" y1="${dims.ground}" x2="${W-20}" y2="${dims.ground}"/>`);
+  g.push(body, wheels);
+  if (opts.dims){
+    const y=dims.ground+18;
+    g.push(`<path class="f-acc" d="M${dims.a},${y} L${dims.b},${y} M${dims.a},${y-6} L${dims.a},${y+6} M${dims.b},${y-6} L${dims.b},${y+6}"/>
+      <text class="f-ta" x="${(dims.a+dims.b)/2}" y="${y+18}" text-anchor="middle">WHEELBASE</text>
+      <path class="f-s" d="M${W-18},${dims.top} L${W-18},${dims.ground} M${W-24},${dims.top} L${W-12},${dims.top}"/>
+      <text class="f-t" transform="translate(${W-2},${(dims.top+dims.ground)/2}) rotate(90)" text-anchor="middle">HEIGHT</text>`);
+  }
+  return `<svg viewBox="0 0 ${W} ${H+24}" width="${opts.w||W}" height="${(opts.w||W)*(H+24)/W}">${g.join('')}</svg>`;
+}
+
+function trackFeature(i, w=520){
+  const t=TRACKS[i]; const dir=S.dir;
+  const map=`<svg viewBox="0 0 200 124" width="210" height="130"><path class="f-dim" d="${t.path}" transform="translate(3,3)"/><path class="f-acc" d="${t.path}" stroke-linejoin="round"/><circle class="f-accfill" cx="${t.path.match(/M([\d.]+),([\d.]+)/)[1]}" cy="${t.path.match(/M([\d.]+),([\d.]+)/)[2]}" r="5"/></svg>`;
+  const music = `${t.song}${t.key?', '+t.key:''}, ${t.bpm} BPM`;
+  if (dir==='blueprint') return frame('Route plan / '+t.name.toUpperCase(),`
+    <div style="position:absolute;left:20px;top:24px;width:310px;height:176px;background:url(${t.img}) center/cover;filter:grayscale(1) contrast(1.2) brightness(.8);mix-blend-mode:luminosity;border:1px solid var(--dim)"></div>
+    <div style="position:absolute;left:340px;top:44px">${map}</div>
+    <svg style="position:absolute;left:0;top:0" width="560" height="440"><text class="f-tb" x="20" y="250" font-size="42">${esc(t.name.toUpperCase())}</text>
+    <text class="f-t" x="20" y="282">ROUND ${i+1} OF ${TRACKS.length}</text><text class="f-ta" x="20" y="306">SCORE: ${esc(music.toUpperCase())}</text>
+    <path class="f-s" d="M340,186 L520,186 M340,180 L340,192 M520,180 L520,192"/><text class="f-t" x="430" y="206" text-anchor="middle">PLAN VIEW, NOT TO SCALE</text></svg>`);
+  if (dir==='print') return frame('Now showing',`
+    <div style="position:absolute;left:24px;top:46px;width:452px;height:220px;background:url(${t.img}) center/cover;filter:grayscale(1) contrast(2.2) brightness(1.1);mix-blend-mode:multiply"></div>
+    <div style="position:absolute;left:24px;top:46px;width:452px;height:220px;background-image:radial-gradient(circle,rgba(199,64,26,.9) 1.6px,transparent 2px);background-size:8px 8px;mix-blend-mode:multiply;opacity:.55"></div>
+    <div style="position:absolute;left:300px;top:250px;background:var(--bone);padding:6px">${map}</div>
+    <svg style="position:absolute;left:0;top:0" width="500" height="470"><text class="f-tb" x="24" y="318" font-size="40">${esc(t.name.split(' ')[0])}</text><text class="f-tb" x="24" y="360" font-size="40">${esc(t.name.split(' ').slice(1).join(' '))}</text>
+    <text class="f-ta" x="24" y="398">ROUND ${i+1} / ${TRACKS.length}</text><text class="f-t" x="24" y="420">${esc(music)}</text></svg>`);
+  return frame('The route',`
+    <div style="position:absolute;left:0;top:26px;width:360px;height:204px;background:url(${t.img}) center/cover;filter:sepia(.3) saturate(.9) brightness(.85);box-shadow:0 0 0 1px rgba(255,190,130,.25),0 20px 50px rgba(0,0,0,.6)"></div>
+    <div style="position:absolute;left:384px;top:56px">${map}</div>
+    <svg style="position:absolute;left:0;top:0" width="600" height="380"><text class="f-tb" x="0" y="290" font-size="46">${esc(t.name)}</text>
+    <text class="f-ta" x="2" y="320">ROUND ${i+1} OF ${TRACKS.length}</text><text class="f-t" x="2" y="344">${esc(music.toUpperCase())}</text></svg>`);
+}
+const frame = (label, inner) => `<div class="frame" data-label="${esc(label)}"></div><div class="inner" style="position:absolute;inset:0">${inner}</div>`;
+
+function garageFeature(){
+  const list = KARTS.map((k,i)=>[k,i]).filter(([k])=>k.kind===V.type);
+  const k = list[Math.min(V.chassis,list.length-1)][0]; const [fname,fcol]=FINISHES[V.finish];
+  const sw = FINISHES.map(([n,c],i)=>`<rect x="${20+i*34}" y="0" width="26" height="26" fill="${c}" class="${i===V.finish?'f-acc':'f-dim'}" style="fill:${c};${i===V.finish?'':'stroke-dasharray:none'}"/>`).join('');
+  const bp=S.dir==='blueprint';
+  return frame(bp?`Elevation / ${k.name.toUpperCase()}`:(S.dir==='print'?'Entry no. '+(KARTS.indexOf(k)+1):'Your machine'),`
+    <div style="position:absolute;left:${bp?70:40}px;top:${F()?20:40}px">${vehicleSVG(k.kind,fcol,{dims:bp,w:bp?420:400})}</div>
+    <svg style="position:absolute;left:0;top:0;overflow:visible" width="560" height="440">
+      <text class="f-tb" x="24" y="${F()?330:356}" font-size="40">${esc(k.name)}</text>
+      <text class="f-t" x="24" y="${F()?356:382}">${esc(TYPES[k.kind].toUpperCase())} CLASS  /  WHEEL RATIO ${k.wheel.toFixed(2)}  /  ${esc(fname.toUpperCase())} FINISH</text>
+      <g transform="translate(4,${F()?372:400})">${sw}</g></svg>`);
+}
+
+function networkFeature(){
+  const peers=[['workshop-pc',90,70],['steam-deck',430,90],['garage-laptop',400,300]];
+  return frame(S.dir==='print'?'Who\'s online':'Tailnet',`<svg width="540" height="400" style="position:absolute;left:10px;top:20px">
+    ${peers.map(([n,x,y])=>`<path class="f-dim" d="M260,200 L${x},${y}"/>`).join('')}
+    <circle class="f-fill" cx="260" cy="200" r="44"/><text class="f-tb" x="260" y="212" text-anchor="middle" font-size="30">You</text>
+    ${peers.map(([n,x,y])=>`<circle class="f-s" cx="${x}" cy="${y}" r="16"/><circle class="f-accfill" cx="${x}" cy="${y}" r="5"/><text class="f-t" x="${x}" y="${y+38}" text-anchor="middle">${n}</text>`).join('')}
+    <text class="f-ta" x="0" y="380">3 DEVICES ONLINE. THE LIST REFRESHES EVERY FEW SECONDS.</text></svg>`);
+}
+
+function gridFeature(){
+  const names=['Rivethead','Kestrel','Dustdevil','Ottoline','Open','Open','Open','Open'];
+  const slots=names.map((n,i)=>{const x=i%2?290:40, y=30+Math.floor(i/2)*82+(i%2?40:0);
+    const open=n==='Open'; return `<g transform="translate(${x},${y})"><path class="${open?'f-dim':'f-s'}" d="M0,0 L0,54 L210,54 M0,0 L24,0"/><text class="f-ta" x="12" y="22">P${i+1}</text><text class="${open?'f-t':'f-tb'}" x="12" y="${open?44:46}" font-size="${open?13:24}" style="${open?'opacity:.6':''}">${open?'OPEN SLOT':esc(n)}</text></g>`}).join('');
+  return frame(S.dir==='print'?'The grid':'Starting grid',`<svg width="560" height="420" style="position:absolute;left:0;top:10px">${slots}<text class="f-t" x="40" y="400">4 OF 8 DRIVERS. INVITE COPIED TO YOUR CLIPBOARD.</text></svg>`);
+}
+
+function pauseFeature(){
+  return frame('Race status',`<svg width="560" height="400" style="position:absolute;left:0;top:0">
+    <text class="f-ta" x="30" y="60">POSITION</text><text class="f-tb" x="30" y="150" font-size="104">3rd</text><text class="f-t" x="200" y="150">OF 8</text>
+    <text class="f-ta" x="30" y="210">LAP</text><text class="f-tb" x="30" y="256" font-size="42">2 / 3</text>
+    <text class="f-ta" x="260" y="210">BEST LAP</text><text class="f-tb" x="260" y="256" font-size="42">1:02.418</text>
+    <path class="f-acc" d="${TRACKS[2].path}" transform="translate(320,30) scale(1.05)"/>
+    <text class="f-t" x="30" y="310">SKYWAY ZERO   CIRCUIT ROUND 3 OF 5</text></svg>`);
+}
+
+function graphicsFeature(){
+  const scale=V.scale/100, bloom=V.bloom, sh=V.shadows;
+  const blur=((1-scale)*3).toFixed(2), glow=(1+bloom*.06).toFixed(2), con=(1+sh*.06).toFixed(2);
+  const pres=['Low','Medium','High','Custom'][V.preset];
+  const specs=[['Render scale',V.scale+'%'],['Shadow map',['1024²','2048²','4096²'][sh]],['Bloom',['Off','4 mips','5 mips','6 mips'][bloom]],['Anisotropy',['Off','2×','4×','8×','16×'][V.aniso]],['Textures',V.tex?'Full':'Half'],['Frame cap',['30','60','120','144','None'][V.cap]]];
+  return frame('Preview / '+pres.toUpperCase(),`
+    <div style="position:absolute;left:${F()?0:24}px;top:30px;width:330px;height:186px;overflow:hidden;border:1px solid currentColor">
+      <div style="position:absolute;inset:-8px;background:url(${TRACKS[3].img}) center/cover;filter:blur(${blur}px) brightness(${glow}) contrast(${con}) ${S.dir==='blueprint'?'grayscale(1)':''}"></div></div>
+    <svg style="position:absolute;left:0;top:0" width="560" height="440">${specs.map(([k,v],i)=>`<text class="f-t" x="${F()?350:376}" y="${44+i*38}" font-size="11">${k.toUpperCase()}</text><text class="f-tb" x="${F()?350:376}" y="${64+i*38}" font-size="17">${v}</text>`).join('')}
+    <text class="f-ta" x="${F()?0:24}" y="250">THE PREVIEW REACTS TO YOUR CHANGES</text>
+    <text class="f-t" x="${F()?0:24}" y="276">LOW: 75% SCALE, 1024² SHADOWS. RUNS ON INTEL UHD 620.</text></svg>`);
+}
+
+function audioFeature(){
+  const ch=[['MST','master'],['MUS','music'],['FX','sfx'],['ENG','engine'],['UI','ui']];
+  const songs=[['Menu','Laid-back groove','B minor',112],...TRACKS.map(t=>[t.name,t.song,t.key,t.bpm])];
+  const [sn,sg,sk,sb]=songs[V.theme];
+  const faders=ch.map(([l,k],i)=>{const x=40+i*66,h=180,y=40+h*(1-V[k]/100);return `<line class="f-dim" x1="${x}" y1="40" x2="${x}" y2="${40+h}"/><line class="f-acc" x1="${x}" y1="${y}" x2="${x}" y2="${40+h}"/><rect class="f-fill" x="${x-14}" y="${y-7}" width="28" height="14"/><text class="f-t" x="${x}" y="${40+h+24}" text-anchor="middle">${l}</text><text class="f-ta" x="${x}" y="28" text-anchor="middle">${V[k]}</text>`}).join('');
+  const bars=Array.from({length:14},(_,i)=>`<rect class="f-accfill" x="${i*11}" y="0" width="7" height="44" style="animation-delay:${(i*137%600)/1000}s;animation-duration:${.5+(i*53%50)/100}s"/>`).join('');
+  return frame('Mixer',`<svg width="560" height="420" style="position:absolute;left:0;top:10px">${faders}
+    <text class="f-ta" x="370" y="60">NOW PLAYING</text><text class="f-tb" x="370" y="96" font-size="28">${esc(sn)}</text>
+    <text class="f-t" x="370" y="122">${esc(sg.toUpperCase())}</text><text class="f-t" x="370" y="142">${esc((sk?sk+', ':'')+sb+' BPM')}</text>
+    <g class="eq" transform="translate(370,170)">${V.soundtrack?bars:''}</g>
+    <text class="f-t" x="370" y="250" style="opacity:.7">${V.soundtrack?'':'SOUNDTRACK OFF'}</text></svg>`);
+}
+
+function controlsFeature(row){
+  const hot = new Set(row && row.kind==='bind' ? (V.device? row.padKeys : row.kbKeys) : []);
+  if (!V.device){
+    const rows=[[['Esc',1],['',.5],['F3',1]],[['Q',1],['W',1],['E',1],['R',1],['',4.3],['J',1]],[['A',1],['S',1],['D',1],['',5.3]],[['Shift',2.2],['',6.6]],[['Ctrl',1.5],['',.6],['Space',5]]];
+    let out='',y=20;
+    rows.forEach((r,ri)=>{let x=20+(ri===2?12:ri===1?6:0);r.forEach(([k,w])=>{const ww=w*40-6;if(k){const on=hot.has(k);out+=`<rect class="${on?'f-acc':'f-s'}" x="${x}" y="${y}" width="${ww}" height="34" rx="3"/>${on?`<rect class="f-accfill" x="${x+3}" y="${y+3}" width="${ww-6}" height="28" rx="2" opacity=".25"/>`:''}<text class="${on?'f-ta':'f-t'}" x="${x+ww/2}" y="${y+22}" text-anchor="middle">${k.toUpperCase()}</text>`;}x+=w*40;});y+=44;});
+    const ax=420,ay=152;[['↑',ax,ay],['←',ax-40,ay+44],['↓',ax,ay+44],['→',ax+40,ay+44]].forEach(([k,x,yy])=>{const on=hot.has(k);out+=`<rect class="${on?'f-acc':'f-s'}" x="${x}" y="${yy}" width="34" height="34" rx="3"/><text class="${on?'f-ta':'f-t'}" x="${x+17}" y="${yy+22}" text-anchor="middle">${k}</text>`;});
+    return frame('Keyboard',`<svg width="560" height="420" style="position:absolute;left:0;top:14px">${out}<text class="f-t" x="20" y="300">${row&&row.kind==='bind'?esc(row.label.toUpperCase())+':  '+esc(row.kb):'SELECT A BINDING TO SEE ITS KEYS'}</text><text class="f-ta" x="20" y="324">${row&&row.kind==='bind'?'PRESS ENTER, THEN A NEW KEY TO REBIND':''}</text></svg>`);
+  }
+  const b=(id,x,y,r,l)=>{const on=hot.has(id);return `<circle class="${on?'f-acc':'f-s'}" cx="${x}" cy="${y}" r="${r}"/>${on?`<circle class="f-accfill" cx="${x}" cy="${y}" r="${r-4}" opacity=".3"/>`:''}<text class="${on?'f-ta':'f-t'}" x="${x}" y="${y+5}" text-anchor="middle">${l}</text>`};
+  const sh=(id,x,y,w,l)=>{const on=hot.has(id);return `<rect class="${on?'f-acc':'f-s'}" x="${x}" y="${y}" width="${w}" height="22" rx="8"/><text class="${on?'f-ta':'f-t'}" x="${x+w/2}" y="${y+16}" text-anchor="middle">${l}</text>`};
+  const pad=`<path class="f-fill" d="M150,90 C200,78 340,78 390,90 C440,100 470,190 482,250 C492,300 452,320 426,292 L386,248 C360,236 180,236 154,248 L114,292 C88,320 48,300 58,250 C70,190 100,100 150,90Z"/>
+    ${sh('LT',130,30,70,'LT')}${sh('RT',340,30,70,'RT')}${sh('LB',140,60,60,'LB')}${sh('RB',340,60,60,'RB')}
+    ${b('LS',170,150,26,'LS')}${b('RS',330,210,22,'RS')}
+    <path class="f-s" d="M200,198 h16 v-16 h16 v16 h16 v16 h-16 v16 h-16 v-16 h-16z"/>
+    ${b('Y',400,120,15,'Y')}${b('X',372,148,15,'X')}${b('B',428,148,15,'B')}${b('A',400,176,15,'A')}
+    ${b('VIEW',240,140,9,'')}${b('MENU',300,140,9,'')}<text class="f-t" x="240" y="170" text-anchor="middle" font-size="10">VIEW</text><text class="f-t" x="300" y="170" text-anchor="middle" font-size="10">MENU</text>`;
+  return frame('Gamepad',`<svg width="560" height="420" style="position:absolute;left:0;top:10px">${pad}<text class="f-t" x="40" y="370">${row&&row.kind==='bind'?esc(row.label.toUpperCase())+':  '+esc(row.pad):'SELECT A BINDING TO SEE ITS BUTTONS'}</text></svg>`);
+}
+
+function cameraFeature(){
+  const k=34, gx=430, gy=200; const cx=gx-V.dist*k, cy=gy-V.height*k-10;
+  const tx=gx+40, ty=gy-24; const ang=Math.atan2(ty-cy,tx-cx); const half=V.fov/2*Math.PI/180*.55; const L=330;
+  const p=(a)=>`${cx+Math.cos(a)*L},${cy+Math.sin(a)*L}`;
+  const sh=V.shake/100*6;
+  const hs=V.hud/100; const u=V.units?'MPH':'KM/H', sp=V.units?'85':'136';
+  const hud=`<g transform="translate(24,246)"><rect class="f-s" x="0" y="0" width="224" height="126"/>
+    ${V.minimap?`<path class="f-acc" transform="translate(6,${126-6-34*hs}) scale(${.2*hs})" d="${TRACKS[0].path}"/>`:''}
+    ${V.speedo?`<text class="f-tb" x="${214-36*hs}" y="118" text-anchor="end" font-size="${22*hs}">${sp}</text><text class="f-t" x="218" y="118" text-anchor="end" font-size="${9*hs}">${u}</text>`:''}
+    ${V.names?`<text class="f-ta" x="112" y="52" text-anchor="middle" font-size="${10*hs}">VOLT</text><path class="f-s" d="M104,58 l8,6 l8,-6"/>`:''}
+    <text class="f-tb" x="8" y="${22*hs+4}" font-size="${20*hs}">3RD</text></g>`;
+  return frame('Camera rig, side view',`<svg width="560" height="440" style="position:absolute;left:0;top:0;overflow:hidden">
+    <line class="f-dim" x1="0" y1="${gy}" x2="560" y2="${gy}"/>
+    <path class="f-dim" d="M${cx},${cy} L${p(ang-half)} M${cx},${cy} L${p(ang+half)}" style="stroke-dasharray:none"/>
+    <path class="f-acc" d="M${cx},${cy} L${tx},${ty}" style="stroke-dasharray:6 6"/>
+    <g transform="translate(${gx-30},${gy-62}) scale(.32)">${vehicleSVG(0,'currentColor').replace(/<svg[^>]*>|<\/svg>/g,'')}</g>
+    <g transform="translate(${cx},${cy})"><rect class="f-fill" x="-16" y="-11" width="26" height="22"/><path class="f-fill" d="M10,-7 L22,-13 L22,13 L10,7Z"/>${sh>0?`<path class="f-s" d="M-24,${-16-sh} q-6,${8+sh} 0,${16+sh*2} M-30,${-20-sh} q-8,${12+sh} 0,${24+sh*2}" opacity=".6"/>`:''}</g>
+    <path class="f-s" d="M${cx},${gy+16} L${gx},${gy+16} M${cx},${gy+10} L${cx},${gy+22} M${gx},${gy+10} L${gx},${gy+22}"/>
+    <text class="f-t" x="${(cx+gx)/2}" y="${gy+36}" text-anchor="middle">${V.dist.toFixed(1)} M</text>
+    <path class="f-s" d="M${cx-26},${cy} L${cx-26},${gy}"/><text class="f-t" x="${cx-34}" y="${(cy+gy)/2}" text-anchor="end">${V.height.toFixed(1)} M</text>
+    <text class="f-ta" x="${cx+30}" y="${cy-18}">FOV ${V.fov}°</text>
+    <text class="f-ta" x="24" y="238">HUD PREVIEW ${V.hud}%</text>${hud}</svg>`);
+}
+
+function titleFeature(sel){
+  if (F() && S.dir!=='crucible') return '';
+  if (sel===0) return trackFeature(V.track);
+  if (sel===1) return networkFeature();
+  if (sel===2) return garageFeature();
+  if (sel===3) return graphicsFeature();
+  return frame('Exit', `<svg width="540" height="400" style="position:absolute;left:10px;top:20px"><text class="f-tb" x="20" y="200" font-size="56">See you on the grid.</text></svg>`);
+}
+
+function featureFor(def){
+  const sc=S.screen, r=def.rows[S.sel];
+  if (sc==='title') return titleFeature(S.sel);
+  if (sc==='race-setup') return trackFeature(V.event? 0 : V.track);
+  if (sc==='tracks') return trackFeature(r && r.track!=null ? r.track : V.track);
+  if (sc==='garage') return garageFeature();
+  if (sc==='multiplayer') return networkFeature();
+  if (sc==='lobby') return gridFeature();
+  if (sc==='pause') return pauseFeature();
+  if (sc==='graphics') return graphicsFeature();
+  if (sc==='audio') return audioFeature();
+  if (sc==='controls') return controlsFeature(r);
+  if (sc==='camera') return cameraFeature();
+  if (sc==='gameplay') return trackFeature(V.track);
+  return '';
+}
+
+function resultsTable(){
+  const times=['4:12.806','4:13.390','4:15.021','4:16.744','4:18.200','4:19.915','4:22.457','4:25.630'];
+  const order=['Volt','You','Rust','Hex','Brass','Moss','Ember','Ash'], pts=[10,8,6,5,4,3,2,1];
+  return `<div class="tbl"><div class="tr th"><span>POS</span><span>DRIVER</span><span>TIME</span><span>PTS</span></div>${order.map((n,i)=>`<div class="tr${n==='You'?' me':''}"><span>${i+1}</span><span>${n.toUpperCase()}</span><span>${times[i]}</span><span>${pts[i]}</span></div>`).join('')}</div>`;
+}
+
+/* ---------- direction-specific decoration ---------- */
+function deco(def){
+  const sheetNo = SCREEN_LIST.findIndex(([k])=>k===S.screen)+1 || 12;
+  if (S.dir==='blueprint') return `<div class="layer tint"></div><div class="layer grid"></div><div class="layer sheet"></div>
+    <div class="layer ticks">${'ABCDEFGH'.split('').map((c,i)=>`<span style="left:${70+i*150}px;top:-16px">${c}</span>`).join('')}${[1,2,3,4,5].map((n,i)=>`<span style="left:-14px;top:${60+i*130}px">${n}</span>`).join('')}</div>
+    <div class="deco tblock"><div class="wide">SCRAPBURN / ${esc((S.screen==='title'?'Main menu':def.heading).toUpperCase())}</div><div>DWG NO.<b>SB-${String(sheetNo).padStart(3,'0')}</b></div><div>SHEET<b>${sheetNo} OF 12</b></div><div>REV<b>0.5.0</b></div></div>`;
+  if (S.dir==='print') return `<div class="layer halftone"></div><div class="layer grain"></div><div class="deco slab"></div>
+    <div class="deco stamp">${S.screen==='results'?'Round<br>2 of 5':S.screen==='pause'?'Lap<br>2 / 3':'Scrap<br>burn<br>Rally'}</div>`;
+  const n=Math.min(def.rows.length,12), rh=def.dense?39:50, ph=n*rh+64;
+  const ps = S.screen==='title' ? `top:${720-96-ph}px;bottom:96px` : `top:96px;bottom:auto;height:${ph}px`;
+  if (S.dir==='crucible') return `<div class="layer tint"></div><div class="deco glow"></div><div class="deco edge"></div><div class="deco panel"></div>`;
+  return `<div class="layer tint"></div><div class="deco glow"></div><div class="deco panel" style="${ps}"></div>`;
+}
+
+function footer(def){
+  const k = S.dir==='print' ? ['A','B','LB RB'] : ['Enter','Esc','Q E'];
+  const parts=[`<span><b>${k[0]}</b>Select</span>`,`<span><b>${k[1]}</b>Back</span>`];
+  if (def.settings) parts.push(`<span><b>${k[2]}</b>Tab</span>`);
+  return `<div class="foot">${parts.join('')}</div>`;
+}
+
+/* ---------- render ---------- */
+const stage = $('#stage');
+function bgFor(){
+  const sc=S.screen;
+  if (['multiplayer','lobby'].includes(sc)) return MEDIA.online;
+  if (sc==='results') return MEDIA.elim;
+  if (sc==='tracks'||sc==='race-setup') return TRACKS[V.track].img;
+  if (isSet(sc)) return MEDIA.glass;
+  if (sc==='garage') return MEDIA.castle;
+  if (sc==='pause') return MEDIA.sky;
+  return MEDIA.dust;
+}
+function render(){
+  const def = screenDef(S);
+  S.sel = Math.max(0, Math.min(S.sel, def.rows.length-1));
+  const r = def.rows[S.sel];
+  const cls = ['stage', F()?'d-forge v-'+S.dir:'d-'+S.dir, S.screen==='title'?'title':'sub', def.dense?'dense':'', def.settings?'settings':'', $('#shownew').checked?'show-new':''].join(' ');
+  stage.className = cls;
+  const tabs = def.settings ? `<div class="tabs">${SET_TABS.map(t=>`<span class="tab${t===S.screen?' on':''}" data-tab="${t}">${TAB_NAME[t]}</span>`).join('')}</div>` : '';
+  const kick = S.dir==='print' ? `<span class="no">№ ${String((SCREEN_LIST.findIndex(([k])=>k===S.screen)+1)||12).padStart(2,'0')}</span>${esc(def.kicker)}` : esc(def.kicker);
+  const help = def.settings && !F() ? '' : esc(r.help||'');
+  const head = `<div class="hdr"><p class="kicker">${kick}</p><h2 class="heading" data-text="${esc(def.heading)}">${esc(def.heading)}</h2>${def.settings&&!F()?'':`<p class="help">${help}</p>`}</div>`;
+  const results = def.results ? resultsTable() : '';
+  const feat = def.results ? '' : `<div class="feat">${featureFor(def)}</div>`;
+  const maxV = def.dense ? ({blueprint:12,print:8,forge:12,foundry:12,crucible:10,plate:12})[S.dir] : 99;
+  const first = Math.max(0, Math.min(S.sel+1-maxV, def.rows.length-maxV));
+  const below = Math.max(0, def.rows.length-first-maxV);
+  const more = (first||below) ? `<div class="morehint">${first?'▲ '+first+' more':''}${first&&below?'   ':''}${below?'▼ '+below+' more':''}</div>` : '';
+  let rowsTop = '';
+  if (def.results) rowsTop = F() ? '' : (S.dir==='print' ? ' style="top:584px"' : ' style="top:560px"');
+  stage.innerHTML = `<div class="bg" style="background-image:url(${bgFor()})"></div>${deco(def)}${F()?'<canvas id="embers" width="1280" height="720"></canvas>':''}
+    ${head}${tabs}${results}${feat}<div class="rows"${rowsTop}>${def.rows.slice(first,first+maxV).map((row,j)=>rowHTML(row,first+j,first+j===S.sel)).join('')}</div>
+    ${def.settings&&!F()?`<p class="sethelp" style="position:absolute;margin:0">${esc(r.help||'')}</p>`:''}${more}
+    ${footer(def)}`;
+  if (F()) startEmbers(); else stopEmbers();
+  syncChrome();
+  try { history.replaceState(null,'','#'+S.dir+'-'+S.screen); } catch(e) {}
+}
+
+/* ---------- embers (forge) ---------- */
+let emberRAF=null, embers=[];
+const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+function startEmbers(){
+  const c=$('#embers'); if(!c) return; const x=c.getContext('2d');
+  if (!embers.length) embers=Array.from({length:70},()=>spawn(true));
+  cancelAnimationFrame(emberRAF);
+  const tick=()=>{ x.clearRect(0,0,1280,720); x.globalCompositeOperation='lighter';
+    for (const e of embers){ if(!reduce.matches){e.y-=e.v; e.x+=Math.sin((e.y+e.p)/40)*.5; e.life-=.002;} if(e.y<-10||e.life<=0) Object.assign(e,spawn(false));
+      const a=Math.min(1,e.life)*.9; x.fillStyle=`rgba(255,${140+e.h*80|0},${40+e.h*40|0},${a})`; x.shadowColor='rgba(255,110,30,.9)'; x.shadowBlur=8; x.beginPath(); x.arc(e.x,e.y,e.r,0,7); x.fill(); }
+    emberRAF = reduce.matches ? null : requestAnimationFrame(tick); };
+  tick();
+}
+function spawn(any){ return {x:Math.random()*1280, y:any?Math.random()*720:730, v:.3+Math.random()*1.1, r:.6+Math.random()*1.8, p:Math.random()*400, h:Math.random(), life:.6+Math.random()*.6}; }
+function stopEmbers(){ cancelAnimationFrame(emberRAF); emberRAF=null; }
+
+/* ---------- input ---------- */
+function change(dir){
+  const def=screenDef(S), r=def.rows[S.sel];
+  if (r.kind==='choice'){ const n=r.opts.length; V[r.key]=((V[r.key]??0)+dir+n)%n;
+    if (r.key==='type') V.chassis=0;
+    if (r.key==='preset') applyPreset(); else if (['shadows','bloom','tex','aniso','scale'].includes(r.key)) V.preset=3; }
+  else if (r.kind==='slider'){ V[r.key]=Math.round(Math.max(r.min,Math.min(r.max,V[r.key]+dir*r.step))*10)/10; if (r.key==='scale') V.preset=3; }
+  else return;
+  render();
+}
+function applyPreset(){ const p=[[75,0,1,0,2],[100,1,2,1,3],[100,2,3,1,4]][V.preset]; if(!p) return; [V.scale,V.shadows,V.bloom,V.tex,V.aniso]=p; }
+function goTo(sc){ S.stack.push([S.screen,S.sel]); S.screen=sc; S.sel=0; render(); }
+function back(){
+  if (isSet(S.screen)) { const prev=S.stack.filter(([s])=>!isSet(s)).pop(); while(S.stack.length&&isSet(S.stack[S.stack.length-1][0])) S.stack.pop(); }
+  const p=S.stack.pop(); if (p){ [S.screen,S.sel]=p; } else if (S.screen!=='title'){ S.screen='title'; S.sel=0; } render();
+}
+function select(){
+  const def=screenDef(S), r=def.rows[S.sel];
+  if (r.kind==='choice'||r.kind==='slider') return change(1);
+  if (r.kind!=='go') return;
+  if (r.to==='back') return back();
+  if (r.to==='pick-track'){ V.track=r.track; return back(); }
+  if (r.to==='title'){ S.stack=[]; S.screen='title'; S.sel=0; return render(); }
+  if (r.to) return goTo(r.to);
+  flash();
+}
+function flash(){ const el=stage.querySelector('.row.sel'); if(!el) return; el.animate([{filter:'brightness(1.8)'},{filter:'none'}],{duration:260}); }
+function tab(d){ if(!isSet(S.screen)) return; const i=SET_TABS.indexOf(S.screen); S.screen=SET_TABS[(i+d+SET_TABS.length)%SET_TABS.length]; S.sel=0; render(); }
+
+document.addEventListener('keydown', e=>{
+  if (e.target.closest && e.target.closest('input')) return;
+  const def=screenDef(S); const n=def.rows.length; let used=true;
+  switch(e.key){
+    case 'ArrowUp': S.sel=(S.sel-1+n)%n; render(); break;
+    case 'ArrowDown': S.sel=(S.sel+1)%n; render(); break;
+    case 'ArrowLeft': change(-1); break;
+    case 'ArrowRight': change(1); break;
+    case 'Enter': case ' ': select(); break;
+    case 'Escape': case 'Backspace': back(); break;
+    case 'q': case 'Q': tab(-1); break;
+    case 'e': case 'E': tab(1); break;
+    case '1': setDir('foundry'); break; case '2': setDir('crucible'); break; case '3': setDir('plate'); break;
+    case '4': setDir('blueprint'); break; case '5': setDir('print'); break; case '6': setDir('forge'); break;
+    default: used=false;
+  }
+  if (used) e.preventDefault();
+});
+stage.addEventListener('mouseover', e=>{ const row=e.target.closest('.row'); if(!row) return; const i=+row.dataset.i; if(i!==S.sel){S.sel=i; render();} });
+stage.addEventListener('click', e=>{
+  const t=e.target.closest('[data-tab]'); if (t){ S.screen=t.dataset.tab; S.sel=0; return render(); }
+  const row=e.target.closest('.row'); if(!row) return; S.sel=+row.dataset.i;
+  const r=screenDef(S).rows[S.sel];
+  if (r.kind==='choice'||r.kind==='slider'){ const b=row.getBoundingClientRect(); change(e.clientX < b.left+b.width*.45 ? -1 : 1); }
+  else select();
+});
+
+/* ---------- chrome ---------- */
+const STENCIL_NOTE = ['M','Stencil display atlas (Big Shoulders Stencil)','second face in FontAtlas, rasterized larger or as SDF so 150px titles stay crisp. Shared by every Round 2 option.'];
+const DIRS = {
+  foundry:{name:'Foundry', pitch:'Forge as it was, with a stencil title poured in molten metal.',
+    about:'The closest to Forge. The warm, dark scene, embers, frosted glass menu, and molten underline all stay. The title switches to the stencil face, uppercase, filled with a molten gradient, so it reads like letters cut from a template and poured.',
+    sw:[['Char','#140d0a'],['Ash','#cdbfb2'],['Ember','#ff6a1a'],['Gold','#ffc35c'],['White heat','#fff1d6']],
+    fonts:[['Big Shoulders Stencil Display','titles, OFL'],['Saira Semi Condensed','rows and labels, OFL']],
+    build:[STENCIL_NOTE,['S','Molten gradient fill on glyphs','per-vertex color on the glyph quads: top gold, bottom ember.'],['S','Embers and molten underline','as in Forge: overlay circles and a scrolling gradient quad.'],['M','Frosted glass panel','sample the bloom mip chain under a masked rect.']]},
+  crucible:{name:'Crucible', pitch:'Today\'s left rail, rebuilt as glass with a molten edge.',
+    about:'This one evolves the layout the game already has. The menu lives in a tall frosted column on the left, cut on a diagonal, with a sliver of molten metal along the cut. The selected row fills with a pour of molten gradient and dark text. The right side shows a live preview of whatever is highlighted, as Blueprint does.',
+    sw:[['Char','#140d0a'],['Smoke glass','#2a1c16'],['Ember','#ff6a1a'],['Gold','#ffc35c'],['White heat','#fff1d6']],
+    fonts:[['Big Shoulders Stencil Display','titles, OFL'],['Chakra Petch','rows and labels, OFL']],
+    build:[STENCIL_NOTE,['S','Diagonal column and molten edge','two triangles each, the same shape draw_menu already uses for its rail.'],['S','Molten row fill','one gradient quad using per-vertex color.'],['M','Frosted glass column','bloom-chain blur masked to the column.'],['S','Live previews on the right','the same feature panels as Blueprint, drawn in warm tones.']]},
+  plate:{name:'Riveted Plate', pitch:'Blued steel plates, rivets, and metal heating where you point.',
+    about:'The scene cools to a blue-steel night so the heat stands out. Menus sit on riveted gunmetal plates instead of glass, and the title is stamped into its own plate, glowing as if cut through to molten metal behind. The selected row heats the plate under it in an orange bloom. It suits an engine called Rivet.',
+    sw:[['Gunmetal','#2a2f35'],['Steel edge','#4a525c'],['Cold ash','#9aa3ad'],['Ember','#ff6a1a'],['White heat','#fff1d6']],
+    fonts:[['Big Shoulders Stencil Display','titles, OFL'],['Saira Semi Condensed','rows and labels, OFL']],
+    build:[STENCIL_NOTE,['S','Rivets','overlay circles with a two-tone highlight.'],['M','Brushed steel plates','a small tiling texture next to the font atlas, or procedural streaks in overlay.wgsl.'],['S','Heat bloom under the selection','a triangle fan with per-vertex alpha makes a soft radial glow.'],['S','Cool grade on the scene','a tint uniform in post.wgsl while menus are open.']]},
+  blueprint:{name:'Blueprint', pitch:'Engineering drawings of a scrapyard racer.',
+    about:'Every screen is a drawing sheet. Rows read like a parts list with dotted leaders, the selection is traced in red pencil, and each screen gets a drawing number in the title block. The garage becomes an elevation drawing of your kart.',
+    sw:[['Prussian ink','#0b2438'],['Line','#9bd6ff'],['Paper','#eaf6ff'],['Red pencil','#ff9b54']],
+    fonts:[['Big Shoulders Stencil Display','headings, OFL'],['Chakra Petch','rows and labels, OFL']],
+    build:[['S','Line and dashed-line primitives','thin quads in overlay.rs; dotted leaders are short dashes.'],
+      ['S','Grid paper and sheet border','rects at low alpha, drawn once per frame.'],
+      ['S','Blueprint grade on the live scene','a desaturate-and-tint uniform in post.wgsl while a menu is open.'],
+      ['M','Second font atlas','generalize FontAtlas to hold two faces; raise RASTER_PX or move to SDF so 100px headings stay crisp.'],
+      ['M','Vector drawings (kart elevation, track plans, keyboard, camera rig)','polylines and circles from data; track plans can reuse the minimap spline.'],
+      ['L','Optional: live wireframe of the real kart model','edge-detect pass on the garage model instead of hand-drawn line art.']]},
+  print:{name:'Rally Screenprint', pitch:'Hand-pulled race posters in three inks.',
+    about:'A bone paper slab is torn and tilted over a rust-inked, halftoned view of the track. Rows are strips of soot ink. The selected strip slides out in rust with an off-register teal shadow, like a misaligned screen. Every screen is a numbered poster in the series.',
+    sw:[['Bone','#ece2cb'],['Soot','#1c1916'],['Rust','#c7401a'],['Teal','#1d6b73'],['Ochre','#e3a62a']],
+    fonts:[['Dela Gothic One','headings and rows, OFL'],['Familjen Grotesk','body and values, OFL']],
+    build:[['S','Torn edges','jittered triangle-fan polygons; overlay.rs already batches triangles.'],
+      ['S','Off-register shadow','draw each label twice with an offset in a second ink.'],
+      ['M','Rotated text and panels','add a 2D transform (angle, origin) to Overlay so a group of rows can tilt.'],
+      ['M','Halftone and paper grain','a procedural dot screen in overlay.wgsl, or a small tiling noise texture bound next to the font atlas.'],
+      ['M','Posterized backdrop','threshold-and-multiply the scene in post.wgsl with the rust ink.'],
+      ['M','Heavy display font at poster size','second atlas, rasterized larger or as SDF.']]},
+  forge:{name:'Forge', pitch:'Molten metal, frosted glass, drifting embers.',
+    about:'The scene is graded warm and dark, with embers rising from the bottom of the frame. Menus sit on a frosted glass panel at the right. The selected row is underlined in flowing molten metal and glows. The title is set in an italic display serif with a molten fill.',
+    sw:[['Char','#140d0a'],['Ash','#cdbfb2'],['Ember','#ff6a1a'],['Gold','#ffc35c'],['White heat','#fff1d6']],
+    fonts:[['Bodoni Moda Italic','headings, OFL'],['Saira Semi Condensed','rows and labels, OFL']],
+    build:[['S','Molten gradients','OverlayVertex already carries a color per vertex, so gradient quads are nearly free. Scroll the gradient by time.'],
+      ['S','Embers','a CPU particle list drawn as overlay circles with additive alpha.'],
+      ['M','Frosted glass panel','sample a mid level of the bloom mip chain under a masked rect. The blurred scene already exists.'],
+      ['M','Glow on text and underlines','draw into the bloom input before post, or fake it with soft wide quads.'],
+      ['M','Italic serif with gradient fill','second atlas; tint glyphs with a vertical gradient using per-vertex color.'],
+      ['M','Heat shimmer (optional)','UV distortion in post.wgsl, masked to the area behind the selected row.']]},
+};
+function setDir(d){ S.dir=d; try{localStorage.setItem('sb-dir2',d)}catch(e){} render(); }
+function syncChrome(){
+  const btn=([k,d],i)=>`<button class="dirbtn" aria-pressed="${k===S.dir}" data-dir="${k}"><b>${i+1}. ${d.name}</b><span>${d.pitch}</span></button>`;
+  const order=['foundry','crucible','plate','blueprint','print','forge'].map(k=>[k,DIRS[k]]);
+  $('#dirs').innerHTML = `<p class="grp">Round 2: Forge with the stencil title</p>${order.slice(0,3).map((e,i)=>btn(e,i)).join('')}<p class="grp">Round 1</p>${order.slice(3).map((e,i)=>btn(e,i+3)).join('')}`;
+  $('#screens').innerHTML = SCREEN_LIST.map(([k,l],i)=>`<button class="chip${i===8?' group':''}" aria-pressed="${k===S.screen}" data-screen="${k}">${l}</button>`).join('');
+  const d=DIRS[S.dir];
+  $('#about').innerHTML = `<h2>${d.name}</h2><p>${d.about}</p><div class="swatches">${d.sw.map(([n,c])=>`<div class="sw"><i style="background:${c}"></i>${n}</div>`).join('')}</div>${d.fonts.map(([f,r])=>`<p class="fontline"><b>${f}</b>: ${r}</p>`).join('')}`;
+  $('#buildintro').textContent = 'Today the overlay draws flat rects, triangles, circles, and one font atlas. Every item here fits the existing wgpu renderer. Sizes are rough: S is under a day, M is a few days, L is a week or more.';
+  $('#build').innerHTML = d.build.map(([s,t,x])=>`<li><span class="sz ${s}">${s}</span><div><b>${t}</b><br><span>${x}</span></div></li>`).join('');
+}
+$('#dirs').addEventListener('click', e=>{ const b=e.target.closest('[data-dir]'); if(b) setDir(b.dataset.dir); });
+$('#screens').addEventListener('click', e=>{ const b=e.target.closest('[data-screen]'); if(!b) return; S.stack = b.dataset.screen==='title'?[]:[['title',0]]; S.screen=b.dataset.screen; S.sel=0; render(); $('#wrap').focus({preventScroll:true}); });
+$('#shownew').addEventListener('change', render);
+
+/* ---------- scale stage ---------- */
+const wrap=$('#wrap');
+new ResizeObserver(()=>{ wrap.style.setProperty('--k', wrap.clientWidth/1280); stage.style.setProperty('--k', wrap.clientWidth/1280); }).observe(wrap);
+
+/* ---------- hash ---------- */
+function fromHash(){ const h=location.hash.slice(1); const m=h.match(/^(blueprint|print|forge|foundry|crucible|plate)-(.+)$/); if(m && (SCREEN_LIST.some(([k])=>k===m[2])||m[2]==='gameplay')){ S.dir=m[1]; S.screen=m[2]; S.sel=0; S.stack=m[2]==='title'?[]:[['title',0]]; } }
+fromHash(); addEventListener('hashchange',()=>{fromHash(); render();});
+render();
+})();
+</script>

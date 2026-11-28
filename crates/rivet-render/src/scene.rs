@@ -1,4 +1,5 @@
-//! The frame renderer: shadow pass, HDR scene (meshes + sky), bloom, tonemap, FXAA.
+//! The frame renderer: shadow pass, HDR scene (meshes + sky), bloom, tonemap, FXAA, and the
+//! blurred menu backdrop.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
@@ -17,6 +18,54 @@ const MAX_MATERIALS: usize = 48;
 /// Bloom starts at this HDR brightness (soft knee below it).
 const BLOOM_THRESHOLD: f32 = 1.4;
 const BLOOM_KNEE: f32 = 0.7;
+/// The menu backdrop is this many times smaller than the output on each axis.
+const BACKDROP_DIVISOR: u32 = 4;
+/// Tap offsets, in backdrop texels, of the two Kawase blur passes.
+const KAWASE_OFFSETS: [f32; 2] = [1.5, 2.5];
+
+/// Size of the menu backdrop for an output of `(w, h)` pixels: a quarter on each axis, rounded
+/// up, never zero.
+pub fn backdrop_size((w, h): (u32, u32)) -> (u32, u32) {
+    (
+        w.div_ceil(BACKDROP_DIVISOR).max(1),
+        h.div_ceil(BACKDROP_DIVISOR).max(1),
+    )
+}
+
+/// A process-wide counter, so two renderers (before and after a rebuild) never share a
+/// backdrop generation.
+fn next_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the backdrop runs, and a generation that changes whenever the view handed out by
+/// `SceneRenderer::backdrop_view` does (toggling, resize, rebuild).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackdropState {
+    enabled: bool,
+    generation: u64,
+}
+
+impl BackdropState {
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            generation: next_generation(),
+        }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        if enabled != self.enabled {
+            self.enabled = enabled;
+            self.invalidate();
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = next_generation();
+    }
+}
 
 /// Sun, sky and fog. Colors are linear; `Default` is a warm desert afternoon.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,6 +200,44 @@ struct PostParams {
     texel: Vec4,
     a: Vec4,
     b: Vec4,
+    /// The wash (composite only): linear color and 1 while on; then its opacities.
+    wash_color: Vec4,
+    wash_a: Vec4,
+    wash_b: Vec4,
+}
+
+/// A tint laid over the finished frame by the composite pass, so it costs no extra fill: the
+/// darkening behind menus. Opacity combines a left-to-right ramp with bands along the top,
+/// bottom and right edges, each over the last. Sizes are fractions of the frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Wash {
+    /// sRGB color.
+    pub color: [f32; 3],
+    /// Opacity at the left and right edges, linear between.
+    pub across: [f32; 2],
+    /// Opacity at the top edge, fading to nothing over a height.
+    pub top: (f32, f32),
+    /// Opacity at the bottom edge, fading to nothing over a height.
+    pub bottom: (f32, f32),
+    /// Opacity at the right edge, fading to nothing over a width.
+    pub right: (f32, f32),
+}
+
+impl Wash {
+    /// The uniforms `fs_composite` reads; all zero (off) for `None`.
+    fn params(wash: Option<&Wash>) -> [Vec4; 3] {
+        let Some(w) = wash else {
+            return [Vec4::ZERO; 3];
+        };
+        let lin = |c: f32| c.powf(2.2);
+        // Zero-size bands would divide by zero; they show nothing anyway.
+        let size = |v: f32| v.max(1e-6);
+        [
+            Vec4::new(lin(w.color[0]), lin(w.color[1]), lin(w.color[2]), 1.0),
+            Vec4::new(w.across[0], w.across[1], w.top.0, size(w.top.1)),
+            Vec4::new(w.bottom.0, size(w.bottom.1), w.right.0, size(w.right.1)),
+        ]
+    }
 }
 
 struct Targets {
@@ -162,6 +249,16 @@ struct Targets {
     ldr: Option<wgpu::TextureView>,
     /// prefilter, down[1..], up[..], composite, fxaa
     post_groups: PostGroups,
+    backdrop: Backdrop,
+}
+
+/// The menu backdrop: `a` (final) and `b` (ping-pong) at `backdrop_size(output)`.
+struct Backdrop {
+    a: wgpu::TextureView,
+    b: wgpu::TextureView,
+    /// scene -> a (tonemap + downsample), a -> b, b -> a.
+    down: wgpu::BindGroup,
+    kawase: [wgpu::BindGroup; 2],
 }
 
 struct PostGroups {
@@ -196,11 +293,16 @@ pub struct SceneRenderer {
     composite_ldr_pipeline: wgpu::RenderPipeline,
     composite_out_pipeline: wgpu::RenderPipeline,
     fxaa_pipeline: wgpu::RenderPipeline,
+    backdrop_down_pipeline: wgpu::RenderPipeline,
+    kawase_down_pipeline: wgpu::RenderPipeline,
+    kawase_up_pipeline: wgpu::RenderPipeline,
     particle_add_pipeline: wgpu::RenderPipeline,
     particle_alpha_pipeline: wgpu::RenderPipeline,
     particle_buf: wgpu::Buffer,
     particle_capacity: u64,
     targets: Targets,
+    backdrop: BackdropState,
+    wash: Option<Wash>,
     pub lighting: Lighting,
 }
 
@@ -353,7 +455,27 @@ impl SceneRenderer {
         materials: &[Vec<Rgba8Image>],
         shading: &[MaterialShading],
     ) -> Self {
-        let settings = preset.settings();
+        Self::with_settings(
+            device,
+            queue,
+            output_format,
+            output_size,
+            preset.settings(),
+            materials,
+            shading,
+        )
+    }
+
+    /// Like [`SceneRenderer::new`], from individual quality settings (a custom mix).
+    pub fn with_settings(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        output_format: wgpu::TextureFormat,
+        output_size: (u32, u32),
+        settings: QualitySettings,
+        materials: &[Vec<Rgba8Image>],
+        shading: &[MaterialShading],
+    ) -> Self {
         let src = |body: &str| format!("{}\n{}", include_str!("globals.wgsl"), body);
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene.wgsl"),
@@ -666,6 +788,20 @@ impl SceneRenderer {
             output_format,
             None,
         );
+        let ldr_pipeline = |label: &str, fs: &str| {
+            fullscreen_pipeline(
+                device,
+                label,
+                &post_layout,
+                &post_module,
+                fs,
+                LDR_FORMAT,
+                None,
+            )
+        };
+        let backdrop_down_pipeline = ldr_pipeline("backdrop down", "fs_backdrop_down");
+        let kawase_down_pipeline = ldr_pipeline("backdrop kawase down", "fs_kawase_down");
+        let kawase_up_pipeline = ldr_pipeline("backdrop kawase up", "fs_kawase_up");
 
         let globals_buf = buffer(
             device,
@@ -788,11 +924,16 @@ impl SceneRenderer {
             composite_ldr_pipeline,
             composite_out_pipeline,
             fxaa_pipeline,
+            backdrop_down_pipeline,
+            kawase_down_pipeline,
+            kawase_up_pipeline,
             particle_add_pipeline,
             particle_alpha_pipeline,
             particle_buf,
             particle_capacity,
             targets,
+            backdrop: BackdropState::new(),
+            wash: None,
             lighting: Lighting::default(),
         }
     }
@@ -871,7 +1012,20 @@ impl SceneRenderer {
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bg = Self::post_group_with(device, layout, sampler, src, src2, &buf);
+        (bg, buf)
+    }
+
+    /// A post bind group that reads an existing params buffer.
+    fn post_group_with(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        src: &wgpu::TextureView,
+        src2: &wgpu::TextureView,
+        buf: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post bind group"),
             layout,
             entries: &[
@@ -892,8 +1046,7 @@ impl SceneRenderer {
                     resource: wgpu::BindingResource::TextureView(src2),
                 },
             ],
-        });
-        (bg, buf)
+        })
     }
 
     fn make_targets(
@@ -919,6 +1072,9 @@ impl SceneRenderer {
             texel: Vec4::new(1.0 / src.0 as f32, 1.0 / src.1 as f32, 0.0, 0.0),
             a: Vec4::new(BLOOM_THRESHOLD, BLOOM_KNEE, 0.0, 1.0),
             b: Vec4::ZERO,
+            wash_color: Vec4::ZERO,
+            wash_a: Vec4::ZERO,
+            wash_b: Vec4::ZERO,
         };
         let prefilter = bloom.first().map(|_| {
             Self::post_group(
@@ -962,6 +1118,28 @@ impl SceneRenderer {
         let fxaa = ldr
             .as_ref()
             .map(|l| Self::post_group(device, post_bgl, sampler, l, black, p(output_size)).0);
+        let backdrop = {
+            let size = backdrop_size(output_size);
+            let a = render_texture(device, "backdrop a", size, LDR_FORMAT);
+            let b = render_texture(device, "backdrop b", size, LDR_FORMAT);
+            // The first pass grades exactly like the composite, so it shares its params (whose
+            // texel is the scene texel it downsamples from).
+            let down = Self::post_group_with(
+                device,
+                post_bgl,
+                sampler,
+                &scene_color,
+                bloom_src,
+                &composite_params,
+            );
+            let kawase = |src: &wgpu::TextureView, offset: f32| {
+                let mut params = p(size);
+                params.a = Vec4::new(offset, 0.0, 0.0, 0.0);
+                Self::post_group(device, post_bgl, sampler, src, black, params).0
+            };
+            let kawase = [kawase(&a, KAWASE_OFFSETS[0]), kawase(&b, KAWASE_OFFSETS[1])];
+            Backdrop { a, b, down, kawase }
+        };
         Targets {
             scene_size,
             output_size,
@@ -977,6 +1155,7 @@ impl SceneRenderer {
                 composite_params,
                 fxaa,
             },
+            backdrop,
         }
     }
 
@@ -1000,6 +1179,30 @@ impl SceneRenderer {
             &self.post_sampler,
             &self.black_view,
         );
+        self.backdrop.invalidate();
+    }
+
+    /// Runs the menu backdrop passes from the next `render` on (while `enabled`). Call it every
+    /// frame; it is cheap when nothing changes.
+    pub fn set_backdrop(&mut self, enabled: bool) {
+        self.backdrop.set_enabled(enabled);
+    }
+
+    /// Lays `wash` over the frame from the next `render` on (`None`: no wash).
+    pub fn set_wash(&mut self, wash: Option<Wash>) {
+        self.wash = wash;
+    }
+
+    /// The blurred, tonemapped scene at a quarter of the output size, valid after `render`
+    /// while the backdrop is enabled.
+    pub fn backdrop_view(&self) -> Option<&wgpu::TextureView> {
+        self.backdrop.enabled.then_some(&self.targets.backdrop.a)
+    }
+
+    /// Changes whenever `backdrop_view` would hand out a different view (toggle, resize,
+    /// rebuild), so holders of a bind group know to rebuild it.
+    pub fn backdrop_generation(&self) -> u64 {
+        self.backdrop.generation
     }
 
     fn write_models(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw<'_>]) {
@@ -1043,10 +1246,14 @@ impl SceneRenderer {
         } else {
             l.bloom_intensity
         };
+        let [wash_color, wash_a, wash_b] = Wash::params(self.wash.as_ref());
         let p = PostParams {
             texel: Vec4::new(1.0 / s.0 as f32, 1.0 / s.1 as f32, 0.0, 0.0),
             a: Vec4::new(BLOOM_THRESHOLD, BLOOM_KNEE, bloom, l.exposure),
             b: Vec4::new(l.vignette, l.saturation, 0.0, 0.0),
+            wash_color,
+            wash_a,
+            wash_b,
         };
         queue.write_buffer(
             &self.targets.post_groups.composite_params,
@@ -1056,6 +1263,8 @@ impl SceneRenderer {
     }
 
     /// Renders the 3D frame into `output` (the HUD is drawn afterwards by the caller).
+    /// `timer` gets its begin timestamp on the first pass; the caller writes the end one on
+    /// its last pass (`GpuTimer::end_writes`), so the frame time covers the HUD too.
     // A frame genuinely needs device, queue, encoder, target, view, draws and timer.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
@@ -1066,7 +1275,7 @@ impl SceneRenderer {
         output: &wgpu::TextureView,
         view: &View,
         content: &FrameContent<'_>,
-        mut timer: Option<&mut GpuTimer>,
+        timer: Option<&mut GpuTimer>,
     ) {
         let draws = content.draws;
         let l = self.lighting;
@@ -1137,7 +1346,7 @@ impl SceneRenderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: timer.as_deref_mut().and_then(GpuTimer::begin_writes),
+                timestamp_writes: timer.and_then(GpuTimer::begin_writes),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1274,6 +1483,33 @@ impl SceneRenderer {
             }
         }
 
+        // --- Menu backdrop: tonemapped quarter-size copy, then two Kawase blurs ---
+        if self.backdrop.enabled {
+            let bd = &self.targets.backdrop;
+            for (label, target, pipeline, bg) in [
+                (
+                    "backdrop down",
+                    &bd.a,
+                    &self.backdrop_down_pipeline,
+                    &bd.down,
+                ),
+                (
+                    "backdrop kawase down",
+                    &bd.b,
+                    &self.kawase_down_pipeline,
+                    &bd.kawase[0],
+                ),
+                (
+                    "backdrop kawase up",
+                    &bd.a,
+                    &self.kawase_up_pipeline,
+                    &bd.kawase[1],
+                ),
+            ] {
+                fullscreen(encoder, label, target, clear, pipeline, bg, None);
+            }
+        }
+
         // --- Composite (+ FXAA) ---
         match (&self.targets.ldr, &pg.fxaa) {
             (Some(ldr), Some(fxaa)) => {
@@ -1286,7 +1522,6 @@ impl SceneRenderer {
                     &pg.composite,
                     None,
                 );
-                let end = timer.as_deref().and_then(GpuTimer::end_writes);
                 fullscreen(
                     encoder,
                     "fxaa",
@@ -1294,11 +1529,10 @@ impl SceneRenderer {
                     clear,
                     &self.fxaa_pipeline,
                     fxaa,
-                    end,
+                    None,
                 );
             }
             _ => {
-                let end = timer.as_deref().and_then(GpuTimer::end_writes);
                 fullscreen(
                     encoder,
                     "composite",
@@ -1306,9 +1540,46 @@ impl SceneRenderer {
                     clear,
                     &self.composite_out_pipeline,
                     &pg.composite,
-                    end,
+                    None,
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backdrop_is_a_quarter_of_the_output_rounded_up() {
+        assert_eq!(backdrop_size((1600, 900)), (400, 225));
+        assert_eq!(backdrop_size((1366, 767)), (342, 192));
+        assert_eq!(backdrop_size((3, 1)), (1, 1));
+        assert_eq!(backdrop_size((0, 0)), (1, 1), "never a zero-size texture");
+    }
+
+    #[test]
+    fn backdrop_generation_changes_only_when_the_view_does() {
+        let mut s = BackdropState::new();
+        let g0 = s.generation;
+        s.set_enabled(false);
+        assert_eq!(s.generation, g0, "staying off keeps the generation");
+        s.set_enabled(true);
+        let g1 = s.generation;
+        assert_ne!(g1, g0, "turning on hands out a view");
+        s.set_enabled(true);
+        assert_eq!(s.generation, g1, "staying on keeps the generation");
+        s.invalidate();
+        assert_ne!(s.generation, g1, "resize replaces the view");
+        let g2 = s.generation;
+        s.set_enabled(false);
+        assert_ne!(s.generation, g2, "turning off withdraws the view");
+    }
+
+    #[test]
+    fn rebuilt_renderers_never_reuse_a_generation() {
+        let (a, b) = (BackdropState::new(), BackdropState::new());
+        assert_ne!(a.generation, b.generation);
     }
 }

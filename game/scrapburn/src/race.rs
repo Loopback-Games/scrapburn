@@ -461,6 +461,10 @@ impl Race {
 
     /// Racer indices from first to last: finishers by place, then by progress.
     pub fn standings(&self, track: &Track) -> Vec<usize> {
+        // Progress projects onto the centerline; do that once per racer, not per comparison.
+        let progress: Vec<f32> = (0..self.racers.len())
+            .map(|i| self.progress(i, track))
+            .collect();
         let mut idx: Vec<usize> = (0..self.racers.len()).collect();
         idx.sort_by(|&a, &b| {
             let (fa, fb) = (self.racers[a].finish, self.racers[b].finish);
@@ -471,7 +475,7 @@ impl Race {
                 (Some((pa, _)), Some((pb, _))) => pa.cmp(&pb),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => self.progress(b, track).total_cmp(&self.progress(a, track)),
+                (None, None) => progress[b].total_cmp(&progress[a]),
             }
         });
         idx
