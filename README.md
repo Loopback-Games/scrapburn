@@ -17,8 +17,7 @@ Choose **Solo Race** to set up a Grand Prix, Time Trial, or Elimination race. Se
 
 - **Multiplayer** opens private invites, direct hosting and joining, and your racer name.
 - **Garage** lets you choose a vehicle type, chassis, and paint finish. Cars and trucks share a grid. ATVs and dirt bikes share another. Choose **Done** to equip your vehicle. In multiplayer, the host sets the class. Drivers equipped for the other class borrow the host’s chassis for that race.
-- **Controls** shows keyboard and gamepad bindings and is also available in the pause menu.
-- **Settings** adjusts graphics, lap count, and rivals. Turn **Music** off to race to engines alone.
+- **Settings** has five tabs: Graphics, Audio, Controls, Camera & View, and Gameplay. Switch tabs with Q and E (LB and RB on a gamepad). It is also available from the pause menu. Graphics covers the quality preset, render scale, display mode, V-sync, and a frame cap. Audio has volume sliders for master, music, effects, engines, and menus, and a soundtrack toggle to race to engines alone. Camera & View sets the chase camera and the HUD. Gameplay sets laps, rivals, and your racer name.
 
 ### The circuits
 
@@ -40,6 +39,8 @@ Drive through an item box to get one of these. The odds are weighted by your pos
 
 ### Controls
 
+These are the default bindings. Rebind any of them in **Settings, Controls**: pick a device, select an action, then press the new key or button. Esc cancels a keyboard capture and Start cancels a gamepad one. Binding a key that another action uses swaps the two. Pause, the FPS display, and menu navigation are fixed.
+
 | | Keyboard | Gamepad |
 |---|---|---|
 | Drive / brake | W / S | Right / left trigger |
@@ -47,12 +48,15 @@ Drive through an item box to get one of these. The odds are weighted by your pos
 | Hop and drift | Space or Shift | Bumper |
 | Fire item | E, Ctrl or J | West button (X / Square) |
 | Respawn | R | East button (B / Circle) |
+| Look behind | Q | North button (Y / Triangle) |
 | Pause | Esc | Start |
 | FPS display | F3 | Select |
 
 **Drifting:** hold hop while turning to drift. Steer into the turn to tighten the arc and
 charge faster, or steer away to widen it. Release to boost. Blue, orange, then purple sparks
 mark the three boost tiers. Orange pads boost you too, and sand slows you down.
+
+**Settings file:** your choices are saved to a `settings` file in the game's data folder: `$XDG_DATA_HOME/scrapburn/settings`, which is `~/.local/share/scrapburn/settings` when `XDG_DATA_HOME` is unset, or `%APPDATA%\scrapburn\settings` on Windows. Delete it to return to the defaults.
 
 **Vibration:** a gamepad rumbles on wall hits, hard landings, boosts, and item hits. Turn it
 off in **Settings, Controls**. It needs force feedback support in your pad and write access
@@ -118,6 +122,8 @@ just bench                                   # 30 s automated benchmark
   driving your display.
 - `--size 1600x900`, `--present vsync|immediate`.
 - `--preset low|medium|high`: Low renders the 3D scene at 75% scale.
+- `--menu title|race-setup|tracks|garage|multiplayer|lobby|pause|results|graphics|audio|controls|camera|gameplay` opens that menu screen at launch. Combine it with `--bench` and `--offscreen --screenshot` to capture menus.
+- `--no-motion` stops the menu embers and the molten flow, for reduced motion.
 - `--track dustbowl|castle|skyway|orchard|helios` selects the circuit. For an automated race,
   `just bench --track castle --mode elimination` selects both the circuit and the race mode.
 
