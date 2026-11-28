@@ -18,8 +18,19 @@ pub enum Theme {
     Castle,
     /// Skyway Zero: bright synth-rock in F-sharp minor, 150 BPM.
     Sky,
+    /// Glass Orchard: a descending bell figure over a palm-muted pulse.
     Glass,
+    /// Helios Crown: a rising brass-like hook over a four-on-the-floor climb.
     Solar,
+}
+
+/// What a song is, for display (the "now playing" card).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThemeInfo {
+    pub title: &'static str,
+    pub style: &'static str,
+    pub key: &'static str,
+    pub bpm: f32,
 }
 
 impl Theme {
@@ -31,6 +42,24 @@ impl Theme {
         Theme::Glass,
         Theme::Solar,
     ];
+
+    /// Title, style, key and tempo. The tempo is read from the song itself.
+    pub fn info(self) -> ThemeInfo {
+        let (title, style, key) = match self {
+            Theme::Menu => ("Menu theme", "laid-back groove", "B minor"),
+            Theme::Dust => ("Dustbowl", "crossover rock", "E minor"),
+            Theme::Castle => ("Castle Grindstone", "galloping metal", "D minor"),
+            Theme::Sky => ("Skyway Zero", "bright synth-rock", "F-sharp minor"),
+            Theme::Glass => ("Glass Orchard", "bell-led synth-rock", "A minor"),
+            Theme::Solar => ("Helios Crown", "driving brass-hook rock", "D major"),
+        };
+        ThemeInfo {
+            title,
+            style,
+            key,
+            bpm: self.song().bpm,
+        }
+    }
 
     pub(crate) fn song(self) -> &'static Song {
         match self {
@@ -886,3 +915,21 @@ const SOLAR: Song = Song {
         },
     ],
 };
+
+#[cfg(test)]
+mod info_tests {
+    use super::*;
+
+    #[test]
+    fn every_theme_has_display_info() {
+        for t in Theme::ALL {
+            let i = t.info();
+            assert!(!i.title.is_empty() && !i.style.is_empty() && !i.key.is_empty());
+            assert_eq!(i.bpm, t.song().bpm, "{t:?} tempo comes from the song");
+        }
+        let bpms: Vec<f32> = Theme::ALL.iter().map(|t| t.info().bpm).collect();
+        assert_eq!(bpms, [112., 168., 176., 150., 142., 160.]);
+        assert_eq!(Theme::Menu.info().key, "B minor");
+        assert_eq!(Theme::Glass.info().title, "Glass Orchard");
+    }
+}

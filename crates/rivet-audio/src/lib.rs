@@ -7,6 +7,6 @@ pub mod music;
 pub mod output;
 pub mod songs;
 
-pub use mixer::{Command, Mixer, Sfx};
+pub use mixer::{Bus, Command, Mixer, Sfx};
 pub use output::Audio;
-pub use songs::Theme;
+pub use songs::{Theme, ThemeInfo};

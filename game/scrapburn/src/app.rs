@@ -539,6 +539,14 @@ impl Game {
             (Session::Attract, Screen::Title)
         };
         let race = Self::make_race(&track, session, &settings, args.bench.is_some());
+        let audio = if args.bench.is_some() {
+            None
+        } else {
+            rivet_audio::Audio::new()
+        };
+        if let Some(audio) = &audio {
+            scrapburn::sound::send_volumes(audio, &settings.prefs.audio);
+        }
         let n = race.racers.len();
         Ok(Self {
             window,
@@ -585,11 +593,7 @@ impl Game {
             best_ghost,
             recorder: GhostRecorder::default(),
             attract_t: 0.0,
-            audio: if args.bench.is_some() {
-                None
-            } else {
-                rivet_audio::Audio::new()
-            },
+            audio,
             sound: SoundDirector::default(),
             frame_events: Vec::new(),
             knockout: None,
@@ -1370,7 +1374,22 @@ impl Game {
                 }
                 // Save on leaving Settings, not on switching between its tabs.
                 let was_settings = matches!(self.menu.screen, Screen::Settings(_));
+                let before = (self.menu.screen, self.menu.selected);
                 let action = self.menu.handle(input, &mut self.settings);
+                if let (Some(audio), Some(sfx)) = (
+                    &self.audio,
+                    scrapburn::sound::ui_sound(
+                        &input,
+                        before,
+                        (self.menu.screen, self.menu.selected),
+                    ),
+                ) {
+                    audio.send(rivet_audio::Command::Play {
+                        sfx,
+                        gain: 1.0,
+                        pan: 0.0,
+                    });
+                }
                 if was_settings && !matches!(self.menu.screen, Screen::Settings(_)) {
                     self.save_prefs();
                 }
@@ -1430,8 +1449,13 @@ impl Game {
                     MenuAction::DisplayChanged
                     | MenuAction::VsyncChanged
                     | MenuAction::FrameCapChanged => {}
-                    // Task 8 applies bus volumes and plays the previewed song.
-                    MenuAction::VolumeChanged | MenuAction::PreviewSong(_) => {}
+                    MenuAction::VolumeChanged => {
+                        if let Some(audio) = &self.audio {
+                            scrapburn::sound::send_volumes(audio, &self.settings.prefs.audio);
+                        }
+                    }
+                    // The previewed song is read from the menu each frame (see the music cue).
+                    MenuAction::PreviewSong(_) => {}
                     // Task 10 adds rebinding.
                     MenuAction::BindingCaptured => {}
                     MenuAction::SaveName => {
@@ -1643,8 +1667,17 @@ impl Game {
                 self.focus(),
                 active,
             );
-            self.sound
-                .music(audio, &self.race, self.focus(), self.track.id, music);
+            // The Audio tab's "Listen to" song plays while that tab is open.
+            let preview = (self.menu.screen == Screen::Settings(scrapburn::menu::Tab::Audio))
+                .then_some(self.menu.listen);
+            self.sound.music(
+                audio,
+                &self.race,
+                self.focus(),
+                self.track.id,
+                music,
+                preview,
+            );
         }
         if !self.minimized {
             self.render(frame_dt as f32, simulate);

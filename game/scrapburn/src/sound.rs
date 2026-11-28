@@ -1,9 +1,11 @@
 //! Turns race state and events into mixer commands.
 
 use glam::Vec3;
-use rivet_audio::{Audio, Command, Sfx, Theme};
+use rivet_audio::{Audio, Bus, Command, Sfx, Theme};
 
 use crate::combat::{CombatEvent, ItemKind};
+use crate::menu::{MenuInput, Screen};
+use crate::prefs;
 use crate::race::{Phase, Race, RaceEvent};
 use crate::track::TrackId;
 
@@ -69,6 +71,57 @@ impl MusicCue {
     }
 }
 
+/// The mixer gain for a saved volume percent: squared, so the slider feels even to the ear.
+/// 0 is silent and 100 is unity.
+pub fn volume_gain(percent: u8) -> f32 {
+    let v = f32::from(percent.min(100)) / 100.0;
+    v * v
+}
+
+/// Sends every bus level from the saved settings (at startup, and after an edit).
+pub fn send_volumes(audio: &Audio, a: &prefs::Audio) {
+    for (bus, percent) in [
+        (Bus::Master, a.master),
+        (Bus::Music, a.music),
+        (Bus::Effects, a.effects),
+        (Bus::Engines, a.engines),
+        (Bus::Ui, a.menus),
+    ] {
+        audio.send(Command::Volume {
+            bus,
+            gain: volume_gain(percent),
+        });
+    }
+}
+
+/// The song and cue to send. While a song is being previewed (the Settings Audio tab) it
+/// plays at the menu level; otherwise the circuit's song or the menu theme per `cue`.
+/// Music switched off stays silent either way.
+pub fn music_choice(cue: MusicCue, track: TrackId, preview: Option<Theme>) -> (Theme, MusicCue) {
+    match (cue, preview) {
+        (MusicCue::Off, _) => (theme_for(track), MusicCue::Off),
+        (_, Some(theme)) => (theme, MusicCue::Menu),
+        (MusicCue::Menu, None) => (Theme::Menu, MusicCue::Menu),
+        (cue, None) => (theme_for(track), cue),
+    }
+}
+
+/// The menu sound for one frame of input, from where the menu was before and after
+/// handling it: a back sound when going back, a select sound on activate, a move sound when
+/// the selection or page changed. `None` when nothing happened.
+pub fn ui_sound(input: &MenuInput, before: (Screen, usize), after: (Screen, usize)) -> Option<Sfx> {
+    let moved = before != after;
+    if input.back && moved {
+        Some(Sfx::UiBack)
+    } else if input.select {
+        Some(Sfx::UiSelect)
+    } else if moved {
+        Some(Sfx::UiMove)
+    } else {
+        None
+    }
+}
+
 /// Each circuit's own piece.
 pub fn theme_for(track: TrackId) -> Theme {
     match track {
@@ -106,13 +159,17 @@ pub struct SoundDirector {
 impl SoundDirector {
     /// The soundtrack: call once per rendered frame, in menus too. `track` picks the race
     /// song.
-    pub fn music(&self, audio: &Audio, race: &Race, focus: usize, track: TrackId, cue: MusicCue) {
+    pub fn music(
+        &self,
+        audio: &Audio,
+        race: &Race,
+        focus: usize,
+        track: TrackId,
+        cue: MusicCue,
+        preview: Option<Theme>,
+    ) {
+        let (theme, cue) = music_choice(cue, track, preview);
         let (gain, muffle) = cue.levels();
-        let theme = if cue == MusicCue::Menu {
-            Theme::Menu
-        } else {
-            theme_for(track)
-        };
         audio.send(Command::Music {
             theme,
             gain,
@@ -298,6 +355,64 @@ mod gear_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_curve_is_silent_at_zero_unity_at_full_and_perceptual() {
+        assert_eq!(volume_gain(0), 0.0);
+        assert_eq!(volume_gain(100), 1.0);
+        assert_eq!(volume_gain(50), 0.25);
+        assert_eq!(volume_gain(200), 1.0, "clamped");
+        assert!((0..100u8).all(|v| volume_gain(v) < volume_gain(v + 1)));
+    }
+
+    #[test]
+    fn a_previewed_song_replaces_the_cue_at_menu_level() {
+        let t = TrackId::Dustbowl;
+        assert_eq!(
+            music_choice(MusicCue::Menu, t, None),
+            (Theme::Menu, MusicCue::Menu)
+        );
+        assert_eq!(
+            music_choice(MusicCue::Paused, t, None),
+            (Theme::Dust, MusicCue::Paused)
+        );
+        assert_eq!(
+            music_choice(MusicCue::Menu, t, Some(Theme::Solar)),
+            (Theme::Solar, MusicCue::Menu)
+        );
+        assert_eq!(
+            music_choice(MusicCue::Paused, t, Some(Theme::Sky)),
+            (Theme::Sky, MusicCue::Menu)
+        );
+        assert_eq!(
+            music_choice(MusicCue::Off, t, Some(Theme::Sky)).1,
+            MusicCue::Off,
+            "music off stays off"
+        );
+    }
+
+    #[test]
+    fn menu_sounds_follow_what_changed() {
+        use crate::menu::Tab;
+        let a = (Screen::Title, 0);
+        let b = (Screen::Title, 1);
+        let c = (Screen::Settings(Tab::Audio), 0);
+        let press = |f: fn(&mut MenuInput)| {
+            let mut i = MenuInput::default();
+            f(&mut i);
+            i
+        };
+        let down = press(|i| i.down = true);
+        let select = press(|i| i.select = true);
+        let back = press(|i| i.back = true);
+        assert_eq!(ui_sound(&down, a, b), Some(Sfx::UiMove));
+        assert_eq!(ui_sound(&down, a, a), None, "a single row cannot move");
+        assert_eq!(ui_sound(&select, a, c), Some(Sfx::UiSelect));
+        assert_eq!(ui_sound(&select, a, a), Some(Sfx::UiSelect));
+        assert_eq!(ui_sound(&back, c, a), Some(Sfx::UiBack));
+        assert_eq!(ui_sound(&back, a, a), None, "nothing to go back to");
+        assert_eq!(ui_sound(&MenuInput::default(), a, a), None);
+    }
 
     #[test]
     fn spatial_falls_off_and_pans() {

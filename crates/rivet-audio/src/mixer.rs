@@ -20,9 +20,34 @@ pub enum Sfx {
     Whoosh,
     Beep,
     BeepGo,
+    /// Menu: the selection moved.
+    UiMove,
+    /// Menu: a choice was activated.
+    UiSelect,
+    /// Menu: went back or closed.
+    UiBack,
+}
+
+/// A volume group. `Master` scales the whole mix before the soft clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bus {
+    Master,
+    Music,
+    Effects,
+    Engines,
+    Ui,
+}
+
+impl Bus {
+    const COUNT: usize = 5;
 }
 
 impl Sfx {
+    /// Menu sounds go to the [`Bus::Ui`] bus, everything else to [`Bus::Effects`].
+    fn is_ui(self) -> bool {
+        matches!(self, Sfx::UiMove | Sfx::UiSelect | Sfx::UiBack)
+    }
+
     fn duration(self) -> f32 {
         match self {
             Sfx::Pickup => 0.3,
@@ -34,6 +59,9 @@ impl Sfx {
             Sfx::Whoosh => 0.7,
             Sfx::Beep => 0.2,
             Sfx::BeepGo => 0.6,
+            Sfx::UiMove => 0.05,
+            Sfx::UiSelect => 0.1,
+            Sfx::UiBack => 0.09,
         }
     }
 }
@@ -76,6 +104,11 @@ pub enum Command {
         gain: f32,
         muffle: f32,
         intensity: f32,
+    },
+    /// The level of a volume group, 0..1 (1 is unity). Every bus starts at unity.
+    Volume {
+        bus: Bus,
+        gain: f32,
     },
 }
 
@@ -126,6 +159,8 @@ pub struct Mixer {
     shots: Vec<OneShot>,
     music: Music,
     noise: u32,
+    /// Gain per [`Bus`], indexed by `Bus as usize`.
+    buses: [f32; Bus::COUNT],
 }
 
 /// Equal-power pan gains (left, right).
@@ -144,6 +179,7 @@ impl Mixer {
             shots: Vec::new(),
             music: Music::new(rate),
             noise: 0x1234_5678,
+            buses: [1.0; Bus::COUNT],
         }
     }
 
@@ -176,6 +212,7 @@ impl Mixer {
                 intensity,
                 ..
             } => gain.is_finite() && muffle.is_finite() && intensity.is_finite(),
+            Command::Volume { gain, .. } => gain.is_finite(),
             Command::StopLoops => true,
         };
         if !finite {
@@ -226,6 +263,7 @@ impl Mixer {
                 muffle,
                 intensity,
             } => self.music.set(theme, gain, muffle, intensity),
+            Command::Volume { bus, gain } => self.buses[bus as usize] = gain.clamp(0.0, 1.0),
             Command::StopLoops => {
                 for v in self.engines.iter_mut().chain(self.skids.iter_mut()) {
                     v.target_gain = 0.0;
@@ -246,8 +284,19 @@ impl Mixer {
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         let dt = 1.0 / self.rate;
         let smooth = 1.0 - (-dt * 20.0).exp();
+        let bus = |b: Bus| self.buses[b as usize];
+        let (g_master, g_music, g_fx, g_eng, g_ui) = (
+            bus(Bus::Master),
+            bus(Bus::Music),
+            bus(Bus::Effects),
+            bus(Bus::Engines),
+            bus(Bus::Ui),
+        );
         for frame in out.chunks_mut(channels.max(1)) {
-            let (mut l, mut r) = (0.0f32, 0.0f32);
+            // Per-bus sums: engines (with skids), effects (with the orb hum), menu sounds.
+            let (mut el, mut er) = (0.0f32, 0.0f32);
+            let (mut fl, mut fr) = (0.0f32, 0.0f32);
+            let (mut ul, mut ur) = (0.0f32, 0.0f32);
 
             // Engines: a V8-style train of combustion pulses (uneven firing for the burble),
             // combustion noise riding on each pulse, a load-dependent tone filter, DC blocking and
@@ -290,8 +339,8 @@ impl Mixer {
                 }
                 let s = y * e.gain * (0.18 + 0.1 * e.load);
                 let (gl, gr) = pan_gains(e.pan);
-                l += s * gl;
-                r += s * gr;
+                el += s * gl;
+                er += s * gr;
             }
 
             // Skids: band-limited noise.
@@ -306,8 +355,8 @@ impl Mixer {
                 k.lp += (n - k.lp) * 0.35;
                 let s = (n - k.lp) * k.gain * 0.12;
                 let (gl, gr) = pan_gains(k.pan);
-                l += s * gl;
-                r += s * gr;
+                el += s * gl;
+                er += s * gr;
             }
 
             // Plasma Orb hum: a low throb.
@@ -321,8 +370,8 @@ impl Mixer {
                         * (0.6 + 0.4 * (o.sub_phase * TAU).sin())
                         * o.gain
                         * 0.25;
-                    l += s;
-                    r += s;
+                    fl += s;
+                    fr += s;
                 }
             }
 
@@ -371,6 +420,23 @@ impl Mixer {
                         sh.lp += (n - sh.lp) * cut;
                         sh.lp * (env * (1.0 - env) * 4.0) * 0.5
                     }
+                    Sfx::UiMove => {
+                        // A short, soft tick.
+                        sh.phase = (sh.phase + 1500.0 * dt).fract();
+                        (sh.phase * TAU).sin() * env * env * 0.25
+                    }
+                    Sfx::UiSelect => {
+                        // A rising two-note chirp.
+                        let f = if t < 0.04 { 880.0 } else { 1320.0 };
+                        sh.phase = (sh.phase + f * dt).fract();
+                        (sh.phase * TAU).sin() * env * 0.28
+                    }
+                    Sfx::UiBack => {
+                        // A falling two-note chirp.
+                        let f = if t < 0.035 { 700.0 } else { 480.0 };
+                        sh.phase = (sh.phase + f * dt).fract();
+                        (sh.phase * TAU).sin() * env * 0.28
+                    }
                     Sfx::Beep | Sfx::BeepGo => {
                         let f = if sh.sfx == Sfx::Beep { 520.0 } else { 1040.0 };
                         sh.phase = (sh.phase + f * dt).fract();
@@ -379,8 +445,13 @@ impl Mixer {
                 };
                 let s = s * sh.gain;
                 let (gl, gr) = pan_gains(sh.pan);
-                l += s * gl;
-                r += s * gr;
+                if sh.sfx.is_ui() {
+                    ul += s * gl;
+                    ur += s * gr;
+                } else {
+                    fl += s * gl;
+                    fr += s * gr;
+                }
                 sh.t += dt;
                 if sh.t >= d {
                     self.shots.swap_remove(k);
@@ -391,8 +462,8 @@ impl Mixer {
 
             // The soundtrack sits under the race: engines and effects stay on top.
             let (ml, mr) = self.music.frame();
-            l += ml * MUSIC_LEVEL;
-            r += mr * MUSIC_LEVEL;
+            let l = (el * g_eng + fl * g_fx + ul * g_ui + ml * MUSIC_LEVEL * g_music) * g_master;
+            let r = (er * g_eng + fr * g_fx + ur * g_ui + mr * MUSIC_LEVEL * g_music) * g_master;
 
             // Soft clip so stacked effects never exceed full scale.
             let (l, r) = (l.tanh(), r.tanh());
@@ -590,5 +661,102 @@ mod tests {
             (l + f[0].abs(), r + f[1].abs())
         });
         assert!(l > r * 4.0, "left {l} right {r}");
+    }
+
+    fn energy(buf: &[f32]) -> f32 {
+        buf.iter().map(|s| s * s).sum::<f32>()
+    }
+
+    /// Output energy of a mixer that has `setup` applied, after `secs` of rendering.
+    fn heard(setup: &[Command], secs: f32) -> f32 {
+        let mut m = Mixer::new(RATE);
+        for c in setup {
+            m.apply(*c);
+        }
+        energy(&render(&mut m, secs))
+    }
+
+    const ENGINE: Command = Command::Engine {
+        id: 0,
+        rpm: 0.5,
+        load: 0.5,
+        gain: 1.0,
+        pan: 0.0,
+    };
+    const SHOT: Command = Command::Play {
+        sfx: Sfx::Pickup,
+        gain: 1.0,
+        pan: 0.0,
+    };
+    const CLICK: Command = Command::Play {
+        sfx: Sfx::UiSelect,
+        gain: 1.0,
+        pan: 0.0,
+    };
+    const SONG: Command = Command::Music {
+        theme: Theme::Menu,
+        gain: 1.0,
+        muffle: 0.0,
+        intensity: 0.0,
+    };
+
+    fn vol(bus: Bus, gain: f32) -> Command {
+        Command::Volume { bus, gain }
+    }
+
+    #[test]
+    fn a_silent_bus_silences_only_itself() {
+        let all = [ENGINE, SHOT, CLICK, SONG];
+        let base = heard(&all, 0.3);
+        assert!(base > 0.0);
+        for (bus, only) in [
+            (Bus::Engines, ENGINE),
+            (Bus::Effects, SHOT),
+            (Bus::Ui, CLICK),
+            (Bus::Music, SONG),
+        ] {
+            assert!(heard(&[only], 0.3) > 0.0, "{bus:?} is audible alone");
+            let mut setup = vec![vol(bus, 0.0)];
+            setup.push(only);
+            assert_eq!(heard(&setup, 0.3), 0.0, "{bus:?} at zero is silent");
+            // The other three stay audible with this bus off.
+            let mut rest: Vec<Command> = all.iter().copied().filter(|c| *c != only).collect();
+            let mut with_off = vec![vol(bus, 0.0)];
+            with_off.append(&mut rest);
+            assert!(heard(&with_off, 0.3) > 0.0, "{bus:?} off leaves the rest");
+        }
+    }
+
+    #[test]
+    fn master_scales_everything() {
+        for only in [ENGINE, SHOT, CLICK, SONG] {
+            let full = heard(&[only], 0.3);
+            let half = heard(&[vol(Bus::Master, 0.5), only], 0.3);
+            let off = heard(&[vol(Bus::Master, 0.0), only], 0.3);
+            assert!(half > 0.0 && half < full * 0.5, "{only:?}: half is quieter");
+            assert_eq!(off, 0.0, "{only:?}: master zero is silent");
+        }
+    }
+
+    #[test]
+    fn buses_start_at_unity_and_ignore_nonsense() {
+        let base = heard(&[SHOT], 0.2);
+        assert_eq!(heard(&[vol(Bus::Effects, f32::NAN), SHOT], 0.2), base);
+        assert_eq!(heard(&[vol(Bus::Effects, 7.0), SHOT], 0.2), base, "clamped");
+    }
+
+    #[test]
+    fn menu_clicks_are_short_and_end() {
+        for sfx in [Sfx::UiMove, Sfx::UiSelect, Sfx::UiBack] {
+            let mut m = Mixer::new(RATE);
+            m.apply(Command::Play {
+                sfx,
+                gain: 1.0,
+                pan: 0.0,
+            });
+            assert!(energy(&render(&mut m, 0.03)) > 0.0, "{sfx:?} sounds");
+            render(&mut m, 0.2);
+            assert_eq!(m.active_one_shots(), 0, "{sfx:?} ends");
+        }
     }
 }
