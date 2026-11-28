@@ -57,8 +57,10 @@ mark the three boost tiers. Orange pads boost you too, and sand slows you down.
 **Vibration:** a gamepad rumbles on wall hits, hard landings, boosts, and item hits. Turn it
 off in **Settings, Controls**. It needs force feedback support in your pad and write access
 to its `/dev/input/event*` node. Desktop Linux grants that to the logged-in user through the
-`uaccess` tag in systemd's joystick rules. If a pad is read-only for you, add a udev rule with
-`TAG+="uaccess"` for it instead of running the game as root.
+`uaccess` tag in systemd's joystick rules. If your pad is read-only for you, an admin can add
+a rule once in `/etc/udev/rules.d/`, for example
+`SUBSYSTEM=="input", ATTRS{idVendor}=="<vendor>", TAG+="uaccess"`, then reload udev and replug
+the pad. There is no need to run the game as root.
 
 ## Online
 

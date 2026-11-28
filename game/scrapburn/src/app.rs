@@ -353,8 +353,8 @@ struct Game {
     camera: ChaseCamera,
     keys: KeyInput,
     pads: Option<Gamepads>,
-    /// The followed kart's speed and boost last frame, to spot wall hits and boost starts.
-    haptic_prev: (f32, bool),
+    /// Spots wall hits and boost starts on the followed kart.
+    haptic_watch: haptics::Watch,
     stats: FrameStats,
     last_frame: Instant,
     minimized: bool,
@@ -706,7 +706,7 @@ impl Game {
             camera: ChaseCamera::default(),
             keys: KeyInput::default(),
             pads: Gamepads::new(),
-            haptic_prev: (0.0, false),
+            haptic_watch: haptics::Watch::default(),
             stats: FrameStats::new(240),
             last_frame: Instant::now(),
             minimized: false,
@@ -865,6 +865,7 @@ impl Game {
         }
         self.session = session;
         self.race = Self::make_race(&self.track, session, &self.settings, self.bench.is_some());
+        self.haptic_watch.reset();
         self.fit_race_buffers();
         self.recorder = GhostRecorder::default();
         self.knockout = None;
@@ -901,6 +902,7 @@ impl Game {
                 Race::new(&self.track, count, true, self.settings.prefs.gameplay.laps)
             };
             h.start(&mut self.race);
+            self.haptic_watch.reset();
             self.fit_race_buffers();
         }
     }
@@ -1274,6 +1276,7 @@ impl Game {
         race.racers[you].state = snap.racers[you].state.clone();
         race.racers[you].prev = race.racers[you].state.clone();
         self.race = race;
+        self.haptic_watch.reset();
         self.fit_race_buffers();
         self.race.racers[you].equip(snap.setup.compatible_design(self.settings.loadout.design));
         if let Net::Client { view, .. } = &mut self.net {
@@ -2007,6 +2010,8 @@ impl Game {
             match *c {
                 CombatEvent::Hit { victim, .. } => {
                     if victim == self.focus() {
+                        self.haptic_watch
+                            .mute_until(self.race.time + haptics::HIT_MUTE);
                         self.haptic(Kind::ItemHit, 1.0);
                     }
                     let p = self.race.racers[victim].state.position + Vec3::Y * 0.6;
@@ -2085,6 +2090,10 @@ impl Game {
                     );
                     let near = (1.0 - pos.distance(focus_pos) / 60.0).max(0.0);
                     self.camera.kick(near);
+                    if near > 0.0 {
+                        self.haptic_watch
+                            .mute_until(self.race.time + haptics::HIT_MUTE);
+                    }
                     self.haptic(Kind::ItemHit, near);
                 }
                 CombatEvent::Slingshot { racer } => {
@@ -2177,7 +2186,9 @@ impl Game {
                 Mat4::from_rotation_translation(rot, pos) * Mat4::from_rotation_z(self.leans[i]),
             ));
         }
-        self.haptic(Kind::Landing, landing);
+        if simulating {
+            self.haptic(Kind::Landing, landing);
+        }
         let garage = self.menu.screen == Screen::Garage;
         let (mut fpos, frot, _) = models[focus];
         if garage {
@@ -2194,15 +2205,19 @@ impl Game {
         self.camera.look_behind(self.look_behind);
         let boosting = fstate.boost_timer > 0.0;
         self.camera.set_boost(boosting);
-        let (prev_speed, was_boosting) = self.haptic_prev;
-        let (speed, grounded) = (fstate.speed(), fstate.grounded);
-        self.haptic_prev = (speed, boosting);
+        let speed = fstate.speed();
         if simulating {
-            self.haptic(
-                Kind::Wall,
-                haptics::wall_impact(prev_speed, speed, grounded),
-            );
-            if boosting && !was_boosting {
+            let edges = self.haptic_watch.update(haptics::Frame {
+                who: focus,
+                speed,
+                pos: fstate.position,
+                time: self.race.time,
+                grounded: fstate.grounded,
+                boosting,
+                spinning: fstate.spin > 0.0,
+            });
+            self.haptic(Kind::Wall, edges.wall);
+            if edges.boost_start {
                 self.haptic(Kind::Boost, 0.6);
             }
         }

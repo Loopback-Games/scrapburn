@@ -231,6 +231,8 @@ impl Gamepads {
             match ev.event {
                 EventType::Connected => {
                     log::info!("gamepad connected: {}", self.gilrs.gamepad(ev.id).name());
+                    // A newly plugged-in pad may support force feedback, so try again.
+                    self.rumble_off = false;
                     continue;
                 }
                 EventType::Disconnected => {
