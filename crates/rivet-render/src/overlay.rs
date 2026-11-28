@@ -454,12 +454,27 @@ impl Overlay {
         color: [f32; 4],
         s: &str,
     ) {
+        self.label_gradient_centered(face, x, cy, scale, color, color, s);
+    }
+
+    /// `label_gradient` with the capitals vertically centered on `cy`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn label_gradient_centered(
+        &mut self,
+        face: Face,
+        x: f32,
+        cy: f32,
+        scale: f32,
+        top: [f32; 4],
+        bottom: [f32; 4],
+        s: &str,
+    ) {
         let y = match (&self.atlas, self.resolve(face)) {
             (Some(atlas), Some(i)) => cy - atlas.cap_middle(i, scale * LABEL_PX_PER_SCALE),
             // The bitmap font is 7 units tall from its top.
             _ => cy - 3.5 * scale,
         };
-        self.label_face(face, x, y, scale, color, s);
+        self.label_gradient(face, x, y, scale, top, bottom, s);
     }
 
     /// `label` in any face. A face whose font is missing draws in the next one down.

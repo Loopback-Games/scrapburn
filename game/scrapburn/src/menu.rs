@@ -394,7 +394,7 @@ const PRESETS: [(PresetChoice, &str); 4] = [
 const SHADOWS: [(u32, &str); 3] = [(1024, "1024"), (2048, "2048"), (4096, "4096")];
 const BLOOM: [(u32, &str); 4] = [(0, "Off"), (4, "4 mips"), (5, "5 mips"), (6, "6 mips")];
 const TEXTURES: [(u32, &str); 2] = [(1, "Half"), (0, "Full")];
-const ANISOTROPY: [(u16, &str); 5] = [(1, "Off"), (2, "2x"), (4, "4x"), (8, "8x"), (16, "16x")];
+const ANISOTROPY: [(u16, &str); 5] = [(1, "Off"), (2, "2×"), (4, "4×"), (8, "8×"), (16, "16×")];
 const DISPLAYS: [(DisplayMode, &str); 3] = [
     (DisplayMode::Windowed, "Windowed"),
     (DisplayMode::Borderless, "Borderless"),
@@ -1209,7 +1209,7 @@ impl MenuState {
                     Row::slider(
                         RowId::Fov,
                         "Field of view",
-                        format!("{:.0} deg", cam.fov),
+                        format!("{:.0}°", cam.fov),
                         FOV.fraction(cam.fov),
                         "Wider shows more track and feels faster.",
                     )

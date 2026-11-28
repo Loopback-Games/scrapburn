@@ -14,7 +14,7 @@ use rivet_render::{
     Draw, FontSet, FrameContent, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay,
     ParticleInstance, SceneRenderer, View, box_mesh, draw_frame_graph,
 };
-use scrapburn::args::{Args, Mode};
+use scrapburn::args::{Args, MenuShot, Mode};
 use scrapburn::bench::{Bench, BenchPhase};
 use scrapburn::camera::ChaseCamera;
 use scrapburn::circuit::{Circuit, Event};
@@ -28,6 +28,7 @@ use scrapburn::ghost::{BestGhost, GhostRecorder};
 use scrapburn::hud::{self, CircuitHud, HudInfo, RaceHud};
 use scrapburn::materials::{find_assets_dir, load_layers, shading};
 use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings, Tab};
+use scrapburn::menu_draw::{self, Extra, MenuHits, MenuView, PauseInfo, ResultRow, ResultsInfo};
 use scrapburn::netplay::{
     self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
 };
@@ -172,6 +173,34 @@ fn initial_prefs(
     loaded.with_cli(args.preset, bench, args.attract)
 }
 
+/// Opens the screen `--menu` names. Lobby, Pause and Results get stand-in data in
+/// `draw_hud` (see `menu_demo`).
+fn open_menu_shot(menu: &mut MenuState, shot: MenuShot) {
+    let screen = match shot {
+        MenuShot::Title => Screen::Title,
+        MenuShot::RaceSetup => Screen::RaceSetup,
+        MenuShot::Tracks => {
+            menu.go(Screen::RaceSetup);
+            Screen::Circuits
+        }
+        MenuShot::Garage => Screen::Garage,
+        MenuShot::Multiplayer => Screen::Online,
+        MenuShot::Lobby => {
+            menu.lobby_host = true;
+            menu.invite_ready = true;
+            Screen::Lobby
+        }
+        MenuShot::Pause => Screen::Paused,
+        MenuShot::Results => Screen::Results,
+        MenuShot::Graphics => Screen::Settings(Tab::Graphics),
+        MenuShot::Audio => Screen::Settings(Tab::Audio),
+        MenuShot::Controls => Screen::Settings(Tab::Controls),
+        MenuShot::Camera => Screen::Settings(Tab::Camera),
+        MenuShot::Gameplay => Screen::Settings(Tab::Gameplay),
+    };
+    menu.go(screen);
+}
+
 /// A burst of additive sparks.
 #[allow(clippy::too_many_arguments)]
 fn fx_burst(
@@ -237,9 +266,21 @@ struct Game {
     race: Race,
     session: Session,
     menu: MenuState,
-    menu_rows: Option<(Screen, hud::MenuRows)>,
+    /// What the pointer can hit on the menu drawn last frame.
+    menu_hits: Option<(Screen, MenuHits)>,
     pointer: Option<(f32, f32)>,
+    /// A clicked row: screen, row, and whether the click steps its value down.
     clicked: Option<(Screen, usize, bool)>,
+    /// A clicked Settings tab.
+    clicked_tab: Option<Tab>,
+    /// Sparks rising behind the menus.
+    embers: scrapburn::embers::Embers,
+    /// False with `--no-motion`: the embers and the molten flow stand still.
+    motion: bool,
+    /// The last menu input came from a gamepad, so prompts show its buttons.
+    pad_last: bool,
+    /// Opened with `--menu`: stand-in data fills screens that need a network or a race.
+    menu_demo: bool,
     /// The circuit being raced, if any.
     circuit: Option<Circuit>,
     settings: Settings,
@@ -543,6 +584,10 @@ impl Game {
             (Session::Attract, Screen::Title)
         };
         let race = Self::make_race(&track, session, &settings, args.bench.is_some());
+        let mut menu = MenuState::new(screen);
+        if let Some(shot) = args.menu {
+            open_menu_shot(&mut menu, shot);
+        }
         let audio = if args.bench.is_some() {
             None
         } else {
@@ -574,10 +619,15 @@ impl Game {
             combat_fx: ParticleSystem::new(2500),
             race,
             session,
-            menu: MenuState::new(screen),
-            menu_rows: None,
+            menu,
+            menu_hits: None,
             pointer: None,
             clicked: None,
+            clicked_tab: None,
+            embers: scrapburn::embers::Embers::new(0x5eed),
+            motion: !args.no_motion,
+            pad_last: false,
+            menu_demo: args.menu.is_some(),
             circuit: None,
             settings,
             clock: FixedTimestep::new(TICK_DT, MAX_STEPS),
@@ -1306,6 +1356,11 @@ impl Game {
             self.pads.as_ref().and_then(Gamepads::active).copied()
         };
         let pad = pad.as_ref();
+        self.pad_last = scrapburn::controls::last_input_was_pad(
+            self.pad_last,
+            !self.keys.pressed_keys().is_empty(),
+            pad,
+        );
         let bindings = self.settings.prefs.controls.bindings;
         let act = actions(&self.keys, pad, &bindings);
         // While a binding is being captured, F3 / Select reach only the capture.
@@ -1378,6 +1433,17 @@ impl Game {
                 } else {
                     menu_input(&self.keys, pad)
                 };
+                if let Some(tab) = self.clicked_tab.take()
+                    && matches!(self.menu.screen, Screen::Settings(_))
+                    && !capturing
+                {
+                    // A tab switch stays inside Settings (as Q / E), so Back still returns
+                    // where Settings was opened from.
+                    if self.menu.screen != Screen::Settings(tab) {
+                        self.menu.screen = Screen::Settings(tab);
+                        self.menu.selected = 0;
+                    }
+                }
                 if let Some((screen, row, previous)) = self.clicked.take()
                     && screen == self.menu.screen
                     && row < self.menu.rows(&self.settings).len()
@@ -1601,6 +1667,7 @@ impl Game {
             }
         }
         self.attract_t += frame_dt as f32;
+        self.embers.step(frame_dt as f32, self.motion);
         if let (Session::Play(_), Some(p)) = (self.session, self.race.player)
             && self.menu.screen == Screen::Playing
             && let Some((_, t)) = self.race.racers[p].finish
@@ -2362,6 +2429,158 @@ impl Game {
         self.ctx.present(frame);
     }
 
+    /// Data the menu screen shows that only the running game has.
+    fn menu_extra(&self, focus: usize) -> Extra {
+        let n_tracks = TRACKS.len();
+        let circuit_line = || format!("Circuit: all {} tracks", scrapburn::circuit::ROUNDS);
+        let slots = netplay::MAX_PEERS + 1;
+        match (&self.net, self.menu.screen) {
+            (_, Screen::Online) => Extra::Online(vec![
+                format!("Your name  {}", self.player_name),
+                if self.tunnel.is_some() {
+                    "Joining with your invite. Esc to cancel."
+                } else {
+                    "Private race invites work across networks."
+                }
+                .to_string(),
+                format!("UDP port {}", netplay::DEFAULT_PORT),
+            ]),
+            (Net::Host(host), Screen::Lobby) => {
+                let def = &TRACKS[self.settings.track % n_tracks];
+                let status = if let Some(tunnel) = &self.tunnel {
+                    if tunnel.ready {
+                        "Paste your copied invite to friends."
+                    } else {
+                        "Creating your private invite. Esc to cancel."
+                    }
+                    .to_string()
+                } else if host.is_loopback() {
+                    "Private invite in the host terminal.".to_string()
+                } else {
+                    format!("Hosting on port {}", host.port())
+                };
+                let event = if self.menu.event == Event::Circuit {
+                    circuit_line()
+                } else {
+                    def.name.to_string()
+                };
+                Extra::Lobby {
+                    lines: vec![
+                        status,
+                        format!(
+                            "{event}.  {} bots fill the grid.",
+                            host.racer_count() - host.player_count()
+                        ),
+                    ],
+                    names: host.names(),
+                    slots,
+                }
+            }
+            (Net::Client { link, lobby, .. }, Screen::Lobby) => match lobby {
+                Some(l) => {
+                    let event = if l.setup.circuit.is_some() {
+                        circuit_line()
+                    } else {
+                        TRACKS[l.setup.track as usize % n_tracks].name.to_string()
+                    };
+                    let mode = if l.setup.elimination {
+                        "Elimination"
+                    } else {
+                        "Race"
+                    };
+                    let kart = scrapburn::kart::KARTS
+                        [l.setup.compatible_design(self.settings.loadout.design)]
+                    .label();
+                    Extra::Lobby {
+                        lines: vec![
+                            format!("Joined {}", link.server()),
+                            format!("{event}.  {mode}.  {kart}."),
+                        ],
+                        names: l.names.clone(),
+                        slots,
+                    }
+                }
+                None => Extra::Lobby {
+                    lines: vec![format!("Connecting to {}", link.server())],
+                    names: Vec::new(),
+                    slots,
+                },
+            },
+            // `--menu lobby`: a stand-in host lobby, no network.
+            (Net::Off, Screen::Lobby) if self.menu_demo => Extra::Lobby {
+                lines: vec!["Invite copied to your clipboard.".to_string()],
+                names: [
+                    self.player_name.as_str(),
+                    "KESTREL",
+                    "DUSTDEVIL",
+                    "OTTOLINE",
+                ]
+                .map(str::to_string)
+                .to_vec(),
+                slots,
+            },
+            (_, Screen::Paused) => {
+                let race = &self.race;
+                let r = &race.racers[focus];
+                let in_race = matches!(self.session, Session::Play(Mode::Race | Mode::Elimination));
+                let standings = race.standings(&self.track);
+                Extra::Pause(PauseInfo {
+                    position: standings
+                        .iter()
+                        .position(|&i| i == focus)
+                        .map_or(1, |p| p + 1),
+                    racers: race.racers.len(),
+                    lap: r.laps.laps() + 1,
+                    laps: (in_race && !race.elimination).then_some(race.laps_to_win),
+                    best: r.best_lap.or(self
+                        .best_ghost
+                        .ghost()
+                        .map(|g| g.lap_time)
+                        .filter(|_| !in_race)),
+                    track_name: self.track.name.to_string(),
+                    route: self.track.centerline.clone(),
+                    circuit: self
+                        .circuit
+                        .map(|c| (c.round as usize + 1, scrapburn::circuit::ROUNDS)),
+                })
+            }
+            (_, Screen::Results) => {
+                let race = &self.race;
+                let standings = race.standings(&self.track);
+                let totals = self.circuit.map(|c| (c.totals(&standings), c));
+                let rows = standings
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &i)| {
+                        let racer = &race.racers[i];
+                        // `--menu results` shows a race that has not finished; give it times.
+                        let demo = self.menu_demo.then_some(252.806 + k as f64 * 1.27);
+                        ResultRow {
+                            name: racer.name.to_string(),
+                            time: racer.finish.map(|f| f.1).or(demo),
+                            points: totals.as_ref().map(|(t, c)| (t[i] - c.points[i], t[i])),
+                            me: i == focus,
+                        }
+                    })
+                    .collect();
+                let champion = totals.as_ref().and_then(|(t, c)| {
+                    (c.round as usize + 1 >= scrapburn::circuit::ROUNDS)
+                        .then(|| scrapburn::circuit::table(t, &standings, race.racers.len()))
+                        .and_then(|order| order.first().map(|&s| race.racers[s].name.to_string()))
+                });
+                Extra::Results(ResultsInfo {
+                    rows,
+                    finished: race.racers[focus].finish.map(|(p, _)| p),
+                    circuit: self
+                        .circuit
+                        .map(|c| (c.round as usize + 1, scrapburn::circuit::ROUNDS)),
+                    champion,
+                })
+            }
+            _ => Extra::None,
+        }
+    }
+
     fn draw_hud(
         &mut self,
         w: f32,
@@ -2370,124 +2589,29 @@ impl Game {
         view_proj: Mat4,
         models: &[(Vec3, glam::Quat, Mat4)],
     ) {
-        let race = &self.race;
-        let r = &race.racers[focus];
-        let o = &mut self.overlay;
-        if matches!(self.session, Session::Attract) {
+        let menu_up =
+            matches!(self.session, Session::Attract) || self.menu.screen != Screen::Playing;
+        if menu_up {
+            let extra = self.menu_extra(focus);
             let rows = self.menu.rows(&self.settings);
-            self.menu_rows = Some((
-                self.menu.screen,
-                hud::draw_menu(o, w, h, &self.menu, &rows, self.attract_t),
-            ));
-            match self.menu.screen {
-                Screen::Garage => hud::garage_card(o, w, h, self.settings.loadout),
-                Screen::Settings(Tab::Controls) => hud::controls_card(
-                    o,
-                    w,
-                    h,
-                    self.menu.gamepad_guide,
-                    &self.settings.prefs.controls.bindings,
-                ),
-                _ => {}
-            }
-            let n_tracks = scrapburn::track::TRACKS.len();
-            match (&self.net, self.menu.screen) {
-                (_, Screen::Online) => {
-                    let lines = [
-                        format!("YOUR NAME  {}", self.player_name),
-                        if self.tunnel.is_some() {
-                            "JOINING WITH YOUR INVITE. ESC TO CANCEL"
-                        } else {
-                            "PRIVATE RACE INVITES WORK ACROSS NETWORKS"
-                        }
-                        .to_string(),
-                        format!("UDP PORT {}", netplay::DEFAULT_PORT),
-                        if self.menu.peers.is_empty() {
-                            "NO TAILSCALE PEERS FOUND".to_string()
-                        } else {
-                            format!("{} TAILSCALE PEERS ONLINE", self.menu.peers.len())
-                        },
-                    ];
-                    hud::draw_lobby(o, w, h, "ONLINE", &lines, &[]);
-                }
-                (Net::Host(host), Screen::Lobby) => {
-                    let def = &scrapburn::track::TRACKS[self.settings.track % n_tracks];
-                    let lines = [
-                        if let Some(tunnel) = &self.tunnel {
-                            if tunnel.ready {
-                                "PASTE YOUR COPIED INVITE TO FRIENDS"
-                            } else {
-                                "CREATING YOUR PRIVATE INVITE. ESC TO CANCEL"
-                            }
-                            .into()
-                        } else if host.is_loopback() {
-                            "PRIVATE INVITE IN THE HOST TERMINAL".into()
-                        } else {
-                            format!("HOSTING ON PORT {}", host.port())
-                        },
-                        if self.menu.event == Event::Circuit {
-                            format!("CIRCUIT  ALL {} TRACKS", scrapburn::circuit::ROUNDS)
-                        } else {
-                            def.name.to_string()
-                        },
-                        format!(
-                            "{} RACERS ON THE GRID    {} BOTS",
-                            host.racer_count(),
-                            host.racer_count() - host.player_count()
-                        ),
-                    ];
-                    hud::draw_lobby(o, w, h, "STARTING GRID", &lines, &host.names());
-                }
-                (Net::Client { link, lobby, .. }, Screen::Lobby) => {
-                    let (lines, names) = match lobby {
-                        Some(l) => (
-                            vec![
-                                format!("JOINED {}", link.server()),
-                                if l.setup.circuit.is_some() {
-                                    format!("CIRCUIT  ALL {} TRACKS", scrapburn::circuit::ROUNDS)
-                                } else {
-                                    scrapburn::track::TRACKS[l.setup.track as usize % n_tracks]
-                                        .name
-                                        .to_string()
-                                },
-                                format!(
-                                    "{}   {}",
-                                    if l.setup.elimination {
-                                        "ELIMINATION"
-                                    } else {
-                                        "RACE"
-                                    },
-                                    scrapburn::kart::KARTS
-                                        [l.setup.compatible_design(self.settings.loadout.design)]
-                                    .label()
-                                ),
-                            ],
-                            l.names.clone(),
-                        ),
-                        None => (vec![format!("CONNECTING TO {}", link.server())], Vec::new()),
-                    };
-                    hud::draw_lobby(o, w, h, "STARTING GRID", &lines, &names);
-                }
-                _ => {}
-            }
-            if matches!(self.menu.screen, Screen::Circuits | Screen::RaceSetup) {
-                let preview =
-                    if self.menu.screen == Screen::Circuits && self.menu.selected < TRACKS.len() {
-                        self.menu.selected
-                    } else {
-                        self.settings.track
-                    };
-                hud::draw_track_card(
-                    o,
-                    w,
-                    h,
-                    preview,
-                    &TRACKS[preview],
-                    &self.route_previews[preview],
-                    self.attract_t,
-                );
-            }
+            let view = MenuView {
+                menu: &self.menu,
+                rows: &rows,
+                settings: &self.settings,
+                time: self.attract_t,
+                motion: self.motion,
+                pad: self.pad_last,
+                embers: &self.embers,
+                routes: &self.route_previews,
+                player_name: &self.player_name,
+                extra,
+            };
+            let hits = menu_draw::draw(&mut self.overlay, w, h, &view);
+            self.menu_hits = Some((self.menu.screen, hits));
         } else {
+            let race = &self.race;
+            let r = &race.racers[focus];
+            let o = &mut self.overlay;
             let in_race = matches!(self.session, Session::Play(Mode::Race | Mode::Elimination));
             let info = HudInfo {
                 lap: r.laps.laps() + 1,
@@ -2508,18 +2632,6 @@ impl Game {
                 Phase::Racing if race.time < 1.0 => Some(-(race.time as f32)),
                 Phase::Racing => None,
             };
-            let results = (self.menu.screen == Screen::Results).then(|| {
-                standings
-                    .iter()
-                    .map(|&i| {
-                        (
-                            race.racers[i].name.as_ref(),
-                            race.racers[i].tint,
-                            race.racers[i].finish.map(|f| f.1),
-                        )
-                    })
-                    .collect()
-            });
             let race_hud = RaceHud {
                 position: standings
                     .iter()
@@ -2527,25 +2639,9 @@ impl Game {
                     .map_or(1, |p| p + 1),
                 racers: race.racers.len(),
                 countdown,
-                finished: r.finish.map(|(p, _)| p),
-                results,
-                circuit: self.circuit.map(|c| {
-                    let totals = c.totals(&standings);
-                    CircuitHud {
-                        round: c.round as usize + 1,
-                        rounds: scrapburn::circuit::ROUNDS,
-                        table: scrapburn::circuit::table(&totals, &standings, race.racers.len())
-                            .into_iter()
-                            .map(|s| {
-                                (
-                                    race.racers[s].name.as_ref(),
-                                    race.racers[s].tint,
-                                    totals[s] - c.points[s],
-                                    totals[s],
-                                )
-                            })
-                            .collect(),
-                    }
+                circuit: self.circuit.map(|c| CircuitHud {
+                    round: c.round as usize + 1,
+                    rounds: scrapburn::circuit::ROUNDS,
                 }),
                 track: &self.track.centerline,
                 karts: race
@@ -2608,36 +2704,8 @@ impl Game {
                     .hint(scrapburn::bindings::Action::UseItem);
                 hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t, &hint);
             }
-            let rows = self.menu.rows(&self.settings);
-            match self.menu.screen {
-                Screen::Paused | Screen::Settings(_) | Screen::DriverName | Screen::Results => {
-                    if self.menu.screen != Screen::Results {
-                        hud::dim(o, w, h);
-                    }
-                    self.menu_rows = Some((
-                        self.menu.screen,
-                        hud::draw_menu(o, w, h, &self.menu, &rows, self.attract_t),
-                    ));
-                    if self.menu.screen == Screen::Settings(Tab::Controls) {
-                        hud::controls_card(
-                            o,
-                            w,
-                            h,
-                            self.menu.gamepad_guide,
-                            &self.settings.prefs.controls.bindings,
-                        );
-                    }
-                }
-                Screen::Garage
-                | Screen::RaceSetup
-                | Screen::Circuits
-                | Screen::Title
-                | Screen::Playing
-                | Screen::Online
-                | Screen::Tailscale
-                | Screen::Lobby => {}
-            }
         }
+        let o = &mut self.overlay;
         match (self.settings.prefs.graphics.fps, self.bench.is_some()) {
             (FpsDisplay::Graph, _) | (_, true) => {
                 draw_frame_graph(
@@ -2701,9 +2769,10 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
                 game.pointer = Some((x, y));
-                if let Some((screen, rows)) = &game.menu_rows
+                if let Some((screen, hits)) = &game.menu_hits
                     && *screen == game.menu.screen
-                    && let Some(row) = rows.hit(x, y)
+                    && game.menu.capturing.is_none()
+                    && let Some(row) = hits.row_at(x, y)
                 {
                     game.menu.selected = row;
                 }
@@ -2727,21 +2796,25 @@ impl ApplicationHandler for App {
                 button: winit::event::MouseButton::Left,
                 ..
             } if state.is_pressed() => {
+                game.pad_last = false;
                 if game.menu.screen == Screen::Garage
                     && let Some((x, y)) = game.pointer
                 {
                     let (w, h) = game.ctx.size();
-                    if let Some(finish) = hud::garage_swatch_at(w as f32, h as f32, x, y) {
+                    if let Some(finish) = menu_draw::garage_swatch_at(w as f32, h as f32, x, y) {
                         game.settings.loadout.finish = finish;
                         game.menu.selected = 2;
                     }
                 }
-                if let Some((screen, rows)) = &game.menu_rows
+                if let Some((screen, hits)) = &game.menu_hits
                     && *screen == game.menu.screen
                     && let Some((x, y)) = game.pointer
-                    && let Some(row) = rows.hit(x, y)
                 {
-                    game.clicked = Some((*screen, row, rows.previous_at(row, x)));
+                    if let Some(row) = hits.row_at(x, y) {
+                        game.clicked = Some((*screen, row, hits.decrease_at(row, x)));
+                    } else if let Some(tab) = hits.tab_at(x, y) {
+                        game.clicked_tab = Some(tab);
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {

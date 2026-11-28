@@ -113,6 +113,16 @@ impl HopLatch {
     }
 }
 
+/// Whether menu prompts should show gamepad buttons: a pad press or a stick push switches
+/// to the pad, a key press back to the keyboard; otherwise the last device stays.
+pub fn last_input_was_pad(was: bool, key_pressed: bool, pad: Option<&PadState>) -> bool {
+    if key_pressed {
+        return false;
+    }
+    let used = pad.is_some_and(|p| p.just_pressed != PadButtons::default() || p.left_x.abs() > 0.5);
+    was || used
+}
+
 /// Edge-triggered menu navigation from keyboard and gamepad.
 pub fn menu_input(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu::MenuInput {
     let k = |a: KeyCode, b: KeyCode| keys.just_pressed(a) || keys.just_pressed(b);
@@ -297,6 +307,28 @@ mod tests {
         // Drift kept its other bumper.
         let i = drive_input(&KeyInput::default(), Some(&pad), &b);
         assert!(!i.drift && !i.hop);
+    }
+
+    #[test]
+    fn prompts_follow_the_last_device() {
+        let press = PadState {
+            just_pressed: PadButtons::SOUTH,
+            ..Default::default()
+        };
+        let stick = PadState {
+            left_x: -0.8,
+            ..Default::default()
+        };
+        let idle = PadState::default();
+        assert!(last_input_was_pad(false, false, Some(&press)));
+        assert!(last_input_was_pad(false, false, Some(&stick)));
+        assert!(!last_input_was_pad(true, true, None), "a key switches back");
+        assert!(
+            last_input_was_pad(true, false, Some(&idle)),
+            "no input keeps it"
+        );
+        assert!(!last_input_was_pad(false, false, Some(&idle)));
+        assert!(!last_input_was_pad(true, true, Some(&idle)));
     }
 
     #[test]

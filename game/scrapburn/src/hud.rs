@@ -263,19 +263,11 @@ impl Minimap {
     }
 }
 
-/// One results line: name, kart tint, finish time.
-pub type ResultRow<'a> = (&'a str, [f32; 3], Option<f64>);
-
-/// One circuit standings line: name, kart tint, points this round, total points.
-pub type PointsRow<'a> = (&'a str, [f32; 3], u8, u8);
-
 /// Circuit progress for the race HUD.
-pub struct CircuitHud<'a> {
+pub struct CircuitHud {
     /// 1-based round.
     pub round: usize,
     pub rounds: usize,
-    /// Standings after this round, leader first.
-    pub table: Vec<PointsRow<'a>>,
 }
 
 /// Race-level HUD data.
@@ -284,17 +276,14 @@ pub struct RaceHud<'a> {
     pub racers: usize,
     /// Seconds before GO (negative after), while the label should show.
     pub countdown: Option<f32>,
-    pub finished: Option<u32>,
-    /// (name, tint, finish time) in final order, once the player has finished.
-    pub results: Option<Vec<ResultRow<'a>>>,
-    /// Round and points, when the race is part of a circuit.
-    pub circuit: Option<CircuitHud<'a>>,
+    /// Round, when the race is part of a circuit.
+    pub circuit: Option<CircuitHud>,
     pub track: &'a [glam::Vec3],
     /// (position, tint, is the player)
     pub karts: Vec<(glam::Vec3, [f32; 3], bool)>,
 }
 
-/// Position, minimap, countdown and results.
+/// Position, minimap, and countdown.
 pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
     let ui = (h / 900.0).clamp(0.6, 2.0);
     // Position, top left.
@@ -380,110 +369,8 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
             &format!("CIRCUIT  ROUND {} / {}", c.round, c.rounds),
         );
     }
-
-    // Results.
-    if let Some(results) = &race.results {
-        let gap = 20.0 * ui;
-        let pw = if race.circuit.is_some() {
-            (520.0 * ui).min((w - 3.0 * gap) * 0.5)
-        } else {
-            520.0 * ui
-        };
-        let ph = (90.0 + 40.0 * results.len() as f32) * ui;
-        let x = if race.circuit.is_some() {
-            w * 0.5 - pw - gap * 0.5
-        } else {
-            w * 0.5 - pw * 0.5
-        };
-        let y = h * 0.5 - ph * 0.5;
-        if let Some(c) = &race.circuit {
-            draw_points(o, ui, (w * 0.5 + gap * 0.5, y), pw, c);
-        }
-        o.rect(x, y, pw, ph, [0.04, 0.03, 0.02, 0.78]);
-        o.rect(x, y, pw, 4.0 * ui, ACCENT);
-        let title = race.finished.map_or_else(
-            || "RESULTS".to_string(),
-            |p| format!("YOU FINISHED {}", ordinal(p as usize)),
-        );
-        text(
-            o,
-            x + pw * 0.5 - width(&title, 4.0 * ui) * 0.5,
-            y + 22.0 * ui,
-            4.0 * ui,
-            ACCENT,
-            &title,
-        );
-        for (k, (name, tint, time)) in results.iter().enumerate() {
-            let ry = y + (80.0 + 40.0 * k as f32) * ui;
-            let c = [tint[0].min(1.0), tint[1].min(1.0), tint[2].min(1.0), 1.0];
-            o.rect(x + 30.0 * ui, ry, 14.0 * ui, 22.0 * ui, c);
-            text(
-                o,
-                x + 60.0 * ui,
-                ry,
-                3.0 * ui,
-                WHITE,
-                &format!("{}  {name}", ordinal(k + 1)),
-            );
-            let t = time.map_or_else(|| "--".into(), fmt_time);
-            text(
-                o,
-                x + pw - 30.0 * ui - width(&t, 3.0 * ui),
-                ry,
-                3.0 * ui,
-                DIM,
-                &t,
-            );
-        }
-    }
 }
 
-/// The circuit standings beside the race results.
-fn draw_points(o: &mut Overlay, ui: f32, (x, y): (f32, f32), pw: f32, c: &CircuitHud) {
-    let ph = (90.0 + 40.0 * c.table.len() as f32) * ui;
-    o.rect(x, y, pw, ph, [0.04, 0.03, 0.02, 0.78]);
-    o.rect(x, y, pw, 4.0 * ui, MINT);
-    let title = if c.round >= c.rounds {
-        c.table
-            .first()
-            .map_or_else(|| "CIRCUIT".into(), |l| format!("CHAMPION  {}", l.0))
-    } else {
-        format!("CIRCUIT  AFTER ROUND {} / {}", c.round, c.rounds)
-    };
-    let ts = (4.0 * ui).min((pw - 40.0 * ui) / width(&title, 1.0).max(1.0));
-    text(
-        o,
-        x + pw * 0.5 - width(&title, ts) * 0.5,
-        y + 22.0 * ui,
-        ts,
-        MINT,
-        &title,
-    );
-    for (k, (name, tint, gained, total)) in c.table.iter().enumerate() {
-        let ry = y + (80.0 + 40.0 * k as f32) * ui;
-        let col = [tint[0].min(1.0), tint[1].min(1.0), tint[2].min(1.0), 1.0];
-        o.rect(x + 30.0 * ui, ry, 14.0 * ui, 22.0 * ui, col);
-        text(
-            o,
-            x + 60.0 * ui,
-            ry,
-            3.0 * ui,
-            WHITE,
-            &format!("{}  {name}", ordinal(k + 1)),
-        );
-        let pts = format!("+{gained}  {total} PTS");
-        text(
-            o,
-            x + pw - 30.0 * ui - width(&pts, 3.0 * ui),
-            ry,
-            3.0 * ui,
-            if k == 0 { ACCENT } else { DIM },
-            &pts,
-        );
-    }
-}
-
-/// A centered menu panel with an optional big title (the game logo on the title screen).
 /// Elimination: racers left, a pulsing warning in last place, and the knockout callout.
 pub fn draw_elimination(
     o: &mut Overlay,

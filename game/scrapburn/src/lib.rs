@@ -19,6 +19,7 @@ pub mod kart;
 pub mod laps;
 pub mod materials;
 pub mod menu;
+pub mod menu_draw;
 pub mod netplay;
 pub mod particles;
 pub mod png;
