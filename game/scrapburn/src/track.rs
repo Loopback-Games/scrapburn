@@ -13,6 +13,10 @@ use crate::materials::Layer;
 use crate::terrain::{self, TerrainKind};
 
 pub const ROAD_HALF_WIDTH: f32 = 7.0;
+/// How far from the centerline a kart still counts as on the track: beyond it the race
+/// respawns the kart, and inside it every checkpoint counts, so a kart that runs wide after a
+/// crash or a wrong-way turn keeps its place in the standings.
+pub const TRACK_BAND: f32 = ROAD_HALF_WIDTH + 18.0;
 pub const WALL_HEIGHT: f32 = 1.5;
 /// Barrier collision reaches far above the visible wall so jumps and blasts can't launch a
 /// kart out of the circuit.
@@ -1889,12 +1893,7 @@ pub fn build_track(def: &TrackDef) -> Track {
             line: i,
             center: frames[i].0,
             forward: frames[i].1,
-            half_width: ROAD_HALF_WIDTH
-                + if wall_h == 0.0 {
-                    SAND_SHOULDER_WIDTH
-                } else {
-                    0.5
-                },
+            half_width: TRACK_BAND,
         })
         .collect();
 
@@ -2366,5 +2365,35 @@ mod tests {
             t.checkpoints.len()
         );
         assert!(t.checkpoints[0].center.distance(t.centerline[0]) < 0.01);
+    }
+
+    /// A checkpoint is `TRACK_BAND` wide, so no other stretch of road may pass through its
+    /// gate, or a kart there could count it out of order.
+    #[test]
+    fn checkpoint_gates_only_span_their_own_road() {
+        for def in &TRACKS {
+            let t = build_track(def);
+            let n = t.centerline.len() - 1;
+            for (g, cp) in t.checkpoints.iter().enumerate() {
+                assert_eq!(cp.half_width, TRACK_BAND);
+                for (k, p) in t.centerline[..n].iter().enumerate() {
+                    let gap = (k as isize - cp.line as isize).unsigned_abs();
+                    // Road within 60 m along the loop is this gate's own stretch.
+                    if gap.min(n - gap) < 30 {
+                        continue;
+                    }
+                    let d = *p - cp.center;
+                    let ahead = d.dot(cp.forward);
+                    let lateral = d - cp.forward * ahead;
+                    let flat = (lateral - Vec3::Y * lateral.y).length();
+                    let in_gate = ahead.abs() < SAMPLE_SPACING && lateral.y.abs() < 12.0;
+                    assert!(
+                        !in_gate || flat > TRACK_BAND,
+                        "{} gate {g}: road at line {k} is {flat:.1} m across",
+                        def.name
+                    );
+                }
+            }
+        }
     }
 }

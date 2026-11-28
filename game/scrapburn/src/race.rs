@@ -21,7 +21,7 @@ const START_BOOST: (f32, f32) = (6.0, 0.9);
 const STUCK_SPEED: f32 = 2.0;
 const STUCK_SECONDS: f32 = 2.0;
 /// Farther than this from the centerline (beyond the barriers) for this long = put back.
-const OFF_TRACK_DISTANCE: f32 = crate::track::ROAD_HALF_WIDTH + 18.0;
+const OFF_TRACK_DISTANCE: f32 = crate::track::TRACK_BAND;
 const OFF_TRACK_SECONDS: f32 = 1.5;
 const SPAWN_LIFT: f32 = 0.6;
 /// Catch-up range: bots far behind the player speed up, far ahead slow down.
