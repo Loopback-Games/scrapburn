@@ -12,6 +12,10 @@ use rivet_render::{Preset, QualitySettings};
 use crate::bindings::Bindings;
 use crate::menu::FpsDisplay;
 
+/// Lap and rival counts the menu offers; the file accepts nothing else.
+pub const LAP_CHOICES: [u32; 3] = [1, 3, 5];
+pub const RIVAL_CHOICES: [usize; 3] = [3, 5, 7];
+
 pub const FILE: &str = "settings";
 
 /// Graphics preset, or `Custom` once individual quality options are changed.
@@ -361,10 +365,58 @@ impl Prefs {
             "hud.speedometer" => set(&mut self.hud.speedometer, flag(v)),
             "hud.units" => set(&mut self.hud.units, Units::parse(v)),
             "hud.rival_names" => set(&mut self.hud.rival_names, flag(v)),
-            "gameplay.laps" => set(&mut self.gameplay.laps, int(v, 1, 99)),
-            "gameplay.rivals" => set(&mut self.gameplay.rivals, int(v, 0, 31).map(|x| x as usize)),
+            "gameplay.laps" => set(
+                &mut self.gameplay.laps,
+                v.parse().ok().filter(|n| LAP_CHOICES.contains(n)),
+            ),
+            "gameplay.rivals" => set(
+                &mut self.gameplay.rivals,
+                v.parse().ok().filter(|n| RIVAL_CHOICES.contains(n)),
+            ),
             _ => {}
         }
+    }
+
+    /// The settings for this run: `self` (as loaded) with the command line on top. Benchmarks
+    /// of races stay on Medium. Also returns the file's graphics when the command line
+    /// overrode them, so `persisted` can keep the override out of the saved file.
+    pub fn with_cli(
+        mut self,
+        preset: Option<Preset>,
+        bench: bool,
+        attract: bool,
+    ) -> (Self, Option<Graphics>) {
+        let loaded = self.graphics;
+        let g = &mut self.graphics;
+        g.auto = g.auto && preset.is_none() && (!bench || attract);
+        let restore = match preset {
+            Some(p) => {
+                g.set_preset(p);
+                Some(loaded)
+            }
+            None => {
+                // Auto graphics starts on High and settles down.
+                if g.auto {
+                    g.set_preset(Preset::High);
+                } else if bench {
+                    g.set_preset(Preset::Medium);
+                }
+                None
+            }
+        };
+        (self, restore)
+    }
+
+    /// What to write: `self`, except the graphics preset, quality and auto flag come from
+    /// `restore` while a command-line override is in force.
+    pub fn persisted(&self, restore: Option<&Graphics>) -> Self {
+        let mut p = *self;
+        if let Some(r) = restore {
+            p.graphics.preset = r.preset;
+            p.graphics.auto = r.auto;
+            p.graphics.quality = r.quality;
+        }
+        p
     }
 
     /// The file text, one `key value` per line.
@@ -557,11 +609,11 @@ mod tests {
     #[test]
     fn bad_value_falls_back_for_that_key_only() {
         let p = Prefs::parse(
-            "gameplay.laps many\ngameplay.rivals 2\ncamera.fov nan\ngraphics.frame_cap 75\n\
+            "gameplay.laps many\ngameplay.rivals 5\ncamera.fov nan\ngraphics.frame_cap 75\n\
              hud.units furlongs\naudio.music loud\naudio.master 40\n",
         );
         assert_eq!(p.gameplay.laps, 3);
-        assert_eq!(p.gameplay.rivals, 2);
+        assert_eq!(p.gameplay.rivals, 5);
         assert_eq!(p.camera.fov, 61.0);
         assert_eq!(p.graphics.frame_cap, None);
         assert_eq!(p.hud.units, Units::Kmh);
@@ -574,7 +626,7 @@ mod tests {
         let p = Prefs::parse(
             "camera.distance 99\ncamera.height -4\ncamera.fov 200\ncamera.shake 900\n\
              controls.deadzone 80\ncontrols.sensitivity -5\nhud.scale 10\naudio.master 1000\n\
-             gameplay.laps 0\ngraphics.render_scale 9\ngraphics.anisotropy 64\n",
+             gameplay.laps 5\ngraphics.render_scale 9\ngraphics.anisotropy 64\n",
         );
         assert_eq!(p.camera.distance, 7.0);
         assert_eq!(p.camera.height, 1.0);
@@ -584,9 +636,43 @@ mod tests {
         assert_eq!(p.controls.sensitivity, 0);
         assert_eq!(p.hud.scale, 70);
         assert_eq!(p.audio.master, 100);
-        assert_eq!(p.gameplay.laps, 1);
+        assert_eq!(p.gameplay.laps, 5);
         assert_eq!(p.graphics.quality.render_scale, 1.0);
         assert_eq!(p.graphics.quality.anisotropy, 16);
+    }
+
+    #[test]
+    fn laps_and_rivals_snap_to_menu_choices() {
+        let p = Prefs::parse("gameplay.laps 4\ngameplay.rivals 30\n");
+        assert_eq!((p.gameplay.laps, p.gameplay.rivals), (3, 7));
+        let p = Prefs::parse("gameplay.laps 5\ngameplay.rivals 3\n");
+        assert_eq!((p.gameplay.laps, p.gameplay.rivals), (5, 3));
+    }
+
+    #[test]
+    fn cli_preset_is_not_persisted() {
+        let mut file = Prefs::default();
+        file.graphics.set_preset(Preset::High);
+        file.graphics.auto = true;
+        let (run, restore) = file.with_cli(Some(Preset::Low), false, false);
+        assert_eq!(run.graphics.preset, PresetChoice::Low);
+        assert!(!run.graphics.auto);
+        assert_eq!(run.graphics.quality, Preset::Low.settings());
+        let saved = run.persisted(restore.as_ref());
+        assert_eq!(saved.graphics, file.graphics);
+        // Without an override the run's graphics are saved as they are.
+        let (run, restore) = file.with_cli(None, false, false);
+        assert_eq!(run.persisted(restore.as_ref()), run);
+    }
+
+    #[test]
+    fn bench_ignores_auto_unless_attract() {
+        let (race, _) = Prefs::default().with_cli(None, true, false);
+        assert!(!race.graphics.auto);
+        assert_eq!(race.graphics.preset, PresetChoice::Medium);
+        let (title, _) = Prefs::default().with_cli(None, true, true);
+        assert!(title.graphics.auto);
+        assert_eq!(title.graphics.preset, PresetChoice::High);
     }
 
     #[test]

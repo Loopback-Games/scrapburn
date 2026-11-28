@@ -154,8 +154,7 @@ pub const SETTING_LAPS: usize = 1;
 pub const SETTING_RIVALS: usize = 2;
 pub const SETTING_FPS: usize = 3;
 pub const SETTING_MUSIC: usize = 4;
-const LAP_CHOICES: [u32; 3] = [1, 3, 5];
-const RIVAL_CHOICES: [usize; 3] = [3, 5, 7];
+use crate::prefs::{LAP_CHOICES, RIVAL_CHOICES};
 
 fn cycle<T: PartialEq + Copy>(choices: &[T], current: T, dir: i32) -> T {
     let i = choices.iter().position(|c| *c == current).unwrap_or(0) as i32;

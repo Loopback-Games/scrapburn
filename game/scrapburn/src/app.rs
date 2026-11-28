@@ -156,24 +156,18 @@ impl Lcg {
     }
 }
 
-/// The settings for this run: the saved file, then the command line on top. Benchmarks ignore
-/// the file so their numbers do not depend on the machine's saved choices.
-fn initial_prefs(args: &Args, dir: Option<&std::path::Path>) -> Prefs {
+/// The settings for this run (see `Prefs::with_cli`) and the file's graphics to keep when saving.
+fn initial_prefs(
+    args: &Args,
+    dir: Option<&std::path::Path>,
+) -> (Prefs, Option<scrapburn::prefs::Graphics>) {
     let bench = args.bench.is_some();
-    let mut prefs = match dir {
+    // Benchmarks ignore the file so their numbers do not depend on saved choices.
+    let loaded = match dir {
         Some(d) if !bench => Prefs::load(d),
         _ => Prefs::default(),
     };
-    let g = &mut prefs.graphics;
-    // Auto graphics starts on High and settles down; benchmarks of races stay on Medium.
-    g.auto = g.auto && args.preset.is_none() && (!bench || args.attract);
-    match args.preset {
-        Some(p) => g.set_preset(p),
-        None if g.auto => g.set_preset(rivet_render::Preset::High),
-        None if bench => g.set_preset(rivet_render::Preset::Medium),
-        None => {}
-    }
-    prefs
+    loaded.with_cli(args.preset, bench, args.attract)
 }
 
 /// A burst of additive sparks.
@@ -247,6 +241,8 @@ struct Game {
     /// The circuit being raced, if any.
     circuit: Option<Circuit>,
     settings: Settings,
+    /// The file's graphics while `--preset` overrides them; kept out of the saved file.
+    cli_graphics: Option<scrapburn::prefs::Graphics>,
     clock: FixedTimestep,
     camera: ChaseCamera,
     keys: KeyInput,
@@ -461,11 +457,12 @@ impl Game {
                 }
             }
         }
+        let (prefs, cli_graphics) = initial_prefs(args, scrapburn::ghost::data_dir().as_deref());
         let settings = Settings {
             loadout: scrapburn::ghost::data_dir()
                 .map(|d| scrapburn::kart::Loadout::read(&d))
                 .unwrap_or_default(),
-            prefs: initial_prefs(args, scrapburn::ghost::data_dir().as_deref()),
+            prefs,
             track: args.track,
         };
         let scene = SceneRenderer::new(
@@ -618,6 +615,7 @@ impl Game {
             peers_at: -100.0,
             resolving: None,
             net_ticks: 0,
+            cli_graphics,
             tuner: {
                 let mut t = scrapburn::autotune::AutoTuner::new();
                 // Benchmarks of races use a fixed preset; a title-screen benchmark may tune.
@@ -637,7 +635,11 @@ impl Game {
             return;
         }
         if let Some(dir) = scrapburn::ghost::data_dir()
-            && let Err(e) = self.settings.prefs.save(&dir)
+            && let Err(e) = self
+                .settings
+                .prefs
+                .persisted(self.cli_graphics.as_ref())
+                .save(&dir)
         {
             log::warn!("saving settings: {e}");
         }
@@ -1395,6 +1397,8 @@ impl Game {
                         return Some(ExitCode::SUCCESS);
                     }
                     MenuAction::PresetChanged => {
+                        // The player chose graphics this run; that choice is saved.
+                        self.cli_graphics = None;
                         self.tuner.stop();
                         self.rebuild_renderer();
                     }

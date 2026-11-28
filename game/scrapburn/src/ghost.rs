@@ -204,21 +204,21 @@ pub fn save(path: &Path, g: &Ghost) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use glam::{Quat, Vec3};
+
     #[test]
     fn write_atomic_creates_dirs_and_replaces() {
         let dir = std::env::temp_dir().join(format!("scrapburn-atomic-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("sub").join("file");
-        super::write_atomic(&path, b"one").unwrap();
-        super::write_atomic(&path, b"two").unwrap();
+        write_atomic(&path, b"one").unwrap();
+        write_atomic(&path, b"two").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
         let left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().collect();
         assert_eq!(left.len(), 1, "no temp file left behind");
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-    use super::*;
-    use glam::{Quat, Vec3};
 
     fn lap(time_scale: f32) -> Ghost {
         let mut r = GhostRecorder::default();
