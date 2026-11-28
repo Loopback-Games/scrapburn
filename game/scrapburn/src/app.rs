@@ -11,8 +11,8 @@ use rivet_core::{FixedTimestep, FrameStats};
 use rivet_physics::{DriveInput, VehicleState};
 use rivet_platform::{Gamepads, KeyInput, PadButtons};
 use rivet_render::{
-    Draw, FrameContent, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay, ParticleInstance,
-    SceneRenderer, View, box_mesh, draw_frame_graph,
+    Draw, FontSet, FrameContent, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay,
+    ParticleInstance, SceneRenderer, View, box_mesh, draw_frame_graph,
 };
 use scrapburn::args::{Args, Mode};
 use scrapburn::bench::{Bench, BenchPhase};
@@ -474,12 +474,27 @@ impl Game {
             &layers,
             &shading_table,
         );
-        let font = std::fs::read(assets.join("fonts").join("Rajdhani-Bold.ttf"))
-            .map_err(|e| log::warn!("HUD font missing ({e}); using the bitmap font"))
-            .ok();
+        let read_font = |name: &str, what: &str| {
+            std::fs::read(assets.join("fonts").join(name))
+                .map_err(|e| log::warn!("{what} font missing ({e}); using a fallback face"))
+                .ok()
+        };
+        let hud_font = read_font("Rajdhani-Bold.ttf", "HUD");
+        let row_font = read_font("ChakraPetch-SemiBold.ttf", "menu row");
+        let display_font = read_font("BigShouldersStencilDisplay-Black.ttf", "menu display");
         let mut scene = scene;
         scene.lighting = scrapburn::track::lighting(TRACKS[settings.track].id);
-        let overlay = Overlay::new(&ctx.device, &ctx.queue, ctx.format(), None, font.as_deref());
+        let overlay = Overlay::new(
+            &ctx.device,
+            &ctx.queue,
+            ctx.format(),
+            None,
+            FontSet {
+                hud: hud_font.as_deref(),
+                row: row_font.as_deref(),
+                display: display_font.as_deref(),
+            },
+        );
         let timer = GpuTimer::new(&ctx.device, &ctx.queue);
         let track = build_track(&TRACKS[settings.track]);
         let track_meshes =

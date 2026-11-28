@@ -1,9 +1,11 @@
-//! Screen-space colored rectangles and bitmap text, drawn last in the scene pass.
+//! Screen-space colored shapes, gradients, glows, and text: one atlas, one draw call. The
+//! overlay is drawn in its own pass after post-processing, so it is never tonemapped or blurred.
 
 use bytemuck::{Pod, Zeroable};
 
 use crate::font;
-use crate::font_atlas::FontAtlas;
+pub use crate::font_atlas::Face;
+use crate::font_atlas::{FaceSpec, FontAtlas, FontMetrics, GlyphSet};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -24,39 +26,132 @@ pub struct Overlay {
     vertices: Vec<OverlayVertex>,
     uploaded: u32,
     atlas: Option<FontAtlas>,
+    /// Atlas face index for each `Face`, if its font loaded.
+    slots: [Option<usize>; 3],
 }
 
 /// Font metrics shared with layout code that has no overlay at hand (HUD width measuring).
-static GLOBAL_METRICS: std::sync::OnceLock<crate::font_atlas::FontMetrics> =
-    std::sync::OnceLock::new();
+static GLOBAL_METRICS: [std::sync::OnceLock<FontMetrics>; 3] = [
+    std::sync::OnceLock::new(),
+    std::sync::OnceLock::new(),
+    std::sync::OnceLock::new(),
+];
+
+/// Font files for each face. A missing menu face falls back to a neighbor, never panics.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FontSet<'a> {
+    pub hud: Option<&'a [u8]>,
+    pub row: Option<&'a [u8]>,
+    pub display: Option<&'a [u8]>,
+}
+
+/// Raster size of the Hud and Row faces, and of the large Display face.
+const TEXT_RASTER_PX: f32 = 64.0;
+const DISPLAY_RASTER_PX: f32 = 176.0;
+
+/// The atlas specs for the available fonts, in `Face` order (Hud, Row, Display).
+fn face_specs<'a>(hud: &'a [u8], row: &'a [u8], display: &'a [u8]) -> [FaceSpec<'a>; 3] {
+    [
+        FaceSpec {
+            ttf: hud,
+            raster_px: TEXT_RASTER_PX,
+            glyphs: GlyphSet::Ascii,
+        },
+        FaceSpec {
+            ttf: row,
+            raster_px: TEXT_RASTER_PX,
+            glyphs: GlyphSet::AsciiExtras,
+        },
+        FaceSpec {
+            ttf: display,
+            raster_px: DISPLAY_RASTER_PX,
+            glyphs: GlyphSet::Caps,
+        },
+    ]
+}
+
+fn face_slot(face: Face) -> usize {
+    match face {
+        Face::Hud => 0,
+        Face::Row => 1,
+        Face::Display => 2,
+    }
+}
+
+/// Faces to try for `face`, most preferred first.
+fn fallback_chain(face: Face) -> &'static [Face] {
+    match face {
+        Face::Hud => &[Face::Hud],
+        Face::Row => &[Face::Row, Face::Hud],
+        Face::Display => &[Face::Display, Face::Row, Face::Hud],
+    }
+}
+
+/// Builds an atlas from the fonts present, returning it with each face's index in it.
+fn build_atlas(fonts: &FontSet<'_>) -> (Option<FontAtlas>, [Option<usize>; 3]) {
+    let given = [fonts.hud, fonts.row, fonts.display];
+    let all = face_specs(
+        given[0].unwrap_or_default(),
+        given[1].unwrap_or_default(),
+        given[2].unwrap_or_default(),
+    );
+    let try_pack = |keep: &dyn Fn(usize) -> bool| {
+        let mut slots = [None; 3];
+        let mut specs = Vec::new();
+        for (i, spec) in all.iter().enumerate() {
+            if given[i].is_some() && keep(i) {
+                slots[i] = Some(specs.len());
+                specs.push(*spec);
+            }
+        }
+        if specs.is_empty() {
+            return None;
+        }
+        match FontAtlas::new(&specs) {
+            Ok(a) => Some((a, slots)),
+            Err(e) => {
+                log::warn!("fonts unusable ({e})");
+                None
+            }
+        }
+    };
+    // A broken menu font must not cost the HUD its face: retry with the HUD font alone.
+    let packed = try_pack(&|_| true).or_else(|| try_pack(&|i| i == 0));
+    match packed {
+        Some((a, slots)) => (Some(a), slots),
+        None => (None, [None; 3]),
+    }
+}
 
 /// Bitmap-scale units to TrueType pixels: a bitmap glyph is 7 units tall.
 const LABEL_PX_PER_SCALE: f32 = 12.0;
 
 /// Width of `label` text at `scale` (TrueType when loaded, else the bitmap font).
 pub fn label_width(s: &str, scale: f32) -> f32 {
-    match GLOBAL_METRICS.get() {
-        Some(m) => m.text_width(s, scale * LABEL_PX_PER_SCALE),
-        None => font::text_width(s, scale),
-    }
+    label_width_face(Face::Hud, s, scale)
+}
+
+/// Width of `label_face` text at `scale` (a missing face measures as its fallback).
+pub fn label_width_face(face: Face, s: &str, scale: f32) -> f32 {
+    fallback_chain(face)
+        .iter()
+        .find_map(|f| GLOBAL_METRICS[face_slot(*f)].get())
+        .map_or_else(
+            || font::text_width(s, scale),
+            |m| m.text_width(s, scale * LABEL_PX_PER_SCALE),
+        )
 }
 
 impl Overlay {
-    /// `font_ttf`: a TrueType font for `label` text (HUD); without it labels use the bitmap font.
+    /// `fonts`: TrueType fonts for `label` text; without the HUD font labels use the bitmap font.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         depth_format: Option<wgpu::TextureFormat>,
-        font_ttf: Option<&[u8]>,
+        fonts: FontSet<'_>,
     ) -> Self {
-        let atlas = font_ttf.and_then(|bytes| match FontAtlas::new(bytes) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                log::warn!("HUD font unusable ({e}); using the bitmap font");
-                None
-            }
-        });
+        let (atlas, slots) = build_atlas(&fonts);
         let atlas_view = match &atlas {
             Some(a) => crate::texture::texture_2d(
                 device,
@@ -190,8 +285,13 @@ impl Overlay {
             vertices: Vec::new(),
             uploaded: 0,
             atlas: atlas.inspect(|a| {
-                let _ = GLOBAL_METRICS.set(a.metrics());
+                for (cell, slot) in GLOBAL_METRICS.iter().zip(slots) {
+                    if let Some(m) = slot.and_then(|i| a.metrics(i)) {
+                        let _ = cell.set(m);
+                    }
+                }
             }),
+            slots,
         }
     }
 
@@ -239,37 +339,80 @@ impl Overlay {
         self.rounded_rect(cx - r, cy - r, 2.0 * r, 2.0 * r, r, color);
     }
 
+    /// The atlas face to draw `face` with, falling back Display -> Row -> Hud.
+    fn resolve(&self, face: Face) -> Option<usize> {
+        fallback_chain(face)
+            .iter()
+            .find_map(|f| self.slots[face_slot(*f)])
+    }
+
     /// Label text whose capitals are vertically centered on `cy`.
     pub fn label_centered(&mut self, x: f32, cy: f32, scale: f32, color: [f32; 4], s: &str) {
-        let y = match &self.atlas {
-            Some(atlas) => cy - atlas.cap_middle(scale * LABEL_PX_PER_SCALE),
-            // The bitmap font is 7 units tall from its top.
-            None => cy - 3.5 * scale,
-        };
-        self.label(x, y, scale, color, s);
+        self.label_face_centered(Face::Hud, x, cy, scale, color, s);
     }
 
     /// HUD text in the TrueType font (falls back to the bitmap font). `scale` matches `text`.
     pub fn label(&mut self, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
-        let Some(atlas) = &self.atlas else {
-            self.text(x, y, scale, color, s);
-            return;
+        self.label_face(Face::Hud, x, y, scale, color, s);
+    }
+
+    /// `label_centered` in any face.
+    pub fn label_face_centered(
+        &mut self,
+        face: Face,
+        x: f32,
+        cy: f32,
+        scale: f32,
+        color: [f32; 4],
+        s: &str,
+    ) {
+        let y = match (&self.atlas, self.resolve(face)) {
+            (Some(atlas), Some(i)) => cy - atlas.cap_middle(i, scale * LABEL_PX_PER_SCALE),
+            // The bitmap font is 7 units tall from its top.
+            _ => cy - 3.5 * scale,
         };
-        for q in atlas.layout(s, x, y, scale * LABEL_PX_PER_SCALE) {
-            let [x0, y0, w, h] = q.rect;
-            let [u0, v0, u1, v1] = q.uv;
-            let (x1, y1) = (x0 + w, y0 + h);
-            for (pos, uv) in [
-                ([x0, y0], [u0, v0]),
-                ([x1, y0], [u1, v0]),
-                ([x1, y1], [u1, v1]),
-                ([x0, y0], [u0, v0]),
-                ([x1, y1], [u1, v1]),
-                ([x0, y1], [u0, v1]),
-            ] {
-                self.vertices.push(OverlayVertex { pos, uv, color });
+        self.label_face(face, x, y, scale, color, s);
+    }
+
+    /// `label` in any face. A face whose font is missing draws in the next one down.
+    pub fn label_face(&mut self, face: Face, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
+        self.label_gradient(face, x, y, scale, color, color, s);
+    }
+
+    /// Label text whose color fades from `top` to `bottom` over the capital height, so each
+    /// glyph is shaded by where its vertices sit between the cap line and the baseline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn label_gradient(
+        &mut self,
+        face: Face,
+        x: f32,
+        y: f32,
+        scale: f32,
+        top: [f32; 4],
+        bottom: [f32; 4],
+        s: &str,
+    ) {
+        match (&self.atlas, self.resolve(face)) {
+            (Some(atlas), Some(i)) => {
+                let px = scale * LABEL_PX_PER_SCALE;
+                self.vertices
+                    .extend(label_vertices(atlas, i, s, x, y, px, top, bottom));
             }
+            _ => self.text(x, y, scale, top, s),
         }
+    }
+
+    /// Four-point polygon (top-left, top-right, bottom-right, bottom-left) with a color at each
+    /// corner. Gradient rectangles and slanted row ends are built from this.
+    pub fn quad(&mut self, points: [[f32; 2]; 4], colors: [[f32; 4]; 4]) {
+        self.vertices.extend(quad_vertices(points, colors));
+    }
+
+    /// Soft glow around the rectangle: `color` inside, fading to transparent over `spread`
+    /// pixels outside. Draw it under the shape it lights.
+    pub fn glow_rect(&mut self, x: f32, y: f32, w: f32, h: f32, spread: f32, color: [f32; 4]) {
+        self.vertices
+            .extend(glow_vertices(x, y, w, h, spread, color));
     }
 
     pub fn text(&mut self, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
@@ -306,6 +449,106 @@ impl Overlay {
         pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
         pass.draw(0..self.uploaded, 0..1);
     }
+}
+
+/// Two triangles for a quad given as top-left, top-right, bottom-right, bottom-left.
+fn quad_vertices(points: [[f32; 2]; 4], colors: [[f32; 4]; 4]) -> [OverlayVertex; 6] {
+    let v = |i: usize| OverlayVertex {
+        pos: points[i],
+        uv: [-1.0, -1.0],
+        color: colors[i],
+    };
+    [v(0), v(1), v(2), v(0), v(2), v(3)]
+}
+
+fn lerp4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+/// Glyph triangles for `s` in atlas face `face`, colored per vertex from `top` at the cap line
+/// to `bottom` at the baseline (clamped outside, so descenders keep `bottom`).
+#[allow(clippy::too_many_arguments)]
+fn label_vertices(
+    atlas: &FontAtlas,
+    face: usize,
+    s: &str,
+    x: f32,
+    y: f32,
+    px: f32,
+    top: [f32; 4],
+    bottom: [f32; 4],
+) -> Vec<OverlayVertex> {
+    let (cap_top, cap_h) = atlas.cap_span(face, px);
+    let shade = |vy: f32| {
+        if top == bottom || cap_h <= 0.0 {
+            top
+        } else {
+            lerp4(top, bottom, ((vy - (y + cap_top)) / cap_h).clamp(0.0, 1.0))
+        }
+    };
+    let mut out = Vec::new();
+    for q in atlas.layout(face, s, x, y, px) {
+        let [x0, y0, w, h] = q.rect;
+        let [u0, v0, u1, v1] = q.uv;
+        let (x1, y1) = (x0 + w, y0 + h);
+        let (ct, cb) = (shade(y0), shade(y1));
+        for (pos, uv, color) in [
+            ([x0, y0], [u0, v0], ct),
+            ([x1, y0], [u1, v0], ct),
+            ([x1, y1], [u1, v1], cb),
+            ([x0, y0], [u0, v0], ct),
+            ([x1, y1], [u1, v1], cb),
+            ([x0, y1], [u0, v1], cb),
+        ] {
+            out.push(OverlayVertex { pos, uv, color });
+        }
+    }
+    out
+}
+
+/// Nine quads: the opaque center and eight slices around it whose outer vertices have alpha 0.
+fn glow_vertices(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    spread: f32,
+    color: [f32; 4],
+) -> Vec<OverlayVertex> {
+    if w <= 0.0 || h <= 0.0 || spread <= 0.0 {
+        return Vec::new();
+    }
+    let clear = [color[0], color[1], color[2], 0.0];
+    let xs = [x - spread, x, x + w, x + w + spread];
+    let ys = [y - spread, y, y + h, y + h + spread];
+    let mut out = Vec::with_capacity(9 * 6);
+    for row in 0..3 {
+        for col in 0..3 {
+            let c = |i: usize, j: usize| {
+                // Grid points on the inner rectangle keep the color; the rest fade out.
+                if (1..=2).contains(&i) && (1..=2).contains(&j) {
+                    color
+                } else {
+                    clear
+                }
+            };
+            out.extend(quad_vertices(
+                [
+                    [xs[col], ys[row]],
+                    [xs[col + 1], ys[row]],
+                    [xs[col + 1], ys[row + 1]],
+                    [xs[col], ys[row + 1]],
+                ],
+                [
+                    c(col, row),
+                    c(col + 1, row),
+                    c(col + 1, row + 1),
+                    c(col, row + 1),
+                ],
+            ));
+        }
+    }
+    out
 }
 
 /// Width in pixels of the antialiased rim around rounded shapes.
@@ -392,6 +635,100 @@ mod tests {
                 0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs()
             })
             .sum()
+    }
+
+    fn test_atlas() -> FontAtlas {
+        let font = |name: &str| {
+            std::fs::read(format!(
+                "{}/../../assets/fonts/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("font in assets")
+        };
+        let (h, r, d) = (
+            font("Rajdhani-Bold.ttf"),
+            font("ChakraPetch-SemiBold.ttf"),
+            font("BigShouldersStencilDisplay-Black.ttf"),
+        );
+        FontAtlas::new(&face_specs(&h, &r, &d)).expect("atlas")
+    }
+
+    #[test]
+    fn quad_is_two_triangles_with_per_corner_colors() {
+        let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
+        let cols = [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+        ];
+        let v = quad_vertices(pts, cols);
+        assert_eq!(v.len(), 6);
+        for p in &v {
+            let i = pts.iter().position(|q| *q == p.pos).expect("a corner");
+            assert_eq!(p.color, cols[i]);
+            assert_eq!(p.uv, [-1.0, -1.0]);
+        }
+        let corners: Vec<_> = v.iter().map(|p| p.pos).collect();
+        for q in pts {
+            assert!(corners.contains(&q));
+        }
+    }
+
+    #[test]
+    fn gradient_label_runs_top_to_bottom_over_the_cap_height() {
+        let atlas = test_atlas();
+        let (top, bottom) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.5]);
+        let (y, px) = (50.0, 120.0);
+        let v = label_vertices(&atlas, 2, "HI", 5.0, y, px, top, bottom);
+        assert_eq!(v.len(), 12, "two glyphs, two triangles each");
+        let (cap_top, cap_h) = atlas.cap_span(2, px);
+        let (mut min_t, mut max_t) = (f32::MAX, f32::MIN);
+        for p in &v {
+            let t = ((p.pos[1] - (y + cap_top)) / cap_h).clamp(0.0, 1.0);
+            for c in 0..4 {
+                let want = top[c] + (bottom[c] - top[c]) * t;
+                assert!((p.color[c] - want).abs() < 1e-4, "channel {c} at t={t}");
+            }
+            min_t = min_t.min(t);
+            max_t = max_t.max(t);
+        }
+        // Glyph bitmaps sit within a pixel of the cap line and baseline.
+        assert!(min_t < 0.05 && max_t > 0.95, "t spans {min_t}..{max_t}");
+    }
+
+    #[test]
+    fn solid_label_vertices_use_one_color() {
+        let atlas = test_atlas();
+        let c = [0.2, 0.4, 0.6, 1.0];
+        let v = label_vertices(&atlas, 0, "OK", 0.0, 0.0, 30.0, c, c);
+        assert!(v.iter().all(|p| p.color == c && p.uv[0] >= 0.0));
+    }
+
+    #[test]
+    fn glow_is_nine_quads_fading_to_transparent_outside() {
+        let color = [1.0, 0.5, 0.0, 0.8];
+        let v = glow_vertices(100.0, 50.0, 40.0, 20.0, 12.0, color);
+        assert_eq!(v.len(), 9 * 6);
+        let (x0, y0, x1, y1) = (100.0, 50.0, 140.0, 70.0);
+        for p in &v {
+            let [px, py] = p.pos;
+            let inside = (x0..=x1).contains(&px) && (y0..=y1).contains(&py);
+            if inside {
+                assert_eq!(p.color, color, "inner vertices keep the color");
+            } else {
+                assert_eq!(p.color[3], 0.0, "outer vertex at {px},{py}");
+                assert_eq!(p.color[..3], color[..3]);
+            }
+        }
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in &v {
+            for a in 0..2 {
+                lo[a] = lo[a].min(p.pos[a]);
+                hi[a] = hi[a].max(p.pos[a]);
+            }
+        }
+        assert_eq!((lo, hi), ([88.0, 38.0], [152.0, 82.0]));
     }
 
     #[test]
