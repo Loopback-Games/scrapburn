@@ -28,6 +28,23 @@ pub fn pick_video_mode(modes: &[ModeInfo]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// How long after asking for a fullscreen mode to trust the window's report of it: the
+/// compositor confirms the change asynchronously.
+pub const FULLSCREEN_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether the window has left the fullscreen `mode` the game put it in, by the system's
+/// doing (a compositor shortcut, say): it reports no fullscreen, `since_applied` after the
+/// game asked for it.
+pub fn left_fullscreen(
+    mode: crate::prefs::DisplayMode,
+    window_fullscreen: bool,
+    since_applied: std::time::Duration,
+) -> bool {
+    mode != crate::prefs::DisplayMode::Windowed
+        && !window_fullscreen
+        && since_applied >= FULLSCREEN_SETTLE
+}
+
 /// The window's size while windowed, kept from `Resized` events so it can be restored after
 /// fullscreen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,12 +87,29 @@ impl WindowedSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn m(w: u32, h: u32, hz: u32) -> ModeInfo {
         ModeInfo {
             size: (w, h),
             refresh_mhz: hz * 1000,
         }
+    }
+
+    #[test]
+    fn leaving_fullscreen_outside_the_game_is_noticed_once_it_settles() {
+        use crate::prefs::DisplayMode::{Borderless, Fullscreen, Windowed};
+        let settled = Duration::from_secs(2);
+        assert!(left_fullscreen(Fullscreen, false, settled));
+        assert!(left_fullscreen(Borderless, false, settled));
+        assert!(!left_fullscreen(Fullscreen, true, settled));
+        assert!(!left_fullscreen(Windowed, false, settled));
+        // Right after asking for fullscreen the window may not report it yet.
+        assert!(!left_fullscreen(
+            Fullscreen,
+            false,
+            Duration::from_millis(200)
+        ));
     }
 
     #[test]

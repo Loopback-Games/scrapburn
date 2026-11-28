@@ -344,6 +344,8 @@ struct Game {
     display: DisplayMode,
     /// The window's size while windowed, restored on returning to Windowed.
     windowed_size: scrapburn::display::WindowedSize,
+    /// When `apply_display` last changed the window's mode.
+    display_applied: Instant,
     /// Display-mode and V-sync edits wait for a pause, like renderer rebuilds: holding an
     /// arrow on those rows would otherwise switch modes several times a second.
     display_change: scrapburn::debounce::RebuildSchedule,
@@ -768,6 +770,7 @@ impl Game {
             cli,
             display: DisplayMode::Windowed,
             windowed_size: scrapburn::display::WindowedSize::new(args.size),
+            display_applied: Instant::now(),
             display_change: Default::default(),
             vsync_change: Default::default(),
             next_frame: None,
@@ -821,6 +824,30 @@ impl Game {
         };
         log::info!("display: {applied}");
         self.display = want;
+        self.display_applied = Instant::now();
+    }
+
+    /// Follows the window out of fullscreen when the system, not the game, ended it: the
+    /// game is windowed from then on and the Display row says so. The saved mode is kept
+    /// (as a command-line override would be) unless the player changes the row.
+    fn notice_left_fullscreen(&mut self) {
+        if self.bench.is_some()
+            || !scrapburn::display::left_fullscreen(
+                self.display,
+                self.window.fullscreen().is_some(),
+                self.display_applied.elapsed(),
+            )
+        {
+            return;
+        }
+        log::info!("display: the system left {:?}; now windowed", self.display);
+        let g = &mut self.settings.prefs.graphics;
+        self.cli.display.get_or_insert(g.display);
+        g.display = DisplayMode::Windowed;
+        self.display = DisplayMode::Windowed;
+        // Resizes to the old fullscreen size may still arrive; do not keep them as the
+        // window's size.
+        self.windowed_size.begin_restore();
     }
 
     /// The frame cap in force: the saved one, or `--bench-cap` for a benchmark.
@@ -912,6 +939,9 @@ impl Game {
 
     /// Starts a race in `mode`: one race on the equipped track, or round one of a circuit.
     fn begin(&mut self, mode: Mode, event: Event) {
+        // Keep race setup's laps and rivals even if the game is never quit cleanly
+        // (benchmarks never save).
+        self.save_prefs();
         self.circuit = (event == Event::Circuit && mode != Mode::TimeTrial).then(Circuit::default);
         self.play_round(mode);
     }
@@ -1823,8 +1853,6 @@ impl Game {
             .as_mut()
             .and_then(|t| t.poll_ms(&self.ctx.device));
         self.stats.push(cpu_ms, gpu_ms);
-        // Auto graphics: settle the preset on the title screen. Without a GPU timer there is
-        // nothing reliable to measure, so play safe on Medium.
         // Graphics edits apply after a pause, or at once on leaving the Graphics tab.
         let editing = self.menu.screen == Screen::Settings(scrapburn::menu::Tab::Graphics);
         if self.rebuild.settle(now, editing) {
@@ -1837,6 +1865,8 @@ impl Game {
             self.ctx
                 .set_present(present_choice(self.settings.prefs.graphics.vsync));
         }
+        // Auto graphics: settle the preset on the title screen. Without a GPU timer there is
+        // nothing reliable to measure, so play safe on Medium.
         if self.tuner.active() && self.timer.is_none() {
             self.tuner.stop();
             self.settings
@@ -2987,6 +3017,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 game.minimized = size.width == 0 || size.height == 0;
+                game.notice_left_fullscreen();
                 if game.display == DisplayMode::Windowed && game.window.fullscreen().is_none() {
                     let fills_monitor = game
                         .window
