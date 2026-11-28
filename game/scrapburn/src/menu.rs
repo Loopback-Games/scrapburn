@@ -3,7 +3,7 @@
 use rivet_audio::Theme;
 use rivet_render::{Preset, QualitySettings};
 
-use crate::bindings::BindRow;
+use crate::bindings::{Action, BindRow, Press};
 use crate::prefs::{
     DisplayMode, FRAME_CAPS, Graphics, LAP_CHOICES, PresetChoice, RIVAL_CHOICES, Units,
 };
@@ -104,7 +104,7 @@ pub enum MenuAction {
     VolumeChanged,
     /// The Audio tab's "Listen to" row picked a song to preview.
     PreviewSong(Theme),
-    /// A Controls tab binding was captured.
+    /// A Controls tab binding was captured; it is already in `prefs.controls.bindings`.
     BindingCaptured,
     /// A different track was picked on the title screen.
     TrackChanged,
@@ -579,6 +579,9 @@ pub struct MenuState {
     pub mode: RaceMode,
     /// The Controls tab's Device choice: show gamepad buttons rather than keys.
     pub gamepad_guide: bool,
+    /// The action waiting for a key or button press (see `capture`); menu input is ignored
+    /// until it arrives or is cancelled.
+    pub capturing: Option<Action>,
     /// The Audio tab's "Listen to" song.
     pub listen: Theme,
     pub name_entry: String,
@@ -611,6 +614,7 @@ impl MenuState {
             name_return: Screen::Online,
             mode: RaceMode::Race,
             gamepad_guide: false,
+            capturing: None,
             listen: Theme::Menu,
             name_entry: String::new(),
             join_addr: String::new(),
@@ -684,6 +688,7 @@ impl MenuState {
         }
         self.screen = screen;
         self.selected = 0;
+        self.capturing = None;
     }
 
     /// Highlight the row `id` on the current screen, if it has one.
@@ -1101,33 +1106,47 @@ impl MenuState {
                 )];
                 for b in BindRow::ALL {
                     let (label, help) = match b {
-                        BindRow::Accelerate => (
+                        BindRow::Action(Action::Accelerate) => (
                             "Accelerate",
                             "Hold to drive. On a gamepad the trigger is analog.",
                         ),
-                        BindRow::Brake => {
+                        BindRow::Action(Action::Brake) => {
                             ("Brake & reverse", "Hold to brake, keep holding to reverse.")
                         }
-                        BindRow::Steer => (
-                            "Steer",
+                        BindRow::Action(Action::SteerLeft) => (
+                            "Steer left",
                             "Keyboard steering eases in so taps don't snap the kart.",
                         ),
-                        BindRow::DriftHop => (
+                        BindRow::Action(Action::SteerRight) => (
+                            "Steer right",
+                            "Keyboard steering eases in so taps don't snap the kart.",
+                        ),
+                        BindRow::Action(Action::DriftHop) => (
                             "Drift & hop",
                             "Tap to hop. Hold through a corner to charge a drift boost.",
                         ),
-                        BindRow::UseItem => ("Use item", "Fire or drop the item you're holding."),
-                        BindRow::Respawn => {
+                        BindRow::Action(Action::UseItem) => {
+                            ("Use item", "Fire or drop the item you're holding.")
+                        }
+                        BindRow::Action(Action::Respawn) => {
                             ("Respawn", "Back on the track at the last checkpoint.")
                         }
-                        BindRow::LookBehind => {
+                        BindRow::Action(Action::LookBehind) => {
                             ("Look behind", "Hold to watch the pack behind you.")
                         }
-                        BindRow::Pause => ("Pause", "Opens the race menu."),
+                        BindRow::Pause => ("Pause", "Opens the race menu. Can't be changed."),
                     };
-                    let text = c.bindings.text(b, pad);
+                    let text = match (b, self.capturing) {
+                        (BindRow::Action(a), Some(c)) if a == c && pad => {
+                            "Press a button... Start cancels".to_string()
+                        }
+                        (BindRow::Action(a), Some(c)) if a == c => {
+                            "Press a key... Esc cancels".to_string()
+                        }
+                        _ => c.bindings.text(b, pad),
+                    };
                     let row = Row::new(RowId::Bind(b), label, RowKind::Bind { text }, help);
-                    v.push(if b == BindRow::LookBehind {
+                    v.push(if b == BindRow::Action(Action::LookBehind) {
                         row.fresh()
                     } else {
                         row
@@ -1379,11 +1398,43 @@ impl MenuState {
                 self.gamepad_guide = !self.gamepad_guide;
                 A::None
             }
+            // Enter waits for the new key or button; gamepad steering is always the stick.
+            RowId::Bind(BindRow::Action(a))
+                if select && !(self.gamepad_guide && a.stick_only()) =>
+            {
+                self.capturing = Some(a);
+                A::None
+            }
             _ => A::None,
         }
     }
 
+    /// Offer one key or button press to the binding being captured. Esc or Start cancels.
+    /// A press from the other device, or one that can't be bound, is ignored and the capture
+    /// keeps waiting.
+    pub fn capture(&mut self, press: Press, s: &mut Settings) -> MenuAction {
+        let Some(a) = self.capturing else {
+            return MenuAction::None;
+        };
+        let cancel = matches!(press, Press::Key(winit::keyboard::KeyCode::Escape))
+            || press == Press::Pad(rivet_platform::PadButtons::START);
+        if cancel {
+            self.capturing = None;
+            return MenuAction::None;
+        }
+        if matches!(press, Press::Pad(_)) != self.gamepad_guide
+            || !s.prefs.controls.bindings.capture(a, press)
+        {
+            return MenuAction::None;
+        }
+        self.capturing = None;
+        MenuAction::BindingCaptured
+    }
+
     pub fn handle(&mut self, input: MenuInput, s: &mut Settings) -> MenuAction {
+        if self.capturing.is_some() {
+            return MenuAction::None;
+        }
         if let Screen::Settings(tab) = self.screen {
             let d = i32::from(input.tab_next) - i32::from(input.tab_prev);
             if d != 0 {
@@ -1634,6 +1685,9 @@ impl MenuState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::{Action, Bindings, Press};
+    use rivet_platform::PadButtons;
+    use winit::keyboard::KeyCode;
 
     fn press(f: impl Fn(&mut MenuInput)) -> MenuInput {
         let mut i = MenuInput::default();
@@ -1979,13 +2033,99 @@ mod tests {
         let rows = texts(&m, &s);
         assert_eq!(rows[0], "DEVICE  < GAMEPAD >");
         assert_eq!(rows[1], "ACCELERATE  RT OR A");
-        // Enter on a binding does nothing until rebinding exists.
-        m.selected = 1;
+        pick(&mut m, &s, RowId::Bind(BindRow::Action(Action::SteerLeft)));
+        assert_eq!(texts(&m, &s)[m.selected], "STEER LEFT  LEFT STICK");
+        // Gamepad steering is always the stick: nothing to capture.
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(m.capturing, None);
+    }
+
+    fn capture_on(device_pad: bool, action: Action) -> (MenuState, Settings) {
+        let s = Settings::default();
+        let mut m = open_tab(Tab::Controls);
+        m.gamepad_guide = device_pad;
+        pick(&mut m, &s, RowId::Bind(BindRow::Action(action)));
+        (m, s)
+    }
+
+    #[test]
+    fn enter_on_a_binding_waits_for_a_key() {
+        let (mut m, mut s) = capture_on(false, Action::UseItem);
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::None
         );
-        assert_eq!(m.screen, Screen::Settings(Tab::Controls));
+        assert_eq!(m.capturing, Some(Action::UseItem));
+        assert_eq!(
+            texts(&m, &s)[m.selected],
+            "USE ITEM  PRESS A KEY... ESC CANCELS"
+        );
+        // Menu input is ignored while capturing.
+        let at = m.selected;
+        m.handle(press(|i| i.down = true), &mut s);
+        m.handle(press(|i| i.back = true), &mut s);
+        assert_eq!(
+            (m.screen, m.selected),
+            (Screen::Settings(Tab::Controls), at)
+        );
+        // Unbindable keys and the wrong device are ignored.
+        assert_eq!(
+            m.capture(Press::Key(KeyCode::Backspace), &mut s),
+            MenuAction::None
+        );
+        assert_eq!(
+            m.capture(Press::Pad(PadButtons::WEST), &mut s),
+            MenuAction::None
+        );
+        assert_eq!(m.capturing, Some(Action::UseItem));
+        assert_eq!(
+            m.capture(Press::Key(KeyCode::KeyF), &mut s),
+            MenuAction::BindingCaptured
+        );
+        assert_eq!(m.capturing, None);
+        assert_eq!(texts(&m, &s)[m.selected], "USE ITEM  F / CTRL");
+    }
+
+    #[test]
+    fn esc_or_start_cancels_a_capture() {
+        let (mut m, mut s) = capture_on(false, Action::Respawn);
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(
+            m.capture(Press::Key(KeyCode::Escape), &mut s),
+            MenuAction::None
+        );
+        assert_eq!(m.capturing, None);
+        assert_eq!(s.prefs.controls.bindings, Bindings::default());
+        let (mut m, mut s) = capture_on(true, Action::Respawn);
+        m.handle(press(|i| i.select = true), &mut s);
+        assert_eq!(
+            texts(&m, &s)[m.selected],
+            "RESPAWN  PRESS A BUTTON... START CANCELS"
+        );
+        m.capture(Press::Pad(PadButtons::START), &mut s);
+        assert_eq!(m.capturing, None);
+        assert_eq!(s.prefs.controls.bindings, Bindings::default());
+        // Leaving the screen any other way drops the capture too.
+        m.handle(press(|i| i.select = true), &mut s);
+        m.go(Screen::Playing);
+        assert_eq!(m.capturing, None);
+    }
+
+    #[test]
+    fn gamepad_capture_binds_a_button_and_swaps() {
+        let (mut m, mut s) = capture_on(true, Action::Respawn);
+        m.handle(press(|i| i.select = true), &mut s);
+        // Keys are ignored while capturing for the gamepad.
+        m.capture(Press::Key(KeyCode::KeyZ), &mut s);
+        assert_eq!(m.capturing, Some(Action::Respawn));
+        // X uses the item; it moves to respawn and use item takes B.
+        assert_eq!(
+            m.capture(Press::Pad(PadButtons::WEST), &mut s),
+            MenuAction::BindingCaptured
+        );
+        let b = &s.prefs.controls.bindings;
+        assert_eq!(b.text(BindRow::Action(Action::Respawn), true), "X");
+        assert_eq!(b.text(BindRow::Action(Action::UseItem), true), "B");
     }
 
     #[test]
@@ -2387,7 +2527,8 @@ mod tests {
         let count = |tab| open_tab(tab).rows(&s).len() - 1;
         assert_eq!(count(Tab::Graphics), 12);
         assert_eq!(count(Tab::Audio), 7);
-        assert_eq!(count(Tab::Controls), 12);
+        // Steering is two rows, left and right, so each direction can be rebound.
+        assert_eq!(count(Tab::Controls), 13);
         assert_eq!(count(Tab::Camera), 10);
         assert_eq!(count(Tab::Gameplay), 3);
         let fresh = open_tab(Tab::Graphics).rows(&s);

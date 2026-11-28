@@ -1,8 +1,10 @@
-//! Keyboard + gamepad → drive input and app actions.
+//! Keyboard + gamepad → drive input and app actions, through the player's `Bindings`.
 
 use rivet_physics::DriveInput;
 use rivet_platform::{KeyInput, PadButtons, PadState};
 use winit::keyboard::KeyCode;
+
+use crate::bindings::{Action, Bindings, Press};
 
 /// App-level actions this frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -10,6 +12,8 @@ pub struct Actions {
     pub respawn: bool,
     /// Use the held item.
     pub fire: bool,
+    /// Held: the camera looks back.
+    pub look_behind: bool,
     pub toggle_graph: bool,
     pub quit: bool,
 }
@@ -23,47 +27,30 @@ fn merge(a: f32, b: f32) -> f32 {
     if a.abs() >= b.abs() { a } else { b }
 }
 
-pub fn drive_input(keys: &KeyInput, pad: Option<&PadState>) -> DriveInput {
-    let held = |a: KeyCode, b: KeyCode| keys.held(a) || keys.held(b);
-    let pressed = |a: KeyCode, b: KeyCode| keys.just_pressed(a) || keys.just_pressed(b);
-    let mut throttle = if held(KeyCode::KeyW, KeyCode::ArrowUp) {
-        1.0f32
-    } else {
-        0.0
-    };
-    let mut brake = if held(KeyCode::KeyS, KeyCode::ArrowDown) {
-        1.0f32
-    } else {
-        0.0
-    };
+/// Driving input from the bound keys and buttons. Gamepad steering is the left stick.
+pub fn drive_input(keys: &KeyInput, pad: Option<&PadState>, b: &Bindings) -> DriveInput {
     let key_steer = axis(
-        held(KeyCode::KeyA, KeyCode::ArrowLeft),
-        held(KeyCode::KeyD, KeyCode::ArrowRight),
+        b.key_held(Action::SteerLeft, keys),
+        b.key_held(Action::SteerRight, keys),
     );
-    let mut drift = held(KeyCode::Space, KeyCode::ShiftLeft) || keys.held(KeyCode::ShiftRight);
-    let mut hop =
-        pressed(KeyCode::Space, KeyCode::ShiftLeft) || keys.just_pressed(KeyCode::ShiftRight);
-    let mut steer = key_steer;
-    if let Some(p) = pad {
-        let bumpers = |set: PadButtons| {
-            set.contains(PadButtons::LEFT_BUMPER) || set.contains(PadButtons::RIGHT_BUMPER)
-        };
-        throttle = throttle.max(p.right_trigger);
-        if p.buttons.contains(PadButtons::SOUTH) {
-            throttle = 1.0;
-        }
-        brake = brake.max(p.left_trigger);
-        steer = merge(key_steer, p.left_x);
-        drift |= bumpers(p.buttons);
-        hop |= bumpers(p.just_pressed);
-    }
     DriveInput {
-        throttle,
-        brake,
-        steer: steer.clamp(-1.0, 1.0),
-        drift,
-        hop,
+        throttle: b.value(Action::Accelerate, keys, pad),
+        brake: b.value(Action::Brake, keys, pad),
+        steer: merge(key_steer, pad.map_or(0.0, |p| p.left_x)).clamp(-1.0, 1.0),
+        drift: b.held(Action::DriftHop, keys, pad),
+        hop: b.pressed(Action::DriftHop, keys, pad),
     }
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+/// Analog steering response: `sign(s)·|s|^e` with `e = lerp(1.6, 0.6, sensitivity / 100)`,
+/// so low sensitivity is gentle near center and high is sharp. Full lock stays full lock.
+pub fn steer_curve(s: f32, sensitivity: u8) -> f32 {
+    let e = lerp(1.6, 0.6, f32::from(sensitivity.min(100)) / 100.0);
+    s.abs().powf(e).copysign(s)
 }
 
 /// Smooths digital (keyboard) steering so taps don't snap the kart; analog passes through.
@@ -77,18 +64,17 @@ const STEER_RAMP_IN: f32 = 6.0;
 const STEER_RAMP_OUT: f32 = 10.0;
 
 impl SteerRamp {
-    /// `digital` is true when the steer came from keys rather than a stick.
-    pub fn apply(&mut self, target: f32, digital: bool, dt: f32) -> f32 {
+    /// `digital` is true when the steer came from keys rather than a stick. `sensitivity`
+    /// (0-100, 50 neutral) curves the stick (see `steer_curve`) and scales how fast keys
+    /// ramp in by `lerp(0.6, 1.4, sensitivity / 100)`.
+    pub fn apply(&mut self, target: f32, digital: bool, dt: f32, sensitivity: u8) -> f32 {
         if !digital {
-            self.value = target;
-            return target;
+            self.value = steer_curve(target, sensitivity);
+            return self.value;
         }
+        let ramp_in = STEER_RAMP_IN * lerp(0.6, 1.4, f32::from(sensitivity.min(100)) / 100.0);
         let returning = target.abs() < self.value.abs() || target.signum() != self.value.signum();
-        let rate = if returning {
-            STEER_RAMP_OUT
-        } else {
-            STEER_RAMP_IN
-        } * dt;
+        let rate = if returning { STEER_RAMP_OUT } else { ramp_in } * dt;
         self.value += (target - self.value).clamp(-rate, rate);
         self.value
     }
@@ -145,38 +131,58 @@ pub fn menu_input_typing(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu
     }
 }
 
-pub fn actions(keys: &KeyInput, pad: Option<&PadState>) -> Actions {
-    let pad_pressed = |b: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(b));
+/// App actions from the bound keys and buttons. Pause (Esc) and the FPS display (F3 /
+/// Select) are fixed.
+pub fn actions(keys: &KeyInput, pad: Option<&PadState>, b: &Bindings) -> Actions {
+    let pad_pressed = |bit: PadButtons| pad.is_some_and(|p| p.just_pressed.contains(bit));
     Actions {
-        respawn: keys.just_pressed(KeyCode::KeyR) || pad_pressed(PadButtons::EAST),
-        fire: keys.just_pressed(KeyCode::KeyE)
-            || keys.just_pressed(KeyCode::ControlLeft)
-            || keys.just_pressed(KeyCode::KeyJ)
-            || pad_pressed(PadButtons::WEST),
+        respawn: b.pressed(Action::Respawn, keys, pad),
+        fire: b.pressed(Action::UseItem, keys, pad),
+        look_behind: b.held(Action::LookBehind, keys, pad),
         toggle_graph: keys.just_pressed(KeyCode::F3) || pad_pressed(PadButtons::SELECT),
         quit: keys.just_pressed(KeyCode::Escape),
     }
 }
 
+/// This frame's key and gamepad presses, for a binding capture: keys first, then pad
+/// buttons (the triggers as `LEFT_TRIGGER` / `RIGHT_TRIGGER`), each in a fixed order.
+pub fn capture_presses(keys: &KeyInput, pad: Option<&PadState>) -> Vec<Press> {
+    let mut v: Vec<Press> = keys.pressed_keys().into_iter().map(Press::Key).collect();
+    if let Some(p) = pad {
+        v.extend(
+            (0..16)
+                .map(|i| PadButtons(1 << i))
+                .filter(|bit| p.just_pressed.contains(*bit))
+                .map(Press::Pad),
+        );
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::{Action, Bindings, Press};
     use rivet_platform::{KeyInput, PadButtons, PadState};
     use winit::keyboard::KeyCode;
+
+    fn d() -> Bindings {
+        Bindings::default()
+    }
 
     #[test]
     fn controls_map() {
         let mut k = KeyInput::default();
         k.on_key(KeyCode::KeyW, true);
         k.on_key(KeyCode::KeyD, true);
-        let i = drive_input(&k, None);
+        let i = drive_input(&k, None, &d());
         assert_eq!(i.throttle, 1.0);
         assert_eq!(i.steer, 1.0);
         k.on_key(KeyCode::Space, true);
-        let i = drive_input(&k, None);
+        let i = drive_input(&k, None, &d());
         assert!(i.drift && i.hop);
         k.end_frame();
-        let i = drive_input(&k, None);
+        let i = drive_input(&k, None, &d());
         assert!(i.drift && !i.hop, "hop only on the press");
     }
 
@@ -190,30 +196,117 @@ mod tests {
             just_pressed: PadButtons::RIGHT_BUMPER,
             ..Default::default()
         };
-        let i = drive_input(&k, Some(&pad));
+        let i = drive_input(&k, Some(&pad), &d());
         assert_eq!(i.steer, 0.5);
         assert_eq!(i.throttle, 0.8);
         assert!(i.drift && i.hop);
         let mut k = KeyInput::default();
         k.on_key(KeyCode::KeyD, true);
-        assert_eq!(drive_input(&k, Some(&pad)).steer, 1.0);
+        assert_eq!(drive_input(&k, Some(&pad), &d()).steer, 1.0);
     }
 
     #[test]
     fn digital_steering_ramps_analog_passes() {
         let mut ramp = SteerRamp::default();
-        let first = ramp.apply(1.0, true, 1.0 / 60.0);
+        let first = ramp.apply(1.0, true, 1.0 / 60.0, 50);
         assert!(
             first > 0.05 && first < 0.2,
             "keyboard steer ramps in: {first}"
         );
         for _ in 0..30 {
-            ramp.apply(1.0, true, 1.0 / 60.0);
+            ramp.apply(1.0, true, 1.0 / 60.0, 50);
         }
-        assert_eq!(ramp.apply(1.0, true, 1.0 / 60.0), 1.0);
-        let back = ramp.apply(0.0, true, 1.0 / 60.0);
+        assert_eq!(ramp.apply(1.0, true, 1.0 / 60.0, 50), 1.0);
+        let back = ramp.apply(0.0, true, 1.0 / 60.0, 50);
         assert!(back < 0.9, "and ramps out faster: {back}");
-        assert_eq!(SteerRamp::default().apply(0.37, false, 1.0 / 60.0), 0.37);
+        let analog = SteerRamp::default().apply(0.37, false, 1.0 / 60.0, 50);
+        assert_eq!(analog, steer_curve(0.37, 50));
+    }
+
+    #[test]
+    fn sensitivity_curves_the_stick() {
+        // e = lerp(1.6, 0.6, sens / 100): 0 is gentle near center, 100 is sharp.
+        assert!((steer_curve(0.5, 0) - 0.5f32.powf(1.6)).abs() < 1e-6);
+        assert!((steer_curve(0.5, 50) - 0.5f32.powf(1.1)).abs() < 1e-6);
+        assert!((steer_curve(-0.5, 100) + 0.5f32.powf(0.6)).abs() < 1e-6);
+        assert!(steer_curve(0.5, 0) < steer_curve(0.5, 50));
+        assert!(steer_curve(0.5, 50) < steer_curve(0.5, 100));
+        for sens in [0, 50, 100] {
+            assert_eq!(steer_curve(1.0, sens), 1.0, "full lock stays full");
+            assert_eq!(steer_curve(-1.0, sens), -1.0);
+            assert_eq!(steer_curve(0.0, sens), 0.0);
+        }
+    }
+
+    #[test]
+    fn sensitivity_scales_the_keyboard_ramp_in() {
+        let dt = 1.0 / 60.0;
+        let first = |sens| SteerRamp::default().apply(1.0, true, dt, sens);
+        // STEER_RAMP_IN (6 per second) times lerp(0.6, 1.4, sens / 100).
+        assert!((first(0) - 6.0 * 0.6 * dt).abs() < 1e-6);
+        assert!((first(50) - 6.0 * dt).abs() < 1e-6);
+        assert!((first(100) - 6.0 * 1.4 * dt).abs() < 1e-6);
+        // Ramp out is unchanged.
+        let mut ramp = SteerRamp::default();
+        for _ in 0..60 {
+            ramp.apply(1.0, true, dt, 0);
+        }
+        assert!((ramp.apply(0.0, true, dt, 0) - (1.0 - 10.0 * dt)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rebound_keys_drive() {
+        let mut b = d();
+        b.capture(Action::Accelerate, Press::Key(KeyCode::KeyI));
+        b.capture(Action::LookBehind, Press::Pad(PadButtons::LEFT_BUMPER));
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyI, true);
+        assert_eq!(drive_input(&k, None, &b).throttle, 1.0);
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyW, true);
+        assert_eq!(
+            drive_input(&k, None, &b).throttle,
+            0.0,
+            "W is no longer bound"
+        );
+        let pad = PadState {
+            buttons: PadButtons::LEFT_BUMPER,
+            just_pressed: PadButtons::LEFT_BUMPER,
+            ..Default::default()
+        };
+        assert!(actions(&KeyInput::default(), Some(&pad), &b).look_behind);
+        // Drift kept its other bumper.
+        let i = drive_input(&KeyInput::default(), Some(&pad), &b);
+        assert!(!i.drift && !i.hop);
+    }
+
+    #[test]
+    fn look_behind_is_held() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyQ, true);
+        k.end_frame();
+        assert!(actions(&k, None, &d()).look_behind);
+        k.on_key(KeyCode::KeyQ, false);
+        assert!(!actions(&k, None, &d()).look_behind);
+    }
+
+    #[test]
+    fn capture_presses_lists_keys_then_pad_buttons() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyZ, true);
+        let pad = PadState {
+            just_pressed: PadButtons::WEST | PadButtons::RIGHT_TRIGGER,
+            ..Default::default()
+        };
+        assert_eq!(
+            capture_presses(&k, Some(&pad)),
+            vec![
+                Press::Key(KeyCode::KeyZ),
+                Press::Pad(PadButtons::WEST),
+                Press::Pad(PadButtons::RIGHT_TRIGGER),
+            ]
+        );
+        assert!(capture_presses(&KeyInput::default(), None).is_empty());
     }
 
     #[test]
@@ -285,19 +378,22 @@ mod tests {
     fn actions_from_both_devices() {
         let mut k = KeyInput::default();
         k.on_key(KeyCode::KeyR, true);
-        assert!(actions(&k, None).respawn);
+        assert!(actions(&k, None, &d()).respawn);
         k.on_key(KeyCode::KeyE, true);
-        assert!(actions(&k, None).fire);
+        assert!(actions(&k, None, &d()).fire);
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::ControlRight, true);
+        assert!(actions(&k, None, &d()).fire, "either Ctrl fires");
         let pad = PadState {
             just_pressed: PadButtons::WEST,
             ..Default::default()
         };
-        assert!(actions(&KeyInput::default(), Some(&pad)).fire);
+        assert!(actions(&KeyInput::default(), Some(&pad), &d()).fire);
         let pad = PadState {
             just_pressed: PadButtons::SELECT,
             ..Default::default()
         };
-        let a = actions(&KeyInput::default(), Some(&pad));
+        let a = actions(&KeyInput::default(), Some(&pad), &d());
         assert!(a.toggle_graph && !a.respawn && !a.quit);
     }
 }

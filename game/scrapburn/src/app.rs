@@ -19,7 +19,9 @@ use scrapburn::bench::{Bench, BenchPhase};
 use scrapburn::camera::ChaseCamera;
 use scrapburn::circuit::{Circuit, Event};
 use scrapburn::combat::CombatEvent;
-use scrapburn::controls::{SteerRamp, actions, drive_input, menu_input, menu_input_typing};
+use scrapburn::controls::{
+    SteerRamp, actions, capture_presses, drive_input, menu_input, menu_input_typing,
+};
 use scrapburn::effects::Effects;
 use scrapburn::fx_meshes;
 use scrapburn::ghost::{BestGhost, GhostRecorder};
@@ -253,6 +255,8 @@ struct Game {
     bench: Option<Bench>,
     screenshot: Option<std::path::PathBuf>,
     steer: SteerRamp,
+    /// The look-behind binding is held while driving.
+    look_behind: bool,
     effects: Vec<Effects>,
     leans: Vec<f32>,
     steering_angles: Vec<f32>,
@@ -586,6 +590,7 @@ impl Game {
             bench: args.bench.map(Bench::new),
             screenshot: args.screenshot.clone(),
             steer: SteerRamp::default(),
+            look_behind: false,
             effects: (0..n).map(|_| Effects::new()).collect(),
             leans: vec![0.0; n],
             steering_angles: vec![0.; n],
@@ -1291,6 +1296,7 @@ impl Game {
         let frame_dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
         if let Some(p) = self.pads.as_mut() {
+            p.set_stick_deadzone(f32::from(self.settings.prefs.controls.deadzone) / 100.0);
             p.poll();
         }
         // Benchmarks ignore gamepads (stray events from macro pads would drive the menus).
@@ -1300,13 +1306,20 @@ impl Game {
             self.pads.as_ref().and_then(Gamepads::active).copied()
         };
         let pad = pad.as_ref();
-        let act = actions(&self.keys, pad);
-        if act.toggle_graph {
+        let bindings = self.settings.prefs.controls.bindings;
+        let act = actions(&self.keys, pad, &bindings);
+        // While a binding is being captured, F3 / Select reach only the capture.
+        if act.toggle_graph && self.menu.capturing.is_none() {
             self.settings.prefs.graphics.fps = self.settings.prefs.graphics.fps.next();
         }
 
         // --- Menus ---
         let mut simulate = true;
+        self.look_behind = false;
+        // A capture belongs to the Controls tab; drop it if anything else changed the screen.
+        if self.menu.screen != Screen::Settings(Tab::Controls) {
+            self.menu.capturing = None;
+        }
         match self.menu.screen {
             Screen::Playing => {
                 let pause =
@@ -1314,6 +1327,7 @@ impl Game {
                 if pause && self.bench.is_none() {
                     self.menu.go(Screen::Paused);
                 }
+                self.look_behind = act.look_behind && self.race.player.is_some();
                 if let Some(p) = self.race.player {
                     if act.respawn {
                         self.race.respawn_racer(p, &self.track);
@@ -1347,7 +1361,18 @@ impl Game {
                 let typing = (self.menu.screen == Screen::DriverName && self.menu.selected == 0)
                     || self.menu.screen == Screen::Online
                         && self.menu.selected == scrapburn::menu::ONLINE_ADDRESS;
-                let mut input = if typing {
+                let capturing = self.menu.capturing.is_some();
+                let mut input = if capturing {
+                    // A capture takes this frame's presses; none of them navigate the menu.
+                    self.clicked = None;
+                    for press in capture_presses(&self.keys, pad) {
+                        if self.menu.capturing.is_none() {
+                            break;
+                        }
+                        self.menu.capture(press, &mut self.settings);
+                    }
+                    Default::default()
+                } else if typing {
                     menu_input_typing(&self.keys, pad)
                 } else {
                     menu_input(&self.keys, pad)
@@ -1456,7 +1481,8 @@ impl Game {
                     }
                     // The previewed song is read from the menu each frame (see the music cue).
                     MenuAction::PreviewSong(_) => {}
-                    // Task 10 adds rebinding.
+                    // `MenuState::capture` reports this; the binding is already in prefs and is
+                    // saved on leaving Settings, like every other setting.
                     MenuAction::BindingCaptured => {}
                     MenuAction::SaveName => {
                         self.player_name =
@@ -1504,14 +1530,19 @@ impl Game {
         }
         let playing = self.menu.screen == Screen::Playing;
         let input = if playing {
-            drive_input(&self.keys, pad)
+            drive_input(&self.keys, pad, &bindings)
         } else {
             DriveInput::default()
         };
         self.keys.end_frame();
         let digital = pad.is_none_or(|p| p.left_x.abs() < 0.01);
         let input = DriveInput {
-            steer: self.steer.apply(input.steer, digital, frame_dt as f32),
+            steer: self.steer.apply(
+                input.steer,
+                digital,
+                frame_dt as f32,
+                self.settings.prefs.controls.sensitivity,
+            ),
             ..input
         };
 
@@ -1929,8 +1960,7 @@ impl Game {
         }
         let fstate = &self.race.racers[focus].state;
         self.camera.set_tuning(self.settings.prefs.camera.into());
-        // Task 10 connects the look-behind binding here; nothing drives it yet.
-        self.camera.look_behind(false);
+        self.camera.look_behind(self.look_behind);
         self.camera.set_boost(fstate.boost_timer > 0.0);
         self.camera.update(fpos, frot, fstate.speed(), frame_dt);
         let collision = &self.track.collision;
@@ -2347,9 +2377,13 @@ impl Game {
             ));
             match self.menu.screen {
                 Screen::Garage => hud::garage_card(o, w, h, self.settings.loadout),
-                Screen::Settings(Tab::Controls) => {
-                    hud::controls_card(o, w, h, self.menu.gamepad_guide)
-                }
+                Screen::Settings(Tab::Controls) => hud::controls_card(
+                    o,
+                    w,
+                    h,
+                    self.menu.gamepad_guide,
+                    &self.settings.prefs.controls.bindings,
+                ),
                 _ => {}
             }
             let n_tracks = scrapburn::track::TRACKS.len();
@@ -2562,7 +2596,13 @@ impl Game {
                 hud::draw_elimination(o, w, h, left, danger, knockout, self.attract_t);
             }
             if race.combat_on {
-                hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t);
+                let hint = self
+                    .settings
+                    .prefs
+                    .controls
+                    .bindings
+                    .hint(scrapburn::bindings::Action::UseItem);
+                hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t, &hint);
             }
             let rows = self.menu.rows(&self.settings);
             match self.menu.screen {
@@ -2575,7 +2615,13 @@ impl Game {
                         hud::draw_menu(o, w, h, &self.menu, &rows, self.attract_t),
                     ));
                     if self.menu.screen == Screen::Settings(Tab::Controls) {
-                        hud::controls_card(o, w, h, self.menu.gamepad_guide);
+                        hud::controls_card(
+                            o,
+                            w,
+                            h,
+                            self.menu.gamepad_guide,
+                            &self.settings.prefs.controls.bindings,
+                        );
                     }
                 }
                 Screen::Garage

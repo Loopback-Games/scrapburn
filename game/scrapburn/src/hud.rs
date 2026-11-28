@@ -943,35 +943,70 @@ pub fn draw_pad_glyphs(o: &mut Overlay, glyphs: &[PadGlyph], x: f32, cy: f32, s:
     }
 }
 
-/// Each driving action with its keyboard keys and gamepad buttons.
-pub const DRIVING_CONTROLS: [(&str, &str, &[PadGlyph]); 8] = {
-    use PadGlyph::*;
-    [
-        ("Accelerate", "W / Up", &[RightTrigger, A]),
-        ("Brake / reverse", "S / Down", &[LeftTrigger]),
-        ("Steer", "A D / Left Right", &[LeftStick]),
-        ("Hop / drift", "Space / Shift", &[LeftBumper, RightBumper]),
-        ("Fire item", "E / Left Ctrl / J", &[X]),
-        ("Recover kart", "R", &[B]),
-        ("Pause", "Esc", &[Menu]),
-        ("FPS display", "F3", &[View]),
+/// The glyph drawn for a gamepad binding.
+pub fn pad_glyph(b: crate::bindings::PadBind) -> PadGlyph {
+    use crate::bindings::PadBind;
+    use rivet_platform::PadButtons as P;
+    match b {
+        PadBind::Button(P::SOUTH) => PadGlyph::A,
+        PadBind::Button(P::EAST) => PadGlyph::B,
+        PadBind::Button(P::WEST) => PadGlyph::X,
+        PadBind::Button(P::NORTH) => PadGlyph::Y,
+        PadBind::Button(P::LEFT_BUMPER) => PadGlyph::LeftBumper,
+        PadBind::Button(P::RIGHT_BUMPER) => PadGlyph::RightBumper,
+        PadBind::Button(P::START) => PadGlyph::Menu,
+        PadBind::Button(P::SELECT) => PadGlyph::View,
+        PadBind::Button(_) => PadGlyph::DPad,
+        PadBind::LeftTrigger => PadGlyph::LeftTrigger,
+        PadBind::RightTrigger => PadGlyph::RightTrigger,
+        PadBind::Stick => PadGlyph::LeftStick,
+    }
+}
+
+/// Each driving control with its keyboard keys and gamepad buttons, from `b`. Pause and the
+/// FPS display are fixed.
+pub fn driving_controls(
+    b: &crate::bindings::Bindings,
+) -> Vec<(&'static str, String, Vec<PadGlyph>)> {
+    use crate::bindings::{Action, BindRow};
+    let row = |name, a: Action| {
+        let glyphs = b.pad_for(a).into_iter().flatten().map(pad_glyph).collect();
+        (name, b.text(BindRow::Action(a), false), glyphs)
+    };
+    vec![
+        row("Accelerate", Action::Accelerate),
+        row("Brake / reverse", Action::Brake),
+        ("Steer", b.steer_keys_text(), vec![PadGlyph::LeftStick]),
+        row("Hop / drift", Action::DriftHop),
+        row("Fire item", Action::UseItem),
+        row("Recover kart", Action::Respawn),
+        row("Look behind", Action::LookBehind),
+        ("Pause", "Esc".to_string(), vec![PadGlyph::Menu]),
+        ("FPS display", "F3".to_string(), vec![PadGlyph::View]),
     ]
-};
+}
 
 /// Controls card text sizes and the gamepad button diameter, in menu units.
 const CONTROLS_ACTION_SCALE: f32 = 2.15;
 const CONTROLS_KEY_SCALE: f32 = 2.1;
 const CONTROLS_PAD_BUTTON: f32 = 26.;
 
-pub fn controls_card(o: &mut Overlay, w: f32, h: f32, pad: bool) {
+pub fn controls_card(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    pad: bool,
+    bindings: &crate::bindings::Bindings,
+) {
     let u = menu_scale(w, h);
     let pw = 520. * u;
     let x = w - pw - 44. * u;
     let y = h * 0.28;
-    o.rect(x, y, pw, 386. * u, INK);
+    let rows = driving_controls(bindings);
+    o.rect(x, y, pw, (66. + rows.len() as f32 * 40.) * u, INK);
     o.rect(x, y, pw, 3. * u, MINT);
     o.label_centered(x + 20. * u, y + 34. * u, 2.8 * u, WHITE, "DRIVING CONTROLS");
-    for (i, &(action, key, buttons)) in DRIVING_CONTROLS.iter().enumerate() {
+    for (i, (action, key, buttons)) in rows.iter().enumerate() {
         let cy = y + (80. + i as f32 * 40.) * u;
         o.rect(
             x + 20. * u,
@@ -1333,6 +1368,7 @@ pub fn draw_item_slot(
     h: f32,
     item: Option<crate::combat::ItemKind>,
     time: f32,
+    hint: &str,
 ) {
     use crate::combat::ItemKind;
     let ui = (h / 900.0).clamp(0.6, 2.0);
@@ -1421,7 +1457,6 @@ pub fn draw_item_slot(
         color,
         name,
     );
-    let hint = "E / X";
     text(
         o,
         x + size * 0.5 - width(hint, 1.4 * ui) * 0.5,
@@ -1559,16 +1594,36 @@ mod tests {
         // The card is laid out in menu units, so one scale covers every window size.
         for u in [0.5, 1.0, 2.5] {
             let pw = 520. * u;
-            for (action, _, buttons) in DRIVING_CONTROLS {
+            for (action, _, buttons) in driving_controls(&Default::default()) {
                 let action_end = 20. * u + width(action, CONTROLS_ACTION_SCALE * u);
                 let glyphs_start =
-                    pw - 20. * u - pad_glyphs_width(buttons, CONTROLS_PAD_BUTTON * u);
+                    pw - 20. * u - pad_glyphs_width(&buttons, CONTROLS_PAD_BUTTON * u);
                 assert!(
                     glyphs_start - action_end > 24. * u,
                     "{action} at scale {u}: {action_end} vs {glyphs_start}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn controls_card_reads_the_bindings() {
+        use crate::bindings::{Action, Bindings, Press};
+        let rows = driving_controls(&Bindings::default());
+        assert_eq!(rows[0].1, "W / Up");
+        assert_eq!(rows[0].2, vec![PadGlyph::RightTrigger, PadGlyph::A]);
+        assert_eq!(rows[2].1, "A D / Left Right");
+        assert_eq!(rows[4].1, "E / Ctrl");
+        let mut b = Bindings::default();
+        b.capture(Action::UseItem, Press::Key(winit::keyboard::KeyCode::KeyG));
+        b.capture(
+            Action::UseItem,
+            Press::Pad(rivet_platform::PadButtons::NORTH),
+        );
+        let rows = driving_controls(&b);
+        assert_eq!(rows[4].1, "G / Ctrl");
+        assert_eq!(rows[4].2, vec![PadGlyph::Y]);
+        assert_eq!(rows[6].2, vec![PadGlyph::X], "look behind swapped to X");
     }
 
     #[test]

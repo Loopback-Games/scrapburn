@@ -9,7 +9,7 @@ use std::path::Path;
 
 use rivet_render::{Preset, QualitySettings};
 
-use crate::bindings::Bindings;
+use crate::bindings::{Action, Bindings};
 use crate::menu::FpsDisplay;
 
 /// Lap and rival counts the menu offers; the file accepts nothing else.
@@ -193,7 +193,7 @@ pub struct Controls {
 impl Default for Controls {
     fn default() -> Self {
         Self {
-            bindings: Bindings,
+            bindings: Bindings::default(),
             sensitivity: 50,
             deadzone: 15,
             vibration: true,
@@ -373,7 +373,11 @@ impl Prefs {
                 &mut self.gameplay.rivals,
                 v.parse().ok().filter(|n| RIVAL_CHOICES.contains(n)),
             ),
-            _ => {}
+            _ => {
+                if let Some(action) = key.strip_prefix("controls.bind.") {
+                    self.controls.bindings.set_line(action, v);
+                }
+            }
         }
     }
 
@@ -475,7 +479,14 @@ impl Prefs {
             ("gameplay.laps", gp.laps.to_string()),
             ("gameplay.rivals", gp.rivals.to_string()),
         ];
-        lines.iter().map(|(k, v)| format!("{k} {v}\n")).collect()
+        let binds = Action::ALL
+            .iter()
+            .map(|a| format!("controls.bind.{} {}\n", a.key(), c.bindings.line(*a)));
+        lines
+            .iter()
+            .map(|(k, v)| format!("{k} {v}\n"))
+            .chain(binds)
+            .collect()
     }
 
     /// Read `<dir>/settings`; defaults when it is missing or unreadable.
@@ -498,6 +509,9 @@ fn set<T>(slot: &mut T, value: Option<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::Press;
+    use rivet_platform::PadButtons;
+    use winit::keyboard::KeyCode;
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("scrapburn-prefs-{name}-{}", std::process::id()));
@@ -554,8 +568,12 @@ mod tests {
             menus: 40,
             soundtrack: false,
         };
+        let mut bindings = Bindings::default();
+        bindings.capture(Action::UseItem, Press::Key(KeyCode::KeyZ));
+        bindings.capture(Action::Accelerate, Press::Key(KeyCode::KeyE));
+        bindings.capture(Action::Brake, Press::Pad(PadButtons::RIGHT_TRIGGER));
         p.controls = Controls {
-            bindings: Bindings,
+            bindings,
             sensitivity: 65,
             deadzone: 25,
             vibration: false,
@@ -595,7 +613,8 @@ mod tests {
     #[test]
     fn unknown_keys_and_junk_lines_are_ignored() {
         let p = Prefs::parse(
-            "future.thing 9\ncontrols.bind.use_item key:KeyE\n\nlonely\ngameplay.laps 5\n",
+            "future.thing 9\ncontrols.bind.fly key:KeyE pad:West\n\nlonely\ngameplay.laps 5\n\
+             controls.bind.use_item key:KeyZ key:Nope pad:West\n",
         );
         assert_eq!(
             p,
@@ -604,6 +623,16 @@ mod tests {
                 ..Prefs::default()
             }
         );
+    }
+
+    #[test]
+    fn bindings_are_saved_one_line_per_action() {
+        let text = Prefs::default().to_text();
+        assert!(text.contains("controls.bind.use_item key:KeyE key:ControlLeft pad:West\n"));
+        assert!(text.contains("controls.bind.steer_left key:KeyA key:ArrowLeft pad:Stick\n"));
+        let p = Prefs::parse("controls.bind.respawn key:KeyT pad:North\n");
+        let r = p.controls.bindings.keys_for(Action::Respawn);
+        assert_eq!(r, [Some(KeyCode::KeyT), None]);
     }
 
     #[test]

@@ -30,6 +30,13 @@ impl KeyInput {
         self.just_pressed.contains(&code)
     }
 
+    /// The keys first pressed this frame, sorted so the order is repeatable.
+    pub fn pressed_keys(&self) -> Vec<KeyCode> {
+        let mut v: Vec<KeyCode> = self.just_pressed.iter().copied().collect();
+        v.sort();
+        v
+    }
+
     /// Releases everything, e.g. when the window loses focus.
     pub fn clear(&mut self) {
         self.held.clear();
@@ -60,5 +67,15 @@ mod tests {
         k.end_frame();
         k.on_key(KeyCode::KeyR, true);
         assert!(k.just_pressed(KeyCode::KeyR));
+    }
+
+    #[test]
+    fn lists_this_frames_presses_in_order() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyZ, true);
+        k.on_key(KeyCode::KeyA, true);
+        assert_eq!(k.pressed_keys(), vec![KeyCode::KeyA, KeyCode::KeyZ]);
+        k.end_frame();
+        assert!(k.pressed_keys().is_empty());
     }
 }
