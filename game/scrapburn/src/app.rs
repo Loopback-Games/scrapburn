@@ -1928,6 +1928,9 @@ impl Game {
             );
         }
         let fstate = &self.race.racers[focus].state;
+        self.camera.set_tuning(self.settings.prefs.camera.into());
+        // Task 10 connects the look-behind binding here; nothing drives it yet.
+        self.camera.look_behind(false);
         self.camera.set_boost(fstate.boost_timer > 0.0);
         self.camera.update(fpos, frot, fstate.speed(), frame_dt);
         let collision = &self.track.collision;
