@@ -170,7 +170,10 @@ fn initial_prefs(args: &Args, dir: Option<&std::path::Path>) -> (Prefs, CliOverr
     };
     // `--present` beats the saved V-sync; a benchmark always uses its own present choice.
     let vsync = (bench || args.present_given).then_some(args.present == PresentChoice::Vsync);
-    loaded.with_cli(args.preset, vsync, bench, args.attract)
+    // `--size` asks for a window of that size, so it beats a saved fullscreen mode (and is a
+    // way back from a fullscreen mode that misbehaves).
+    let display = args.size_given.then_some(DisplayMode::Windowed);
+    loaded.with_cli(args.preset, vsync, display, bench, args.attract)
 }
 
 fn present_choice(vsync: bool) -> PresentChoice {
@@ -334,8 +337,8 @@ struct Game {
     /// The circuit being raced, if any.
     circuit: Option<Circuit>,
     settings: Settings,
-    /// The file's values while `--preset` or `--present` overrides them; kept out of the
-    /// saved file.
+    /// The file's values while `--preset`, `--present` or `--size` overrides them; kept out
+    /// of the saved file.
     cli: CliOverrides,
     /// The display mode the window is in now.
     display: DisplayMode,
@@ -1669,7 +1672,11 @@ impl Game {
                         self.rebuild.request(Instant::now());
                     }
                     // Applied after a pause in the edits (see `display_change`).
-                    MenuAction::DisplayChanged => self.display_change.request(Instant::now()),
+                    MenuAction::DisplayChanged => {
+                        // A menu edit replaces the window `--size` asked for.
+                        self.cli.display = None;
+                        self.display_change.request(Instant::now());
+                    }
                     MenuAction::VsyncChanged => {
                         // A menu edit replaces any `--present`.
                         self.cli.vsync = None;

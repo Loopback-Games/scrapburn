@@ -120,8 +120,13 @@ just bench                                   # 30 s automated benchmark
 
 - `--adapter auto|integrated|discrete|<name>` (or `RIVET_ADAPTER`): `auto` uses the GPU
   driving your display.
-- `--size 1600x900`, `--present vsync|immediate`.
+- `--size 1600x900` opens a window of that size, even when Fullscreen or Borderless is saved,
+  which is also a way back from a fullscreen mode that misbehaves.
+- `--present vsync|immediate`.
 - `--preset low|medium|high`: Low renders the 3D scene at 75% scale.
+
+These three flags last one run: the saved settings are left as they were, unless you change
+the same setting in the menu.
 - `--menu title|race-setup|tracks|garage|multiplayer|lobby|pause|results|graphics|audio|controls|camera|gameplay` opens that menu screen at launch. Combine it with `--bench` and `--offscreen --screenshot` to capture menus.
 - `--no-motion` stops the menu embers and the molten flow, for reduced motion.
 - `--track dustbowl|castle|skyway|orchard|helios` selects the circuit. For an automated race,

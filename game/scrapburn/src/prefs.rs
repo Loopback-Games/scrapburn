@@ -126,6 +126,8 @@ pub struct CliOverrides {
     pub graphics: Option<Graphics>,
     /// V-sync, replaced by `--present`.
     pub vsync: Option<bool>,
+    /// Display mode, replaced by windowed for `--size`.
+    pub display: Option<DisplayMode>,
 }
 
 /// Frame caps the menu offers; `None` is uncapped.
@@ -392,18 +394,21 @@ impl Prefs {
     }
 
     /// The settings for this run: `self` (as loaded) with the command line on top (`preset`
-    /// from `--preset`, `vsync` from `--present`). Benchmarks of races stay on Medium. Also
+    /// from `--preset`, `vsync` from `--present`, `display` windowed for `--size`).
+    /// Benchmarks of races stay on Medium. Also
     /// returns the file's values the command line overrode, so `persisted` can keep the
     /// overrides out of the saved file.
     pub fn with_cli(
         mut self,
         preset: Option<Preset>,
         vsync: Option<bool>,
+        display: Option<DisplayMode>,
         bench: bool,
         attract: bool,
     ) -> (Self, CliOverrides) {
         let loaded = self.graphics;
         let vsync_restore = vsync.map(|v| std::mem::replace(&mut self.graphics.vsync, v));
+        let display_restore = display.map(|d| std::mem::replace(&mut self.graphics.display, d));
         let g = &mut self.graphics;
         g.auto = g.auto && preset.is_none() && (!bench || attract);
         let restore = match preset {
@@ -426,6 +431,7 @@ impl Prefs {
             CliOverrides {
                 graphics: restore,
                 vsync: vsync_restore,
+                display: display_restore,
             },
         )
     }
@@ -441,6 +447,9 @@ impl Prefs {
         }
         if let Some(v) = restore.vsync {
             p.graphics.vsync = v;
+        }
+        if let Some(d) = restore.display {
+            p.graphics.display = d;
         }
         p
     }
@@ -707,14 +716,14 @@ mod tests {
         let mut file = Prefs::default();
         file.graphics.set_preset(Preset::High);
         file.graphics.auto = true;
-        let (run, restore) = file.with_cli(Some(Preset::Low), None, false, false);
+        let (run, restore) = file.with_cli(Some(Preset::Low), None, None, false, false);
         assert_eq!(run.graphics.preset, PresetChoice::Low);
         assert!(!run.graphics.auto);
         assert_eq!(run.graphics.quality, Preset::Low.settings());
         let saved = run.persisted(&restore);
         assert_eq!(saved.graphics, file.graphics);
         // Without an override the run's graphics are saved as they are.
-        let (run, restore) = file.with_cli(None, None, false, false);
+        let (run, restore) = file.with_cli(None, None, None, false, false);
         assert_eq!(restore, CliOverrides::default());
         assert_eq!(run.persisted(&restore), run);
     }
@@ -723,7 +732,7 @@ mod tests {
     fn cli_present_is_not_persisted() {
         let mut file = Prefs::default();
         file.graphics.vsync = true;
-        let (run, restore) = file.with_cli(None, Some(false), false, false);
+        let (run, restore) = file.with_cli(None, Some(false), None, false, false);
         assert!(!run.graphics.vsync);
         assert!(run.persisted(&restore).graphics.vsync);
         // Other edits made during the run are still saved.
@@ -739,9 +748,39 @@ mod tests {
     }
 
     #[test]
+    fn cli_size_is_windowed_and_not_persisted() {
+        let mut file = Prefs::default();
+        file.graphics.display = DisplayMode::Fullscreen;
+        let windowed = Some(DisplayMode::Windowed);
+        let (run, restore) = file.with_cli(None, None, windowed, false, false);
+        assert_eq!(run.graphics.display, DisplayMode::Windowed);
+        assert_eq!(restore.display, Some(DisplayMode::Fullscreen));
+        assert_eq!(
+            run.persisted(&restore).graphics.display,
+            DisplayMode::Fullscreen
+        );
+        // Once the menu changes the display mode, the override is dropped and the edit saved.
+        let mut edited = run;
+        edited.graphics.display = DisplayMode::Borderless;
+        let dropped = CliOverrides {
+            display: None,
+            ..restore
+        };
+        assert_eq!(
+            edited.persisted(&dropped).graphics.display,
+            DisplayMode::Borderless
+        );
+        // Without `--size` the saved mode stands.
+        let (run, restore) = file.with_cli(None, None, None, false, false);
+        assert_eq!(run.graphics.display, DisplayMode::Fullscreen);
+        assert_eq!(restore.display, None);
+    }
+
+    #[test]
     fn cli_preset_and_present_restore_separately() {
         let file = Prefs::default();
-        let (mut run, mut restore) = file.with_cli(Some(Preset::Low), Some(false), false, false);
+        let (mut run, mut restore) =
+            file.with_cli(Some(Preset::Low), Some(false), None, false, false);
         // The menu picks a preset (dropping that override) but leaves V-sync alone.
         restore.graphics = None;
         run.graphics.set_preset(Preset::High);
@@ -752,10 +791,10 @@ mod tests {
 
     #[test]
     fn bench_ignores_auto_unless_attract() {
-        let (race, _) = Prefs::default().with_cli(None, None, true, false);
+        let (race, _) = Prefs::default().with_cli(None, None, None, true, false);
         assert!(!race.graphics.auto);
         assert_eq!(race.graphics.preset, PresetChoice::Medium);
-        let (title, _) = Prefs::default().with_cli(None, None, true, true);
+        let (title, _) = Prefs::default().with_cli(None, None, None, true, true);
         assert!(title.graphics.auto);
         assert_eq!(title.graphics.preset, PresetChoice::High);
     }

@@ -7,6 +7,8 @@ pub use rivet_render::{PresentChoice, Preset};
 pub struct Args {
     pub adapter: AdapterPreference,
     pub size: (u32, u32),
+    /// `--size` was on the command line: this run is windowed, whatever display mode is saved.
+    pub size_given: bool,
     pub present: PresentChoice,
     /// `--present` was on the command line: it beats the saved V-sync setting for this run.
     pub present_given: bool,
@@ -135,6 +137,9 @@ pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<n
 [--menu title|race-setup|tracks|garage|multiplayer|lobby|pause|results|graphics|audio|controls|camera|gameplay] \
 [--bench SECS [--bench-cap HZ] [--offscreen [--screenshot FILE.png]]]
 
+  --size WxH  window size; the game also starts windowed, whatever display mode is saved
+  --present vsync|immediate  V-sync for this run, whatever is saved
+  --preset low|medium|high  graphics preset for this run, whatever is saved
   --bench-cap HZ  cap a benchmark's frame rate (to measure the frame limiter)
   --no-motion  reduced motion: the menu embers and the molten flow stand still
   --menu NAME  open that menu screen at launch (with --bench --offscreen, for screenshots)";
@@ -147,6 +152,7 @@ pub fn parse(
     let mut adapter =
         env_adapter.map(|s| s.parse().expect("AdapterPreference parsing is infallible"));
     let mut size = (1600, 900);
+    let mut size_given = false;
     let mut present = None;
     let mut bench = None;
     let mut offscreen = false;
@@ -182,6 +188,7 @@ pub fn parse(
                         .ok_or_else(|| format!("--size expects WxH (64..16384), got '{v}'"))
                 };
                 size = (parse_dim(w)?, parse_dim(h)?);
+                size_given = true;
             }
             "--present" => present = Some(value()?.parse::<PresentChoice>()?),
             "--bench" => {
@@ -254,6 +261,7 @@ pub fn parse(
     Ok(Args {
         adapter: adapter.unwrap_or_default(),
         size,
+        size_given,
         present,
         present_given,
         bench,
@@ -312,6 +320,17 @@ mod tests {
         assert_eq!(a.present, PresentChoice::Immediate);
         let a = parse_strs(&["--bench", "30", "--present", "vsync"], None).unwrap();
         assert_eq!(a.present, PresentChoice::Vsync);
+    }
+
+    #[test]
+    fn args_size_given_only_when_on_the_command_line() {
+        assert!(!parse_strs(&[], None).unwrap().size_given);
+        assert!(
+            parse_strs(&["--size", "1280x720"], None)
+                .unwrap()
+                .size_given
+        );
+        assert!(USAGE.contains("--size WxH  "));
     }
 
     #[test]
