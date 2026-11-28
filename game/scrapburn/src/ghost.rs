@@ -156,6 +156,21 @@ pub fn data_dir_from(
         .map(|d| d.join("scrapburn"))
 }
 
+/// Write `bytes` to `path` so a crash never leaves a half-written file: write a sibling temp
+/// file, then rename it into place. Creates the parent directory.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 pub fn data_dir() -> Option<PathBuf> {
     let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
     data_dir_from(env("XDG_DATA_HOME"), env("HOME"), env("APPDATA"))
@@ -189,6 +204,19 @@ pub fn save(path: &Path, g: &Ghost) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn write_atomic_creates_dirs_and_replaces() {
+        let dir = std::env::temp_dir().join(format!("scrapburn-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("sub").join("file");
+        super::write_atomic(&path, b"one").unwrap();
+        super::write_atomic(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temp file left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use glam::{Quat, Vec3};
 

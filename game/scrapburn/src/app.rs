@@ -30,6 +30,7 @@ use scrapburn::netplay::{
     self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
 };
 use scrapburn::particles::{Blend, Particle, ParticleSystem};
+use scrapburn::prefs::Prefs;
 use scrapburn::race::{Phase, Race, RaceEvent};
 use scrapburn::scenery;
 use scrapburn::sound::{MusicCue, SoundDirector};
@@ -153,6 +154,26 @@ impl Lcg {
         self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (self.0 >> 8) as f32 / (1u32 << 24) as f32
     }
+}
+
+/// The settings for this run: the saved file, then the command line on top. Benchmarks ignore
+/// the file so their numbers do not depend on the machine's saved choices.
+fn initial_prefs(args: &Args, dir: Option<&std::path::Path>) -> Prefs {
+    let bench = args.bench.is_some();
+    let mut prefs = match dir {
+        Some(d) if !bench => Prefs::load(d),
+        _ => Prefs::default(),
+    };
+    let g = &mut prefs.graphics;
+    // Auto graphics starts on High and settles down; benchmarks of races stay on Medium.
+    g.auto = g.auto && args.preset.is_none() && (!bench || args.attract);
+    match args.preset {
+        Some(p) => g.set_preset(p),
+        None if g.auto => g.set_preset(rivet_render::Preset::High),
+        None if bench => g.set_preset(rivet_render::Preset::Medium),
+        None => {}
+    }
+    prefs
 }
 
 /// A burst of additive sparks.
@@ -444,24 +465,15 @@ impl Game {
             loadout: scrapburn::ghost::data_dir()
                 .map(|d| scrapburn::kart::Loadout::read(&d))
                 .unwrap_or_default(),
-            // Explicit preset, Medium for benchmarks, otherwise start High and auto-tune.
-            preset: args
-                .preset
-                .unwrap_or(if args.bench.is_some() && !args.attract {
-                    rivet_render::Preset::Medium
-                } else {
-                    rivet_render::Preset::High
-                }),
-            auto_preset: args.preset.is_none() && (args.bench.is_none() || args.attract),
+            prefs: initial_prefs(args, scrapburn::ghost::data_dir().as_deref()),
             track: args.track,
-            ..Settings::default()
         };
         let scene = SceneRenderer::new(
             &ctx.device,
             &ctx.queue,
             ctx.format(),
             ctx.size(),
-            settings.preset,
+            settings.preset(),
             &layers,
             &shading_table,
         );
@@ -609,7 +621,7 @@ impl Game {
             tuner: {
                 let mut t = scrapburn::autotune::AutoTuner::new();
                 // Benchmarks of races use a fixed preset; a title-screen benchmark may tune.
-                if args.preset.is_some() || (args.bench.is_some() && !args.attract) {
+                if !settings.prefs.graphics.auto {
                     t.stop();
                 }
                 t
@@ -619,13 +631,30 @@ impl Game {
         })
     }
 
+    /// Write the settings file. Benchmarks never touch it.
+    fn save_prefs(&self) {
+        if self.bench.is_some() {
+            return;
+        }
+        if let Some(dir) = scrapburn::ghost::data_dir()
+            && let Err(e) = self.settings.prefs.save(&dir)
+        {
+            log::warn!("saving settings: {e}");
+        }
+    }
+
     fn make_race(track: &Track, session: Session, s: &Settings, bench: bool) -> Race {
         let mut race = match session {
             Session::Attract => Race::new(track, 8, false, u32::MAX),
-            Session::Play(Mode::Race) => Race::new(track, s.rivals + 1, !bench, s.laps),
+            Session::Play(Mode::Race) => Race::new(
+                track,
+                s.prefs.gameplay.rivals + 1,
+                !bench,
+                s.prefs.gameplay.laps,
+            ),
             Session::Play(Mode::TimeTrial) => Race::new(track, 1, !bench, u32::MAX),
             Session::Play(Mode::Elimination) => {
-                Race::new_elimination(track, s.rivals.max(1) + 1, !bench)
+                Race::new_elimination(track, s.prefs.gameplay.rivals.max(1) + 1, !bench)
             }
         };
         race.equip_grid(s.loadout.design);
@@ -663,15 +692,15 @@ impl Game {
                 design: self.settings.loadout.design as u8,
                 track: self.settings.track as u8,
                 elimination: mode == Mode::Elimination,
-                laps: self.settings.laps as u8,
-                rivals: self.settings.rivals as u8,
+                laps: self.settings.prefs.gameplay.laps as u8,
+                rivals: self.settings.prefs.gameplay.rivals as u8,
                 circuit: self.circuit,
             };
             let count = h.racer_count();
             self.race = if mode == Mode::Elimination {
                 Race::new_elimination(&self.track, count, true)
             } else {
-                Race::new(&self.track, count, true, self.settings.laps)
+                Race::new(&self.track, count, true, self.settings.prefs.gameplay.laps)
             };
             h.start(&mut self.race);
             self.fit_race_buffers();
@@ -799,8 +828,8 @@ impl Game {
             design: self.settings.loadout.design as u8,
             track: self.settings.track as u8,
             elimination: self.menu.lobby_elimination,
-            laps: self.settings.laps as u8,
-            rivals: self.settings.rivals as u8,
+            laps: self.settings.prefs.gameplay.laps as u8,
+            rivals: self.settings.prefs.gameplay.rivals as u8,
             circuit: None,
         };
         let addr = if loopback {
@@ -1217,7 +1246,7 @@ impl Game {
             &self.ctx.queue,
             self.ctx.format(),
             self.ctx.size(),
-            self.settings.preset,
+            self.settings.preset(),
             &self.layers,
             &self.shading_table,
         );
@@ -1252,7 +1281,7 @@ impl Game {
         let pad = pad.as_ref();
         let act = actions(&self.keys, pad);
         if act.toggle_graph {
-            self.settings.fps = self.settings.fps.next();
+            self.settings.prefs.graphics.fps = self.settings.prefs.graphics.fps.next();
         }
 
         // --- Menus ---
@@ -1323,7 +1352,12 @@ impl Game {
                 } else if pending {
                     input = Default::default();
                 }
-                match self.menu.handle(input, &mut self.settings) {
+                let was_settings = self.menu.screen == Screen::Settings;
+                let action = self.menu.handle(input, &mut self.settings);
+                if was_settings && self.menu.screen != Screen::Settings {
+                    self.save_prefs();
+                }
+                match action {
                     MenuAction::None => {}
                     MenuAction::StartRace => self.begin(Mode::Race, self.menu.solo_event()),
                     MenuAction::StartTimeTrial => self.begin(Mode::TimeTrial, Event::Single),
@@ -1356,7 +1390,10 @@ impl Game {
                     }
                     MenuAction::ToTitle if online => self.back_to_lobby(),
                     MenuAction::ToTitle => self.start(Session::Attract),
-                    MenuAction::Quit => return Some(ExitCode::SUCCESS),
+                    MenuAction::Quit => {
+                        self.save_prefs();
+                        return Some(ExitCode::SUCCESS);
+                    }
                     MenuAction::PresetChanged => {
                         self.tuner.stop();
                         self.rebuild_renderer();
@@ -1364,15 +1401,14 @@ impl Game {
                     MenuAction::SaveName => {
                         self.player_name =
                             rivet_net::clean_name(&self.menu.name_entry).to_ascii_uppercase();
-                        if let Some(dir) = scrapburn::ghost::data_dir() {
-                            let tmp = dir.join(format!("racer-name.{}.tmp", std::process::id()));
-                            if std::fs::create_dir_all(&dir)
-                                .and_then(|_| std::fs::write(&tmp, &self.player_name))
-                                .and_then(|_| std::fs::rename(&tmp, dir.join("racer-name")))
-                                .is_err()
-                            {
-                                self.show_toast("NAME SET FOR THIS SESSION");
-                            }
+                        if let Some(dir) = scrapburn::ghost::data_dir()
+                            && scrapburn::ghost::write_atomic(
+                                &dir.join("racer-name"),
+                                self.player_name.as_bytes(),
+                            )
+                            .is_err()
+                        {
+                            self.show_toast("NAME SET FOR THIS SESSION");
                         }
                     }
                     MenuAction::SaveGarage => {
@@ -1489,18 +1525,21 @@ impl Game {
         // nothing reliable to measure, so play safe on Medium.
         if self.tuner.active() && self.timer.is_none() {
             self.tuner.stop();
-            self.settings.preset = rivet_render::Preset::Medium;
+            self.settings
+                .prefs
+                .graphics
+                .set_preset(rivet_render::Preset::Medium);
             self.rebuild_renderer();
         }
         if self.tuner.active() && matches!(self.session, Session::Attract) {
             // GPU time only: CPU frame time includes vsync waits.
             if let Some(p) = gpu_ms.and_then(|g| self.tuner.feed(g)) {
                 log::info!("auto graphics: stepping down to {p:?}");
-                self.settings.preset = p;
+                self.settings.prefs.graphics.set_preset(p);
                 self.rebuild_renderer();
             }
             if !self.tuner.active() {
-                log::info!("auto graphics: settled on {:?}", self.settings.preset);
+                log::info!("auto graphics: settled on {:?}", self.settings.preset());
             }
         }
         if let Some(b) = self.bench.as_mut()
@@ -1545,7 +1584,7 @@ impl Game {
             let racing = self.race.phase == Phase::Racing;
             let in_race = matches!(self.session, Session::Play(_));
             let music = match self.menu.screen {
-                _ if !self.settings.music => MusicCue::Off,
+                _ if !self.settings.prefs.audio.soundtrack => MusicCue::Off,
                 Screen::Playing if in_race && racing => MusicCue::Race,
                 // The countdown: silence, then the circuit's song on GO.
                 Screen::Playing if in_race => MusicCue::Off,
@@ -2464,7 +2503,7 @@ impl Game {
                 | Screen::Lobby => {}
             }
         }
-        match (self.settings.fps, self.bench.is_some()) {
+        match (self.settings.prefs.graphics.fps, self.bench.is_some()) {
             (FpsDisplay::Graph, _) | (_, true) => {
                 draw_frame_graph(
                     o,
@@ -2509,7 +2548,10 @@ impl ApplicationHandler for App {
             return;
         };
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                game.save_prefs();
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 game.minimized = size.width == 0 || size.height == 0;
                 game.ctx.resize(size.width, size.height);

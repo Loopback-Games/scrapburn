@@ -69,19 +69,20 @@ pub enum MenuAction {
     Update,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Settings {
     pub loadout: crate::kart::Loadout,
-    pub preset: Preset,
-    pub laps: u32,
-    pub rivals: usize,
-    pub fps: FpsDisplay,
+    /// Every saved option; see `prefs`.
+    pub prefs: crate::prefs::Prefs,
     /// Index into `track::TRACKS`.
     pub track: usize,
-    /// The preset is being picked automatically.
-    pub auto_preset: bool,
-    /// The race soundtrack.
-    pub music: bool,
+}
+
+impl Settings {
+    /// The graphics preset in effect (`Custom` counts as Medium).
+    pub fn preset(&self) -> Preset {
+        self.prefs.graphics.preset.preset()
+    }
 }
 
 /// How frame rate is shown in game (F3 / Select cycles it).
@@ -109,21 +110,6 @@ impl FpsDisplay {
             FpsDisplay::Off => "OFF",
             FpsDisplay::Counter => "COUNTER",
             FpsDisplay::Graph => "GRAPH",
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            loadout: Default::default(),
-            preset: Preset::Medium,
-            laps: 3,
-            rivals: 7,
-            fps: FpsDisplay::Off,
-            track: 0,
-            auto_preset: false,
-            music: true,
         }
     }
 }
@@ -296,7 +282,7 @@ impl MenuState {
 
     /// Rows of the current screen.
     pub fn items(&self, s: &Settings) -> Vec<String> {
-        let preset = match s.preset {
+        let preset = match s.preset() {
             Preset::Low => "LOW",
             Preset::Medium => "MEDIUM",
             Preset::High => "HIGH",
@@ -360,15 +346,22 @@ impl MenuState {
                 "DONE".into(),
             ],
             Screen::Settings => vec![
-                if s.auto_preset {
+                if s.prefs.graphics.auto {
                     format!("GRAPHICS  < {preset} (AUTO) >")
                 } else {
                     format!("GRAPHICS  < {preset} >")
                 },
-                format!("LAPS  < {} >", s.laps),
-                format!("RIVALS  < {} >", s.rivals),
-                format!("SHOW FPS  < {} >", s.fps.label()),
-                format!("MUSIC  < {} >", if s.music { "ON" } else { "OFF" }),
+                format!("LAPS  < {} >", s.prefs.gameplay.laps),
+                format!("RIVALS  < {} >", s.prefs.gameplay.rivals),
+                format!("SHOW FPS  < {} >", s.prefs.graphics.fps.label()),
+                format!(
+                    "MUSIC  < {} >",
+                    if s.prefs.audio.soundtrack {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                ),
                 "BACK".into(),
             ],
             Screen::Paused => vec![
@@ -558,19 +551,29 @@ impl MenuState {
                 }
                 match self.selected {
                     SETTING_PRESET => {
-                        s.preset =
-                            cycle(&[Preset::Low, Preset::Medium, Preset::High], s.preset, step);
-                        s.auto_preset = false;
+                        let next = cycle(
+                            &[Preset::Low, Preset::Medium, Preset::High],
+                            s.preset(),
+                            step,
+                        );
+                        s.prefs.graphics.set_preset(next);
+                        s.prefs.graphics.auto = false;
                         return MenuAction::PresetChanged;
                     }
-                    SETTING_LAPS => s.laps = cycle(&LAP_CHOICES, s.laps, step),
-                    SETTING_RIVALS => s.rivals = cycle(&RIVAL_CHOICES, s.rivals, step),
-                    SETTING_MUSIC => s.music = !s.music,
+                    SETTING_LAPS => {
+                        s.prefs.gameplay.laps = cycle(&LAP_CHOICES, s.prefs.gameplay.laps, step);
+                    }
+                    SETTING_RIVALS => {
+                        s.prefs.gameplay.rivals =
+                            cycle(&RIVAL_CHOICES, s.prefs.gameplay.rivals, step);
+                    }
+                    SETTING_MUSIC => s.prefs.audio.soundtrack = !s.prefs.audio.soundtrack,
                     SETTING_FPS => {
-                        s.fps = if step > 0 {
-                            s.fps.next()
+                        let fps = s.prefs.graphics.fps;
+                        s.prefs.graphics.fps = if step > 0 {
+                            fps.next()
                         } else {
-                            s.fps.next().next()
+                            fps.next().next()
                         };
                     }
                     _ => {}
@@ -1050,15 +1053,15 @@ mod tests {
     #[test]
     fn music_toggles_and_defaults_on() {
         let mut s = Settings::default();
-        assert!(s.music);
+        assert!(s.prefs.audio.soundtrack);
         let mut m = MenuState::new(Screen::Settings);
         m.selected = SETTING_MUSIC;
         assert!(m.items(&s)[SETTING_MUSIC].contains("MUSIC  < ON >"));
         m.handle(press(|i| i.select = true), &mut s);
-        assert!(!s.music);
+        assert!(!s.prefs.audio.soundtrack);
         assert!(m.items(&s)[SETTING_MUSIC].contains("OFF"));
         m.handle(press(|i| i.left = true), &mut s);
-        assert!(s.music);
+        assert!(s.prefs.audio.soundtrack);
     }
 
     #[test]
@@ -1066,18 +1069,18 @@ mod tests {
         let mut s = Settings::default();
         let mut m = MenuState::new(Screen::Settings);
         m.selected = SETTING_LAPS;
-        assert_eq!(s.laps, 3);
+        assert_eq!(s.prefs.gameplay.laps, 3);
         m.handle(press(|i| i.right = true), &mut s);
-        assert_eq!(s.laps, 5);
+        assert_eq!(s.prefs.gameplay.laps, 5);
         m.handle(press(|i| i.right = true), &mut s);
-        assert_eq!(s.laps, 1, "wraps");
+        assert_eq!(s.prefs.gameplay.laps, 1, "wraps");
         m.selected = SETTING_PRESET;
-        let before = s.preset;
+        let before = s.preset();
         assert_eq!(
             m.handle(press(|i| i.right = true), &mut s),
             MenuAction::PresetChanged
         );
-        assert_ne!(s.preset, before);
+        assert_ne!(s.preset(), before);
     }
 
     #[test]
@@ -1086,11 +1089,11 @@ mod tests {
         let mut m = MenuState::new(Screen::Settings);
         m.selected = SETTING_FPS;
         m.handle(press(|i| i.right = true), &mut s);
-        assert_eq!(s.fps, FpsDisplay::Counter);
+        assert_eq!(s.prefs.graphics.fps, FpsDisplay::Counter);
         m.handle(press(|i| i.right = true), &mut s);
-        assert_eq!(s.fps, FpsDisplay::Graph);
+        assert_eq!(s.prefs.graphics.fps, FpsDisplay::Graph);
         m.handle(press(|i| i.left = true), &mut s);
-        assert_eq!(s.fps, FpsDisplay::Counter);
+        assert_eq!(s.prefs.graphics.fps, FpsDisplay::Counter);
     }
 
     #[test]

@@ -253,13 +253,10 @@ impl Loadout {
     }
 
     pub fn save(self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!("garage.{}.tmp", std::process::id()));
-        std::fs::write(
-            &tmp,
-            format!("{} {}\n", KARTS[self.design].name, FINISHES[self.finish]),
-        )?;
-        std::fs::rename(tmp, dir.join("garage"))
+        crate::ghost::write_atomic(
+            &dir.join("garage"),
+            format!("{} {}\n", KARTS[self.design].name, FINISHES[self.finish]).as_bytes(),
+        )
     }
 }
 
