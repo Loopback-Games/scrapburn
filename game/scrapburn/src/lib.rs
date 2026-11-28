@@ -16,6 +16,7 @@ pub mod effects;
 pub mod embers;
 pub mod fx_meshes;
 pub mod ghost;
+pub mod haptics;
 pub mod hud;
 pub mod kart;
 pub mod laps;

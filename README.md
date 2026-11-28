@@ -54,6 +54,12 @@ Drive through an item box to get one of these. The odds are weighted by your pos
 charge faster, or steer away to widen it. Release to boost. Blue, orange, then purple sparks
 mark the three boost tiers. Orange pads boost you too, and sand slows you down.
 
+**Vibration:** a gamepad rumbles on wall hits, hard landings, boosts, and item hits. Turn it
+off in **Settings, Controls**. It needs force feedback support in your pad and write access
+to its `/dev/input/event*` node. Desktop Linux grants that to the logged-in user through the
+`uaccess` tag in systemd's joystick rules. If a pad is read-only for you, add a udev rule with
+`TAG+="uaccess"` for it instead of running the game as root.
+
 ## Online
 
 ![Host and guest racing on Dustbowl Loop with the human standings visible](docs/media/online.jpg)

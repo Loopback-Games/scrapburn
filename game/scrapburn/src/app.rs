@@ -25,6 +25,7 @@ use scrapburn::controls::{
 use scrapburn::effects::Effects;
 use scrapburn::fx_meshes;
 use scrapburn::ghost::{BestGhost, GhostRecorder};
+use scrapburn::haptics::{self, Kind};
 use scrapburn::hud::{self, CircuitHud, HudInfo, RaceHud};
 use scrapburn::materials::{find_assets_dir, load_layers, shading};
 use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings, Tab};
@@ -352,6 +353,8 @@ struct Game {
     camera: ChaseCamera,
     keys: KeyInput,
     pads: Option<Gamepads>,
+    /// The followed kart's speed and boost last frame, to spot wall hits and boost starts.
+    haptic_prev: (f32, bool),
     stats: FrameStats,
     last_frame: Instant,
     minimized: bool,
@@ -703,6 +706,7 @@ impl Game {
             camera: ChaseCamera::default(),
             keys: KeyInput::default(),
             pads: Gamepads::new(),
+            haptic_prev: (0.0, false),
             stats: FrameStats::new(240),
             last_frame: Instant::now(),
             minimized: false,
@@ -1955,6 +1959,17 @@ impl Game {
         }
     }
 
+    /// Vibrates the gamepad for a hit on the player's kart. Never in benchmarks or attract.
+    fn haptic(&mut self, kind: Kind, impact: f32) {
+        if self.bench.is_some() || !matches!(self.session, Session::Play(_)) {
+            return;
+        }
+        let on = self.settings.prefs.controls.vibration;
+        if let (Some(p), Some(pads)) = (haptics::pulse(on, kind, impact), self.pads.as_mut()) {
+            pads.rumble(p.strong, p.weak, p.ms);
+        }
+    }
+
     /// Sparks, lightning and blasts for weapon events.
     fn combat_effects(&mut self, events: &[RaceEvent]) {
         let focus_pos = self.race.racers[self.focus()].state.position;
@@ -1991,6 +2006,9 @@ impl Game {
             let RaceEvent::Combat(c) = e else { continue };
             match *c {
                 CombatEvent::Hit { victim, .. } => {
+                    if victim == self.focus() {
+                        self.haptic(Kind::ItemHit, 1.0);
+                    }
                     let p = self.race.racers[victim].state.position + Vec3::Y * 0.6;
                     fx_burst(
                         &mut self.combat_fx,
@@ -2067,6 +2085,7 @@ impl Game {
                     );
                     let near = (1.0 - pos.distance(focus_pos) / 60.0).max(0.0);
                     self.camera.kick(near);
+                    self.haptic(Kind::ItemHit, near);
                 }
                 CombatEvent::Slingshot { racer } => {
                     let p = self.race.racers[racer].state.position;
@@ -2104,6 +2123,7 @@ impl Game {
         let focus = self.focus();
         let fx_dt = if simulating { frame_dt } else { 0.0 };
         let mut models = Vec::with_capacity(self.race.racers.len());
+        let mut landing = 0.0;
         for (i, r) in self.race.racers.iter().enumerate() {
             let (pos, rot) = VehicleState::lerp(&r.prev, &r.state, alpha);
             self.effects[i].dusty_road = self.track.id == scrapburn::track::TrackId::Dustbowl;
@@ -2126,6 +2146,7 @@ impl Game {
             let shake = self.effects[i].update(&r.state, &r.params, fx_dt);
             if i == focus {
                 self.camera.kick(shake);
+                landing = shake;
             }
             let drift_roll = r.state.drift.map_or(0.0, |d| d.dir * 0.10);
             let turn_roll = (r.state.angular_yaw * r.state.speed() * 0.006).clamp(-0.18, 0.18);
@@ -2156,6 +2177,7 @@ impl Game {
                 Mat4::from_rotation_translation(rot, pos) * Mat4::from_rotation_z(self.leans[i]),
             ));
         }
+        self.haptic(Kind::Landing, landing);
         let garage = self.menu.screen == Screen::Garage;
         let (mut fpos, frot, _) = models[focus];
         if garage {
@@ -2170,8 +2192,21 @@ impl Game {
         let fstate = &self.race.racers[focus].state;
         self.camera.set_tuning(self.settings.prefs.camera.into());
         self.camera.look_behind(self.look_behind);
-        self.camera.set_boost(fstate.boost_timer > 0.0);
-        self.camera.update(fpos, frot, fstate.speed(), frame_dt);
+        let boosting = fstate.boost_timer > 0.0;
+        self.camera.set_boost(boosting);
+        let (prev_speed, was_boosting) = self.haptic_prev;
+        let (speed, grounded) = (fstate.speed(), fstate.grounded);
+        self.haptic_prev = (speed, boosting);
+        if simulating {
+            self.haptic(
+                Kind::Wall,
+                haptics::wall_impact(prev_speed, speed, grounded),
+            );
+            if boosting && !was_boosting {
+                self.haptic(Kind::Boost, 0.6);
+            }
+        }
+        self.camera.update(fpos, frot, speed, frame_dt);
         let collision = &self.track.collision;
         self.camera.keep_clear(
             |o, d, max| collision.raycast(o, d, max).map(|h| h.t),
