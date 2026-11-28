@@ -1,4 +1,5 @@
 /target
 /.superpowers
+/.boost
 # Raw Tripo downloads (tens of MB each); prepared models live in assets/models/karts.
 /assets/models/tripo/
