@@ -7,7 +7,7 @@ mod previews;
 use std::ops::Range;
 
 use glam::Vec3;
-use rivet_render::{Face, Overlay, label_width_face};
+use rivet_render::{Face, Overlay, Tracking, label_width_face, label_width_tracked};
 
 use crate::circuit::Circuit;
 use crate::embers::Embers;
@@ -377,7 +377,7 @@ pub fn draw(o: &mut Overlay, w: f32, h: f32, v: &MenuView) -> MenuHits {
         13.0 * s,
         0.3,
         GOLD,
-        &kicker.to_uppercase(),
+        &kicker,
     );
     let (title_px, title_cy, help_cy) = if title_screen {
         (TITLE_PX, TITLE_CY, HELP_CY)
@@ -462,22 +462,37 @@ fn molten_title(o: &mut Overlay, x: f32, cy: f32, scale: f32, span: f32, title: 
 }
 
 /// The molten edge, the smoke glass over the blurred scene, and the ember glow low down.
+///
+/// The glass is opaque (it shows the blurred scene), so nothing is drawn under it: the
+/// scene's smoke starts at the glass edge, and the molten edge is only the strip outside it.
 fn draw_column(o: &mut Overlay, w: f32, h: f32, s: f32, t: f32) {
     let top = COLUMN_W * s;
+    let edge_top = (COLUMN_W + EDGE) * s;
+    let x_at = |top_w: f32, y: f32| top_w - (1.0 - CUT) * top_w * (y / h);
+    // Where the glass ends at height `y`; the scene is visible to the right of it.
+    let glass = |y: f32| x_at(top, y);
     // The scene on the right is darkened toward the column and the edges (the mockup's tint
     // and vignette), so previews read over bright tracks.
     let smoke = |a: f32| [14.0 / 255.0, 8.0 / 255.0, 6.0 / 255.0, a];
+    // Horizontal smoke falls from 0.62 at x = 0 to 0.32 at the right edge. Its alpha is
+    // linear in x, so starting the quad at the glass edge leaves every pixel unchanged.
+    let across = |x: f32| smoke(0.62 + (0.32 - 0.62) * x / w);
     o.quad(
-        [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]],
-        [smoke(0.62), smoke(0.32), smoke(0.32), smoke(0.62)],
+        [[glass(0.0), 0.0], [w, 0.0], [w, h], [glass(h), h]],
+        [across(glass(0.0)), across(w), across(w), across(glass(h))],
     );
     let band = 0.28 * h;
     o.quad(
-        [[0.0, 0.0], [w, 0.0], [w, band], [0.0, band]],
+        [[glass(0.0), 0.0], [w, 0.0], [w, band], [glass(band), band]],
         [smoke(0.45), smoke(0.45), smoke(0.0), smoke(0.0)],
     );
     o.quad(
-        [[0.0, h - band], [w, h - band], [w, h], [0.0, h]],
+        [
+            [glass(h - band), h - band],
+            [w, h - band],
+            [w, h],
+            [glass(h), h],
+        ],
         [smoke(0.0), smoke(0.0), smoke(0.55), smoke(0.55)],
     );
     let side = 0.18 * w;
@@ -485,8 +500,6 @@ fn draw_column(o: &mut Overlay, w: f32, h: f32, s: f32, t: f32) {
         [[w - side, 0.0], [w, 0.0], [w, h], [w - side, h]],
         [smoke(0.0), smoke(0.4), smoke(0.4), smoke(0.0)],
     );
-    let edge_top = (COLUMN_W + EDGE) * s;
-    let x_at = |top_w: f32, y: f32| top_w - (1.0 - CUT) * top_w * (y / h);
     // A wide soft glow off the molten edge into the scene.
     let glow = 26.0 * s;
     o.quad(
@@ -516,10 +529,10 @@ fn draw_column(o: &mut Overlay, w: f32, h: f32, s: f32, t: f32) {
         let (y0, y1) = (ya * h, yb * h);
         o.quad(
             [
-                [0.0, y0],
+                [glass(y0), y0],
                 [x_at(edge_top, y0), y0],
                 [x_at(edge_top, y1), y1],
-                [0.0, y1],
+                [glass(y1), y1],
             ],
             [ca, ca, cb, cb],
         );
@@ -584,8 +597,7 @@ fn draw_embers(o: &mut Overlay, w: f32, h: f32, embers: &Embers) {
         ];
         let (x, y) = (e.x * sx, e.y * sy);
         let r = e.radius * r_scale;
-        o.circle(x, y, r * 3.2, [1.0, 0.43, 0.12, a * 0.16]);
-        o.circle(x, y, r, c);
+        o.spark(x, y, r, c, r * 3.2, [1.0, 0.43, 0.12, a * 0.16]);
     }
 }
 
@@ -595,7 +607,7 @@ fn draw_tabs(o: &mut Overlay, s: f32, current: Tab) -> Vec<(Range<f32>, Range<f3
     let cy = TABS_CY * s;
     let mut hits = Vec::new();
     for tab in Tab::ALL {
-        let name = tab.name().to_uppercase();
+        let name = tab.name();
         let on = tab == current;
         let width = tracked(
             o,
@@ -605,7 +617,7 @@ fn draw_tabs(o: &mut Overlay, s: f32, current: Tab) -> Vec<(Range<f32>, Range<f3
             TAB_PX * s,
             0.16,
             if on { HOT } else { ASH_DIM },
-            &name,
+            name,
         );
         if on {
             o.glow_rect(x, cy + 12.0 * s, width, 2.0 * s, 6.0 * s, fade(GLOW, 0.6));
@@ -656,7 +668,6 @@ fn draw_rows(
             molten_bar(o, x, y, rw, rh);
         }
         let fg = if sel { CHAR } else { ASH };
-        let label = row.label.to_uppercase();
         let label_w = tracked(
             o,
             Face::Row,
@@ -665,7 +676,7 @@ fn draw_rows(
             text * 12.0,
             0.1,
             fg,
-            &label,
+            &row.label,
         );
         let right = x + rw - ROW_PAD * s - if sel { (1.0 - SLANT) * rw } else { 0.0 };
         let capturing = sel && v.menu.capturing.is_some();
@@ -677,11 +688,11 @@ fn draw_rows(
                 }
             }
             RowKind::Slider { fraction, .. } if !capturing => {
-                let value = value_text(row).unwrap_or("").to_uppercase();
-                let vw = tracked_width(Face::Row, value_scale * 12.0, 0.06, &value);
+                let value = value_text(row).unwrap_or("");
+                let vw = tracked_width(Face::Row, value_scale * 12.0, 0.06, value);
                 let arrows = if sel { 22.0 * s } else { 0.0 };
                 let vx = right - arrows - vw;
-                tracked(o, Face::Row, vx, cy, value_scale * 12.0, 0.06, fg, &value);
+                tracked(o, Face::Row, vx, cy, value_scale * 12.0, 0.06, fg, value);
                 if sel {
                     chevron(o, vx - 12.0 * s, cy, 5.0 * s, 2.0 * s, false, CHAR);
                     chevron(o, right - 5.0 * s, cy, 5.0 * s, 2.0 * s, true, CHAR);
@@ -696,9 +707,9 @@ fn draw_rows(
             }
             _ => {
                 let value = if capturing {
-                    "PRESS...".to_string()
+                    "PRESS..."
                 } else {
-                    value_text(row).unwrap_or("").to_uppercase()
+                    value_text(row).unwrap_or("")
                 };
                 let choice = matches!(row.kind, RowKind::Choice { .. }) && !capturing;
                 if !value.is_empty() {
@@ -706,14 +717,14 @@ fn draw_rows(
                     // Long values shrink to fit beside the label.
                     let room = right - 2.0 * arrows - (x + ROW_PAD * s + label_w + 20.0 * s);
                     let mut vs = value_scale;
-                    let full = tracked_width(Face::Row, vs * 12.0, 0.06, &value);
+                    let full = tracked_width(Face::Row, vs * 12.0, 0.06, value);
                     if full > room && room > 0.0 {
                         vs *= room / full;
                     }
-                    let vw = tracked_width(Face::Row, vs * 12.0, 0.06, &value);
+                    let vw = tracked_width(Face::Row, vs * 12.0, 0.06, value);
                     let vx = right - arrows - vw;
                     let color = if capturing { EMBER } else { fg };
-                    tracked(o, Face::Row, vx, cy, vs * 12.0, 0.06, color, &value);
+                    tracked(o, Face::Row, vx, cy, vs * 12.0, 0.06, color, value);
                     if sel && choice {
                         chevron(o, vx - 12.0 * s, cy, 5.0 * s, 2.0 * s, false, CHAR);
                         chevron(o, right - 5.0 * s, cy, 5.0 * s, 2.0 * s, true, CHAR);
@@ -837,7 +848,7 @@ fn draw_footer(o: &mut Overlay, h: f32, s: f32, v: &MenuView) {
         } else {
             x += tracked(o, Face::Row, x, cy, fpx, 0.2, HOT, prompt.keys) + 8.0 * s;
         }
-        x += tracked(o, Face::Row, x, cy, fpx, 0.2, ASH_DIM, &word.to_uppercase()) + 22.0 * s;
+        x += tracked(o, Face::Row, x, cy, fpx, 0.2, ASH_DIM, word) + 22.0 * s;
     }
 }
 
@@ -854,18 +865,20 @@ impl Prompt {
 
 // --- Drawing helpers shared with the previews ---
 
-/// Width of `s` at `size_px` with `track_em` extra space between letters.
-fn tracked_width(face: Face, size_px: f32, track_em: f32, s: &str) -> f32 {
-    let scale = size_px / 12.0;
-    let mut buf = [0u8; 4];
-    let n = s.chars().count();
-    s.chars()
-        .map(|c| label_width_face(face, c.encode_utf8(&mut buf), scale))
-        .sum::<f32>()
-        + track_em * size_px * n.saturating_sub(1) as f32
+/// Letter spacing of `track_em` at `size_px`, in capitals.
+fn caps(size_px: f32, track_em: f32) -> Tracking {
+    Tracking {
+        px: track_em * size_px,
+        caps: true,
+    }
 }
 
-/// Letter-spaced text from `x`, capitals centered on `cy`; returns its width.
+/// Width of `s` in capitals at `size_px` with `track_em` extra space between letters.
+fn tracked_width(face: Face, size_px: f32, track_em: f32, s: &str) -> f32 {
+    label_width_tracked(face, s, size_px / 12.0, caps(size_px, track_em))
+}
+
+/// Letter-spaced text in capitals from `x`, centered on `cy`; returns its width.
 #[allow(clippy::too_many_arguments)]
 fn tracked(
     o: &mut Overlay,
@@ -878,18 +891,9 @@ fn tracked(
     s: &str,
 ) -> f32 {
     let scale = size_px / 12.0;
-    if track_em == 0.0 {
-        o.label_face_centered(face, x, cy, scale, color, s);
-        return label_width_face(face, s, scale);
-    }
-    let mut buf = [0u8; 4];
-    let mut cx = x;
-    for c in s.chars() {
-        let g = c.encode_utf8(&mut buf);
-        o.label_face_centered(face, cx, cy, scale, color, g);
-        cx += label_width_face(face, g, scale) + track_em * size_px;
-    }
-    (cx - x - track_em * size_px).max(0.0)
+    let tracking = caps(size_px, track_em);
+    o.label_tracked_centered(face, x, cy, scale, tracking, color, s);
+    label_width_tracked(face, s, scale, tracking)
 }
 
 /// Greedy word wrap to `width` pixels at label `scale`.

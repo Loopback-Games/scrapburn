@@ -106,12 +106,8 @@ fn text_colored(
     color: [f32; 4],
     s: &str,
 ) -> f32 {
+    // Every style is set in capitals (the stencil face has nothing else).
     let [sx, sy] = a.p(x, y - 0.5 * style.cap() * size);
-    let s = if matches!(style, Style::Display) {
-        s.to_string()
-    } else {
-        s.to_uppercase()
-    };
     tracked(
         o,
         style.face(),
@@ -120,18 +116,13 @@ fn text_colored(
         a.d(size),
         style.tracking(),
         color,
-        &s,
+        s,
     ) / a.s
 }
 
 /// Width of `text` in design pixels.
 fn text_width(a: Area, size: f32, style: Style, s: &str) -> f32 {
-    let s = if matches!(style, Style::Display) {
-        s.to_string()
-    } else {
-        s.to_uppercase()
-    };
-    tracked_width(style.face(), a.d(size), style.tracking(), &s) / a.s
+    tracked_width(style.face(), a.d(size), style.tracking(), s) / a.s
 }
 
 /// Text centered on design `cx`.
@@ -152,16 +143,7 @@ fn display_fit(o: &mut Overlay, a: Area, x: f32, y: f32, size: f32, max_w: f32, 
 /// The preview's small gold caption at its top left.
 fn frame_label(o: &mut Overlay, a: Area, label: &str) {
     let [x, y] = a.p(0.0, 0.0);
-    tracked(
-        o,
-        Face::Row,
-        x,
-        y,
-        a.d(12.0),
-        0.3,
-        GOLD,
-        &label.to_uppercase(),
-    );
+    tracked(o, Face::Row, x, y, a.d(12.0), 0.3, GOLD, label);
 }
 
 /// A glowing ember stroke (`f-acc`).
