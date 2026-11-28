@@ -10,6 +10,7 @@ pub mod camera;
 pub mod circuit;
 pub mod combat;
 pub mod controls;
+pub mod debounce;
 pub mod effects;
 pub mod embers;
 pub mod fx_meshes;

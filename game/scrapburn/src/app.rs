@@ -336,6 +336,8 @@ struct Game {
     net_ticks: u32,
     /// Picks the graphics preset from measured frame times (when not set by hand).
     tuner: scrapburn::autotune::AutoTuner,
+    /// A debounced renderer rebuild after graphics edits in the menu.
+    rebuild: scrapburn::debounce::RebuildSchedule,
     /// Live fire: torch and brazier flames.
     flame_fx: ParticleSystem,
     flame_points: Vec<Vec3>,
@@ -510,12 +512,12 @@ impl Game {
             prefs,
             track: args.track,
         };
-        let scene = SceneRenderer::new(
+        let scene = SceneRenderer::with_settings(
             &ctx.device,
             &ctx.queue,
             ctx.format(),
             ctx.size(),
-            settings.preset(),
+            settings.prefs.graphics.quality,
             &layers,
             &shading_table,
         );
@@ -698,6 +700,7 @@ impl Game {
                 }
                 t
             },
+            rebuild: Default::default(),
             flame_fx: ParticleSystem::new(1500),
             flame_acc: 0.0,
         })
@@ -1317,12 +1320,12 @@ impl Game {
 
     fn rebuild_renderer(&mut self) {
         let lighting = self.scene.lighting;
-        self.scene = SceneRenderer::new(
+        self.scene = SceneRenderer::with_settings(
             &self.ctx.device,
             &self.ctx.queue,
             self.ctx.format(),
             self.ctx.size(),
-            self.settings.preset(),
+            self.settings.prefs.graphics.quality,
             &self.layers,
             &self.shading_table,
         );
@@ -1525,20 +1528,23 @@ impl Game {
                         self.save_prefs();
                         return Some(ExitCode::SUCCESS);
                     }
-                    MenuAction::PresetChanged => {
-                        // The player chose graphics this run; that choice is saved.
+                    MenuAction::PresetChanged | MenuAction::GraphicsChanged => {
+                        // An edit made in the menu is saved, and replaces any `--preset`.
+                        // Rebuilds wait for a pause in the edits (see `RebuildSchedule`); this
+                        // includes presets, since holding an arrow on that row cycles them.
                         self.cli_graphics = None;
-                        self.tuner.stop();
-                        self.rebuild_renderer();
-                    }
-                    MenuAction::GraphicsChanged => {
-                        // As with a preset: an edit made in the menu is saved. Task 6
-                        // debounces this rebuild and builds from the edited quality.
-                        self.cli_graphics = None;
-                        if !self.settings.prefs.graphics.auto {
+                        let g = self.settings.prefs.graphics;
+                        if !g.auto {
                             self.tuner.stop();
+                        } else if !self.tuner.active() {
+                            // Picking automatically starts over from High.
+                            self.settings
+                                .prefs
+                                .graphics
+                                .set_preset(rivet_render::Preset::High);
+                            self.tuner = scrapburn::autotune::AutoTuner::new();
                         }
-                        self.rebuild_renderer();
+                        self.rebuild.request(Instant::now());
                     }
                     // Task 7 applies the display mode, V-sync, and frame cap.
                     MenuAction::DisplayChanged
@@ -1685,6 +1691,14 @@ impl Game {
         self.stats.push(cpu_ms, gpu_ms);
         // Auto graphics: settle the preset on the title screen. Without a GPU timer there is
         // nothing reliable to measure, so play safe on Medium.
+        // Graphics edits rebuild after a pause, or at once on leaving the Graphics tab.
+        if self.menu.screen != Screen::Settings(scrapburn::menu::Tab::Graphics) {
+            if self.rebuild.flush() {
+                self.rebuild_renderer();
+            }
+        } else if self.rebuild.take_due(now) {
+            self.rebuild_renderer();
+        }
         if self.tuner.active() && self.timer.is_none() {
             self.tuner.stop();
             self.settings

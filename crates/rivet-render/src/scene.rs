@@ -416,7 +416,27 @@ impl SceneRenderer {
         materials: &[Vec<Rgba8Image>],
         shading: &[MaterialShading],
     ) -> Self {
-        let settings = preset.settings();
+        Self::with_settings(
+            device,
+            queue,
+            output_format,
+            output_size,
+            preset.settings(),
+            materials,
+            shading,
+        )
+    }
+
+    /// Like [`SceneRenderer::new`], from individual quality settings (a custom mix).
+    pub fn with_settings(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        output_format: wgpu::TextureFormat,
+        output_size: (u32, u32),
+        settings: QualitySettings,
+        materials: &[Vec<Rgba8Image>],
+        shading: &[MaterialShading],
+    ) -> Self {
         let src = |body: &str| format!("{}\n{}", include_str!("globals.wgsl"), body);
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("scene.wgsl"),
