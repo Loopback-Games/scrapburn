@@ -3,7 +3,22 @@
 use rivet_physics::{BoostTier, VehicleParams, VehicleState};
 use rivet_render::Overlay;
 
+use crate::prefs::{Hud as HudPrefs, Units};
 use crate::style::tier_color;
+
+/// The race HUD's size factor for a `h`-pixel-tall window and a HUD scale of `percent`
+/// (the 70-130 setting; out-of-range values clamp).
+pub fn ui_scale(h: f32, percent: u8) -> f32 {
+    (h / 900.0).clamp(0.6, 2.0) * f32::from(percent.clamp(70, 130)) / 100.0
+}
+
+/// A speed in m/s as the number and unit label the speedometer shows.
+pub fn speed_readout(mps: f32, units: Units) -> (i32, &'static str) {
+    match units {
+        Units::Kmh => ((mps * 3.6).round() as i32, "KM/H"),
+        Units::Mph => ((mps * 2.23694).round() as i32, "MPH"),
+    }
+}
 
 /// Lit segments of an `n`-segment speed bar (full at `max`).
 pub fn speed_segments(speed: f32, max: f32, n: usize) -> usize {
@@ -63,8 +78,9 @@ pub fn draw(
     kart: &VehicleState,
     params: &VehicleParams,
     info: &HudInfo,
+    opts: &HudPrefs,
 ) {
-    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let ui = ui_scale(h, opts.scale);
 
     // Lap and time, top center.
     let lap = match info.total_laps {
@@ -113,13 +129,28 @@ pub fn draw(
     );
 
     // Speed, bottom right: big number plus a segmented bar.
-    let kmh = (kart.speed().abs() * 3.6).round() as i32;
-    let num = format!("{kmh}");
+    if opts.speedometer {
+        draw_speedometer(o, w, h, ui, kart, params, opts.units);
+    }
+    draw_drift(o, w, h, ui, kart, params);
+}
+
+fn draw_speedometer(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    ui: f32,
+    kart: &VehicleState,
+    params: &VehicleParams,
+    units: Units,
+) {
+    let (shown, label) = speed_readout(kart.speed().abs(), units);
+    let num = format!("{shown}");
     let ns = 6.0 * ui;
     let right = w - 28.0 * ui;
     let base = h - 34.0 * ui;
-    let unit_w = width("KM/H", 2.0 * ui);
-    text(o, right - unit_w, base - 24.0 * ui, 2.0 * ui, DIM, "KM/H");
+    let unit_w = width(label, 2.0 * ui);
+    text(o, right - unit_w, base - 24.0 * ui, 2.0 * ui, DIM, label);
     text(
         o,
         right - unit_w - 10.0 * ui - width(&num, ns),
@@ -160,7 +191,16 @@ pub fn draw(
             c,
         );
     }
+}
 
+fn draw_drift(
+    o: &mut Overlay,
+    w: f32,
+    h: f32,
+    ui: f32,
+    kart: &VehicleState,
+    params: &VehicleParams,
+) {
     // Drift meter, bottom center: three pips filling in tier colors.
     if let Some(d) = kart.drift {
         let (tier, frac) = drift_progress(d.charge, &params.boost_tiers);
@@ -284,8 +324,8 @@ pub struct RaceHud<'a> {
 }
 
 /// Position, minimap, and countdown.
-pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
-    let ui = (h / 900.0).clamp(0.6, 2.0);
+pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud, opts: &HudPrefs) {
+    let ui = ui_scale(h, opts.scale);
     // Position, top left.
     let pos = ordinal(race.position);
     let total = format!("/{}", race.racers);
@@ -300,45 +340,47 @@ pub fn draw_race(o: &mut Overlay, w: f32, h: f32, race: &RaceHud) {
     );
 
     // Minimap, bottom left.
-    let size = 190.0 * ui;
-    let rect = (22.0 * ui, h - size - 22.0 * ui, size, size);
-    o.rect(
-        rect.0 - 8.0 * ui,
-        rect.1 - 8.0 * ui,
-        size + 16.0 * ui,
-        size + 16.0 * ui,
-        PANEL,
-    );
-    let mm = Minimap::fit(race.track, rect);
-    for p in race.track.iter().step_by(3) {
-        let (x, y) = mm.project(*p);
+    if opts.minimap {
+        let size = 190.0 * ui;
+        let rect = (22.0 * ui, h - size - 22.0 * ui, size, size);
         o.rect(
-            x - 1.5 * ui,
-            y - 1.5 * ui,
-            3.0 * ui,
-            3.0 * ui,
-            [0.85, 0.82, 0.78, 0.8],
+            rect.0 - 8.0 * ui,
+            rect.1 - 8.0 * ui,
+            size + 16.0 * ui,
+            size + 16.0 * ui,
+            PANEL,
         );
-    }
-    for (p, tint, me) in &race.karts {
-        let (x, y) = mm.project(*p);
-        let s = if *me { 9.0 } else { 6.0 } * ui;
-        if *me {
+        let mm = Minimap::fit(race.track, rect);
+        for p in race.track.iter().step_by(3) {
+            let (x, y) = mm.project(*p);
             o.rect(
-                x - s * 0.5 - 2.0 * ui,
-                y - s * 0.5 - 2.0 * ui,
-                s + 4.0 * ui,
-                s + 4.0 * ui,
-                WHITE,
+                x - 1.5 * ui,
+                y - 1.5 * ui,
+                3.0 * ui,
+                3.0 * ui,
+                [0.85, 0.82, 0.78, 0.8],
             );
         }
-        let c = [
-            (tint[0] * 0.7).min(1.0),
-            (tint[1] * 0.7).min(1.0),
-            (tint[2] * 0.7).min(1.0),
-            1.0,
-        ];
-        o.rect(x - s * 0.5, y - s * 0.5, s, s, if *me { ACCENT } else { c });
+        for (p, tint, me) in &race.karts {
+            let (x, y) = mm.project(*p);
+            let s = if *me { 9.0 } else { 6.0 } * ui;
+            if *me {
+                o.rect(
+                    x - s * 0.5 - 2.0 * ui,
+                    y - s * 0.5 - 2.0 * ui,
+                    s + 4.0 * ui,
+                    s + 4.0 * ui,
+                    WHITE,
+                );
+            }
+            let c = [
+                (tint[0] * 0.7).min(1.0),
+                (tint[1] * 0.7).min(1.0),
+                (tint[2] * 0.7).min(1.0),
+                1.0,
+            ];
+            o.rect(x - s * 0.5, y - s * 0.5, s, s, if *me { ACCENT } else { c });
+        }
     }
 
     // Countdown, center.
@@ -533,13 +575,13 @@ pub fn driver_tag(o: &mut Overlay, (w, h): (f32, f32), clip: glam::Vec4, seat: u
 pub fn human_row(
     o: &mut Overlay,
     h: f32,
-    row: usize,
-    position: usize,
+    (row, position): (usize, usize),
     seat: usize,
     kart: &crate::race::Racer,
     me: bool,
+    scale: u8,
 ) {
-    let u = (h / 900.).clamp(0.6, 2.);
+    let u = ui_scale(h, scale);
     let x = 22. * u;
     let y = (154. + row as f32 * 30.) * u;
     if row == 0 {
@@ -738,11 +780,11 @@ fn outline(o: &mut Overlay, x: f32, y: f32, w: f32, h: f32, t: f32, color: [f32;
 }
 
 /// A short network notice (joined, left, connection lost), fading out after a few seconds.
-pub fn draw_toast(o: &mut Overlay, w: f32, h: f32, msg: &str, age: f32) {
+pub fn draw_toast(o: &mut Overlay, w: f32, h: f32, msg: &str, age: f32, scale: u8) {
     if age > 4.0 {
         return;
     }
-    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let ui = ui_scale(h, scale);
     let a = (1.0 - (age - 3.4).max(0.0) / 0.6).clamp(0.0, 1.0);
     let s = 1.8 * ui;
     let tw = width(msg, s);
@@ -772,9 +814,10 @@ pub fn draw_item_slot(
     item: Option<crate::combat::ItemKind>,
     time: f32,
     hint: &str,
+    scale: u8,
 ) {
     use crate::combat::ItemKind;
-    let ui = (h / 900.0).clamp(0.6, 2.0);
+    let ui = ui_scale(h, scale);
     let size = 92.0 * ui;
     let (x, y) = (w - size - 26.0 * ui, 22.0 * ui);
     o.rect(
@@ -871,8 +914,8 @@ pub fn draw_item_slot(
 }
 
 /// A compact frame-rate readout, bottom center (clear of the race HUD).
-pub fn draw_fps_counter(o: &mut Overlay, w: f32, h: f32, fps: f32) {
-    let ui = (h / 900.0).clamp(0.6, 2.0);
+pub fn draw_fps_counter(o: &mut Overlay, w: f32, h: f32, fps: f32, scale: u8) {
+    let ui = ui_scale(h, scale);
     let label = format!("{fps:.0} FPS");
     let color = if fps >= 59.0 {
         [0.45, 1.0, 0.5, 1.0]
@@ -897,6 +940,27 @@ pub fn draw_fps_counter(o: &mut Overlay, w: f32, h: f32, fps: f32) {
 mod tests {
     use super::*;
     use rivet_physics::VehicleParams;
+
+    #[test]
+    fn ui_scale_applies_percent_and_clamps() {
+        assert!((ui_scale(900.0, 100) - 1.0).abs() < 1e-6);
+        assert!((ui_scale(900.0, 130) - 1.3).abs() < 1e-6);
+        assert!((ui_scale(900.0, 70) - 0.7).abs() < 1e-6);
+        // The window-height clamp still applies underneath.
+        assert!((ui_scale(100.0, 100) - 0.6).abs() < 1e-6);
+        assert!((ui_scale(5000.0, 100) - 2.0).abs() < 1e-6);
+        // Out-of-range percents clamp to 70-130.
+        assert!((ui_scale(900.0, 10) - 0.7).abs() < 1e-6);
+        assert!((ui_scale(900.0, 250) - 1.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn speed_readout_converts_and_labels() {
+        assert_eq!(speed_readout(10.0, Units::Kmh), (36, "KM/H"));
+        assert_eq!(speed_readout(10.0, Units::Mph), (22, "MPH"));
+        assert_eq!(speed_readout(0.0, Units::Mph), (0, "MPH"));
+        assert_eq!(speed_readout(44.704, Units::Mph).0, 100);
+    }
 
     #[test]
     fn speed_segments_scale_and_cap() {

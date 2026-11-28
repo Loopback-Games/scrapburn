@@ -2813,7 +2813,8 @@ impl Game {
                     .filter(|_| !in_race)),
                 ghost: !in_race && self.best_ghost.ghost().is_some(),
             };
-            hud::draw(o, w, h, &r.state, &r.params, &info);
+            let hud_prefs = self.settings.prefs.hud;
+            hud::draw(o, w, h, &r.state, &r.params, &info, &hud_prefs);
             let standings = race.standings(&self.track);
             let countdown = match race.phase {
                 Phase::Countdown(left) => Some(left),
@@ -2840,7 +2841,7 @@ impl Game {
                     .map(|(i, k)| (k.state.position, k.tint, i == focus))
                     .collect(),
             };
-            hud::draw_race(o, w, h, &race_hud);
+            hud::draw_race(o, w, h, &race_hud, &hud_prefs);
             if self.menu.screen == Screen::Playing && !matches!(self.net, Net::Off) {
                 let humans = standings
                     .iter()
@@ -2856,8 +2857,16 @@ impl Game {
                         human.then_some((position + 1, seat, kart))
                     });
                 for (row, (position, seat, kart)) in humans.enumerate() {
-                    hud::human_row(o, h, row, position, seat, kart, seat == focus);
-                    if seat != focus && !kart.out {
+                    hud::human_row(
+                        o,
+                        h,
+                        (row, position),
+                        seat,
+                        kart,
+                        seat == focus,
+                        hud_prefs.scale,
+                    );
+                    if hud_prefs.rival_names && seat != focus && !kart.out {
                         let clip = view_proj * (models[seat].0 + Vec3::Y * 1.22).extend(1.0);
                         hud::driver_tag(o, (w, h), clip, seat, &kart.name);
                     }
@@ -2890,7 +2899,15 @@ impl Game {
                     .controls
                     .bindings
                     .hint(scrapburn::bindings::Action::UseItem);
-                hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t, &hint);
+                hud::draw_item_slot(
+                    o,
+                    w,
+                    h,
+                    race.combat.held[focus],
+                    self.attract_t,
+                    &hint,
+                    hud_prefs.scale,
+                );
             }
         }
         let o = &mut self.overlay;
@@ -2908,13 +2925,24 @@ impl Game {
                     },
                 );
             }
-            (FpsDisplay::Counter, false) => {
-                hud::draw_fps_counter(o, w, h, self.stats.summary().fps)
-            }
+            (FpsDisplay::Counter, false) => hud::draw_fps_counter(
+                o,
+                w,
+                h,
+                self.stats.summary().fps,
+                self.settings.prefs.hud.scale,
+            ),
             (FpsDisplay::Off, false) => {}
         }
         if let Some((msg, at)) = &self.toast {
-            hud::draw_toast(o, w, h, msg, self.attract_t - at);
+            hud::draw_toast(
+                o,
+                w,
+                h,
+                msg,
+                self.attract_t - at,
+                self.settings.prefs.hud.scale,
+            );
         }
     }
 }
