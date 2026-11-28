@@ -23,11 +23,12 @@ pub use mesh::{
     DITHER, EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material,
 };
 pub use overlay::{
-    Face, FontSet, Overlay, Tracking, label_width, label_width_face, label_width_tracked,
+    Face, FontSet, Overlay, Tracking, blend_over, label_width, label_width_face,
+    label_width_tracked,
 };
 pub use preset::{Preset, QualitySettings};
 pub use scene::{
-    Draw, FrameContent, Lighting, MaterialShading, ParticleInstance, SceneRenderer, View,
+    Draw, FrameContent, Lighting, MaterialShading, ParticleInstance, SceneRenderer, View, Wash,
 };
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;

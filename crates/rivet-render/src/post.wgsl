@@ -4,6 +4,10 @@ struct PostParams {
     texel: vec4<f32>,  // xy = 1/source size
     a: vec4<f32>,      // x = threshold, y = knee, z = intensity, w = exposure
     b: vec4<f32>,      // x = vignette strength, y = saturation
+    // The wash (composite only, `scene::Wash`): rgb = linear color, w = 1 while on.
+    wash_color: vec4<f32>,
+    wash_a: vec4<f32>,  // x, y = opacity at the left and right; z, w = top band opacity, height
+    wash_b: vec4<f32>,  // x, y = bottom band opacity, height; z, w = right band opacity, width
 };
 // Kawase passes reuse `a.x` as the tap offset in source texels.
 
@@ -84,6 +88,15 @@ fn fs_composite(in: FsIn) -> @location(0) vec4<f32> {
     var c = grade(hdr, bloom);
     let r = length(in.uv - 0.5);
     c = c * mix(1.0, smoothstep(0.95, 0.3, r), pp.b.x);
+    if (pp.wash_color.w > 0.0) {
+        let u = in.uv;
+        let across = mix(pp.wash_a.x, pp.wash_a.y, u.x);
+        let top = pp.wash_a.z * max(1.0 - u.y / pp.wash_a.w, 0.0);
+        let bottom = pp.wash_b.x * max((u.y - 1.0) / pp.wash_b.y + 1.0, 0.0);
+        let right = pp.wash_b.z * max((u.x - 1.0) / pp.wash_b.w + 1.0, 0.0);
+        let keep = (1.0 - across) * (1.0 - top) * (1.0 - bottom) * (1.0 - right);
+        c = mix(pp.wash_color.rgb, c, keep);
+    }
     return vec4<f32>(c, 1.0);
 }
 

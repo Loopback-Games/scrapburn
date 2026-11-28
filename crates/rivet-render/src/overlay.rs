@@ -15,7 +15,14 @@ struct OverlayVertex {
     /// Atlas UV; `SOLID_UV` = solid color, `BACKDROP_UV` = the blurred scene times the color.
     uv: [f32; 2],
     color: [f32; 4],
+    /// Backdrop only: a color composited over the tinted backdrop in the same fragment, as a
+    /// solid quad drawn over it would be; linear and premultiplied by its alpha. Ignored
+    /// elsewhere.
+    glaze: [f32; 4],
 }
+
+/// No glaze: the tinted backdrop shows as it is.
+const NO_GLAZE: [f32; 4] = [0.0; 4];
 
 /// The uv sentinel for solid color (the shader treats -1.5..0 as solid).
 const SOLID_UV: [f32; 2] = [-1.0, -1.0];
@@ -269,7 +276,12 @@ impl Overlay {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<OverlayVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![
+                        0 => Float32x2,
+                        1 => Float32x2,
+                        2 => Float32x4,
+                        3 => Float32x4
+                    ],
                 })],
                 compilation_options: Default::default(),
             },
@@ -405,6 +417,14 @@ impl Overlay {
         self.vertices.extend(backdrop_quad_vertices(points, tint));
     }
 
+    /// `backdrop_quad` with `glaze` (a color per corner) composited over the tinted backdrop
+    /// in the same pass: it looks like `backdrop_quad` followed by `quad(points, glaze)`, but
+    /// fills the pixels once.
+    pub fn backdrop_glazed(&mut self, points: [[f32; 2]; 4], tint: [f32; 4], glaze: [[f32; 4]; 4]) {
+        self.vertices
+            .extend(glazed_quad_vertices(points, tint, glaze));
+    }
+
     fn vertex_buffer(device: &wgpu::Device, capacity: u64) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("overlay vertices"),
@@ -420,6 +440,7 @@ impl Overlay {
             pos,
             uv: SOLID_UV,
             color,
+            glaze: NO_GLAZE,
         }));
     }
 
@@ -433,6 +454,7 @@ impl Overlay {
                 pos,
                 uv: SOLID_UV,
                 color,
+                glaze: NO_GLAZE,
             });
         }
     }
@@ -608,6 +630,12 @@ impl Overlay {
             .extend(glow_vertices(x, y, w, h, spread, color));
     }
 
+    /// `glow_rect` without its center, for a glow around an opaque shape that hides it.
+    pub fn glow_ring(&mut self, x: f32, y: f32, w: f32, h: f32, spread: f32, color: [f32; 4]) {
+        self.vertices
+            .extend(glow_ring_vertices(x, y, w, h, spread, color));
+    }
+
     pub fn text(&mut self, x: f32, y: f32, scale: f32, color: [f32; 4], s: &str) {
         for [rx, ry, rw, rh] in font::layout(s, x, y, scale) {
             self.rect(rx, ry, rw, rh, color);
@@ -651,7 +679,26 @@ fn quad_vertices(points: [[f32; 2]; 4], colors: [[f32; 4]; 4]) -> [OverlayVertex
 
 /// `quad_vertices` sampling the backdrop instead of drawing a solid color.
 fn backdrop_quad_vertices(points: [[f32; 2]; 4], tint: [f32; 4]) -> [OverlayVertex; 6] {
-    quad_with_uv(points, [tint; 4], BACKDROP_UV)
+    glazed_quad_vertices(points, tint, [NO_GLAZE; 4])
+}
+
+/// `backdrop_quad_vertices` with a glaze color at each corner.
+fn glazed_quad_vertices(
+    points: [[f32; 2]; 4],
+    tint: [f32; 4],
+    glaze: [[f32; 4]; 4],
+) -> [OverlayVertex; 6] {
+    let premultiplied = |c: [f32; 4]| {
+        let lin = |v: f32| v.powf(GAMMA) * c[3];
+        [lin(c[0]), lin(c[1]), lin(c[2]), c[3]]
+    };
+    let v = |i: usize| OverlayVertex {
+        pos: points[i],
+        uv: BACKDROP_UV,
+        color: tint,
+        glaze: premultiplied(glaze[i]),
+    };
+    [v(0), v(1), v(2), v(0), v(2), v(3)]
 }
 
 fn quad_with_uv(points: [[f32; 2]; 4], colors: [[f32; 4]; 4], uv: [f32; 2]) -> [OverlayVertex; 6] {
@@ -659,6 +706,7 @@ fn quad_with_uv(points: [[f32; 2]; 4], colors: [[f32; 4]; 4], uv: [f32; 2]) -> [
         pos: points[i],
         uv,
         color: colors[i],
+        glaze: NO_GLAZE,
     };
     [v(0), v(1), v(2), v(0), v(2), v(3)]
 }
@@ -704,9 +752,30 @@ fn push_label_vertices(
             ([x1, y1], [u1, v1], cb),
             ([x0, y1], [u0, v1], cb),
         ] {
-            out.push(OverlayVertex { pos, uv, color });
+            out.push(OverlayVertex {
+                pos,
+                uv,
+                color,
+                glaze: NO_GLAZE,
+            });
         }
     });
+}
+
+/// `glow_vertices` without the center quad (the fifth of the nine).
+fn glow_ring_vertices(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    spread: f32,
+    color: [f32; 4],
+) -> Vec<OverlayVertex> {
+    let mut v = glow_vertices(x, y, w, h, spread, color);
+    if !v.is_empty() {
+        v.drain(4 * 6..5 * 6);
+    }
+    v
 }
 
 /// Nine quads: the opaque center and eight slices around it whose outer vertices have alpha 0.
@@ -804,6 +873,7 @@ fn rounded_rect_vertices(
         pos,
         uv: SOLID_UV,
         color,
+        glaze: NO_GLAZE,
     };
     let center = [x + 0.5 * w, y + 0.5 * h];
     let n = inner.len();
@@ -845,7 +915,7 @@ const GAMMA: f32 = 2.2;
 
 /// `top` blended over `under`, as one color: drawing it once looks like drawing `under` and
 /// then `top`.
-fn over(top: [f32; 4], under: [f32; 4]) -> [f32; 4] {
+pub fn blend_over(top: [f32; 4], under: [f32; 4]) -> [f32; 4] {
     let a = 1.0 - (1.0 - top[3]) * (1.0 - under[3]);
     if a <= 0.0 {
         return [top[0], top[1], top[2], 0.0];
@@ -872,7 +942,7 @@ fn push_spark_vertices(
     if r <= 0.0 || glow_r <= r {
         return;
     }
-    let both = over(core, glow);
+    let both = blend_over(core, glow);
     let clear = [glow[0], glow[1], glow[2], 0.0];
     let h = 0.5 * FEATHER;
     // Radius and color of each ring, from the inside out.
@@ -886,6 +956,7 @@ fn push_spark_vertices(
         pos: [center[0] + radius * dir[0], center[1] + radius * dir[1]],
         uv: SOLID_UV,
         color,
+        glaze: NO_GLAZE,
     };
     for i in 0..OCTAGON.len() {
         let (a, b) = (OCTAGON[i], OCTAGON[(i + 1) % OCTAGON.len()]);
@@ -1079,6 +1150,22 @@ mod tests {
     }
 
     #[test]
+    fn the_glow_ring_leaves_out_only_the_center() {
+        let color = [1.0, 0.5, 0.0, 0.8];
+        let ring = glow_ring_vertices(100.0, 50.0, 40.0, 20.0, 12.0, color);
+        assert_eq!(ring.len(), 8 * 6);
+        let inside = |x: f32, y: f32| (100.0..=140.0).contains(&x) && (50.0..=70.0).contains(&y);
+        for t in ring.chunks(3) {
+            let cx = t.iter().map(|v| v.pos[0]).sum::<f32>() / 3.0;
+            let cy = t.iter().map(|v| v.pos[1]).sum::<f32>() / 3.0;
+            assert!(
+                !inside(cx, cy),
+                "a ring triangle at {cx},{cy} covers the center"
+            );
+        }
+    }
+
+    #[test]
     fn rounded_rect_stays_within_its_bounds_plus_the_rim() {
         let v = rounded_rect_vertices(10.0, 20.0, 60.0, 24.0, 8.0, [1.0; 4]);
         assert_eq!(v.len() % 3, 0);
@@ -1144,7 +1231,7 @@ mod tests {
         let mid: Vec<_> = v.iter().filter(|p| (far(p) - 3.0).abs() < 0.6).collect();
         assert!(!mid.is_empty() && mid.iter().all(|p| p.color == glow));
         // An opaque core hides the glow entirely.
-        assert_eq!(over([0.2, 0.3, 0.4, 1.0], glow), [0.2, 0.3, 0.4, 1.0]);
+        assert_eq!(blend_over([0.2, 0.3, 0.4, 1.0], glow), [0.2, 0.3, 0.4, 1.0]);
         // Nothing to draw without a glow larger than the core.
         let mut none = Vec::new();
         push_spark_vertices(&mut none, [0.0, 0.0], 2.0, core, 2.0, glow);

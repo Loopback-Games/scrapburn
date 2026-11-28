@@ -200,6 +200,44 @@ struct PostParams {
     texel: Vec4,
     a: Vec4,
     b: Vec4,
+    /// The wash (composite only): linear color and 1 while on; then its opacities.
+    wash_color: Vec4,
+    wash_a: Vec4,
+    wash_b: Vec4,
+}
+
+/// A tint laid over the finished frame by the composite pass, so it costs no extra fill: the
+/// darkening behind menus. Opacity combines a left-to-right ramp with bands along the top,
+/// bottom and right edges, each over the last. Sizes are fractions of the frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Wash {
+    /// sRGB color.
+    pub color: [f32; 3],
+    /// Opacity at the left and right edges, linear between.
+    pub across: [f32; 2],
+    /// Opacity at the top edge, fading to nothing over a height.
+    pub top: (f32, f32),
+    /// Opacity at the bottom edge, fading to nothing over a height.
+    pub bottom: (f32, f32),
+    /// Opacity at the right edge, fading to nothing over a width.
+    pub right: (f32, f32),
+}
+
+impl Wash {
+    /// The uniforms `fs_composite` reads; all zero (off) for `None`.
+    fn params(wash: Option<&Wash>) -> [Vec4; 3] {
+        let Some(w) = wash else {
+            return [Vec4::ZERO; 3];
+        };
+        let lin = |c: f32| c.powf(2.2);
+        // Zero-size bands would divide by zero; they show nothing anyway.
+        let size = |v: f32| v.max(1e-6);
+        [
+            Vec4::new(lin(w.color[0]), lin(w.color[1]), lin(w.color[2]), 1.0),
+            Vec4::new(w.across[0], w.across[1], w.top.0, size(w.top.1)),
+            Vec4::new(w.bottom.0, size(w.bottom.1), w.right.0, size(w.right.1)),
+        ]
+    }
 }
 
 struct Targets {
@@ -264,6 +302,7 @@ pub struct SceneRenderer {
     particle_capacity: u64,
     targets: Targets,
     backdrop: BackdropState,
+    wash: Option<Wash>,
     pub lighting: Lighting,
 }
 
@@ -894,6 +933,7 @@ impl SceneRenderer {
             particle_capacity,
             targets,
             backdrop: BackdropState::new(),
+            wash: None,
             lighting: Lighting::default(),
         }
     }
@@ -1032,6 +1072,9 @@ impl SceneRenderer {
             texel: Vec4::new(1.0 / src.0 as f32, 1.0 / src.1 as f32, 0.0, 0.0),
             a: Vec4::new(BLOOM_THRESHOLD, BLOOM_KNEE, 0.0, 1.0),
             b: Vec4::ZERO,
+            wash_color: Vec4::ZERO,
+            wash_a: Vec4::ZERO,
+            wash_b: Vec4::ZERO,
         };
         let prefilter = bloom.first().map(|_| {
             Self::post_group(
@@ -1145,6 +1188,11 @@ impl SceneRenderer {
         self.backdrop.set_enabled(enabled);
     }
 
+    /// Lays `wash` over the frame from the next `render` on (`None`: no wash).
+    pub fn set_wash(&mut self, wash: Option<Wash>) {
+        self.wash = wash;
+    }
+
     /// The blurred, tonemapped scene at a quarter of the output size, valid after `render`
     /// while the backdrop is enabled.
     pub fn backdrop_view(&self) -> Option<&wgpu::TextureView> {
@@ -1198,10 +1246,14 @@ impl SceneRenderer {
         } else {
             l.bloom_intensity
         };
+        let [wash_color, wash_a, wash_b] = Wash::params(self.wash.as_ref());
         let p = PostParams {
             texel: Vec4::new(1.0 / s.0 as f32, 1.0 / s.1 as f32, 0.0, 0.0),
             a: Vec4::new(BLOOM_THRESHOLD, BLOOM_KNEE, bloom, l.exposure),
             b: Vec4::new(l.vignette, l.saturation, 0.0, 0.0),
+            wash_color,
+            wash_a,
+            wash_b,
         };
         queue.write_buffer(
             &self.targets.post_groups.composite_params,
