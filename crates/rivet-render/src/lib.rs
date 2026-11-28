@@ -22,7 +22,9 @@ pub use gpu_timer::GpuTimer;
 pub use mesh::{
     DITHER, EMISSIVE, GpuMesh, MeshData, TRIPLANAR_B, UNTEXTURED, Vertex, box_mesh, material,
 };
-pub use overlay::{Face, FontSet, Overlay, label_width, label_width_face};
+pub use overlay::{
+    Face, FontSet, Overlay, Tracking, label_width, label_width_face, label_width_tracked,
+};
 pub use preset::{Preset, QualitySettings};
 pub use scene::{
     Draw, FrameContent, Lighting, MaterialShading, ParticleInstance, SceneRenderer, View,

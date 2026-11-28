@@ -58,6 +58,27 @@ pub struct Glyph {
     pub advance: f32,
 }
 
+/// Letter spacing and case for a run of text.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Tracking {
+    /// Extra pixels between neighboring letters.
+    pub px: f32,
+    /// Set ASCII lowercase as capitals.
+    pub caps: bool,
+}
+
+impl Tracking {
+    /// The character drawn for `c`.
+    fn map(self, c: char) -> char {
+        if self.caps { c.to_ascii_uppercase() } else { c }
+    }
+
+    /// The extra width tracking adds to `n` letters.
+    fn spacing(self, n: usize) -> f32 {
+        self.px * n.saturating_sub(1) as f32
+    }
+}
+
 /// Advance widths for measuring text without the atlas.
 #[derive(Debug, Clone)]
 pub struct FontMetrics {
@@ -67,18 +88,25 @@ pub struct FontMetrics {
 
 impl FontMetrics {
     pub fn text_width(&self, s: &str, px: f32) -> f32 {
+        self.text_width_tracked(s, px, Tracking::default())
+    }
+
+    /// `text_width` with letter spacing and case.
+    pub fn text_width_tracked(&self, s: &str, px: f32, tracking: Tracking) -> f32 {
         let q = self.advances.get('?' as usize).copied().unwrap_or(0.0);
-        s.chars()
+        let mut n = 0;
+        let advance = s
+            .chars()
             .map(|c| {
+                n += 1;
                 self.advances
-                    .get(c as usize)
+                    .get(tracking.map(c) as usize)
                     .copied()
                     .filter(|a| *a >= 0.0)
                     .unwrap_or(q)
             })
-            .sum::<f32>()
-            * px
-            / self.raster_px
+            .sum::<f32>();
+        advance * px / self.raster_px + tracking.spacing(n)
     }
 }
 
@@ -220,7 +248,7 @@ impl FontAtlas {
         s.chars()
             .map(|c| {
                 self.glyph(face, c)
-                    .or(self.glyph(face, '?'))
+                    .or_else(|| self.glyph(face, '?'))
                     .map_or(0.0, |g| g.advance)
             })
             .sum::<f32>()
@@ -229,19 +257,37 @@ impl FontAtlas {
 
     /// Quads for `s` with its top (ascent line) at `y`.
     pub fn layout(&self, face: usize, s: &str, x: f32, y: f32, px: f32) -> Vec<GlyphQuad> {
+        let mut out = Vec::with_capacity(s.len());
+        self.layout_with(face, s, x, y, px, Tracking::default(), |q| out.push(q));
+        out
+    }
+
+    /// Calls `emit` with each glyph quad of `s`, its top (ascent line) at `y` and `tracking`
+    /// pixels between letters, without allocating.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_with(
+        &self,
+        face: usize,
+        s: &str,
+        x: f32,
+        y: f32,
+        px: f32,
+        tracking: Tracking,
+        mut emit: impl FnMut(GlyphQuad),
+    ) {
         let Some(f) = self.faces.get(face) else {
-            return Vec::new();
+            return;
         };
         let k = px / f.raster_px;
         let baseline = y + f.ascent * k;
         let mut pen = x;
-        let mut out = Vec::with_capacity(s.len());
         for c in s.chars() {
-            let Some(g) = self.glyph(face, c).or(self.glyph(face, '?')) else {
+            let c = tracking.map(c);
+            let Some(g) = self.glyph(face, c).or_else(|| self.glyph(face, '?')) else {
                 continue;
             };
             if g.size[0] > 0.0 && g.size[1] > 0.0 {
-                out.push(GlyphQuad {
+                emit(GlyphQuad {
                     rect: [
                         pen + g.offset[0] * k,
                         baseline + g.offset[1] * k,
@@ -251,9 +297,8 @@ impl FontAtlas {
                     uv: g.uv,
                 });
             }
-            pen += g.advance * k;
+            pen += g.advance * k + tracking.px;
         }
-        out
     }
 }
 
@@ -380,6 +425,42 @@ mod tests {
                 y + a.cap_middle(face, px)
             );
         }
+    }
+
+    #[test]
+    fn tracking_spaces_letters_and_sets_capitals() {
+        let a = atlas();
+        let plain = a.layout(1, "AVA", 10.0, 20.0, 40.0);
+        let mut spaced = Vec::new();
+        let t = Tracking {
+            px: 6.0,
+            caps: false,
+        };
+        a.layout_with(1, "AVA", 10.0, 20.0, 40.0, t, |q| spaced.push(q));
+        assert_eq!(spaced.len(), 3);
+        for (i, (p, q)) in plain.iter().zip(&spaced).enumerate() {
+            assert!((q.rect[0] - p.rect[0] - 6.0 * i as f32).abs() < 1e-3);
+            assert_eq!((&p.rect[1..], p.uv), (&q.rect[1..], q.uv));
+        }
+        let mut caps = Vec::new();
+        let c = Tracking {
+            px: 0.0,
+            caps: true,
+        };
+        a.layout_with(1, "ava", 10.0, 20.0, 40.0, c, |q| caps.push(q));
+        assert_eq!(caps, plain);
+        let m = a.metrics(1).expect("metrics");
+        let w = m.text_width("AVA", 40.0);
+        let spaced_w = m.text_width_tracked(
+            "ava",
+            40.0,
+            Tracking {
+                px: 6.0,
+                caps: true,
+            },
+        );
+        assert!((spaced_w - (w + 12.0)).abs() < 1e-3);
+        assert_eq!(m.text_width_tracked("", 40.0, t), 0.0);
     }
 
     #[test]
