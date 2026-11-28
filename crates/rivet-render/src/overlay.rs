@@ -1,5 +1,6 @@
-//! Screen-space colored shapes, gradients, glows, and text: one atlas, one draw call. The
-//! overlay is drawn in its own pass after post-processing, so it is never tonemapped or blurred.
+//! Screen-space colored shapes, gradients, glows, text, and frosted backdrop panels: one atlas,
+//! one draw call. The overlay is drawn in its own pass after post-processing, so it is never
+//! tonemapped or blurred itself; backdrop panels show the scene's blurred copy instead.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -11,15 +12,27 @@ use crate::font_atlas::{FaceSpec, FontAtlas, FontMetrics, GlyphSet};
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct OverlayVertex {
     pos: [f32; 2],
-    /// Atlas UV; negative = solid color (no texture).
+    /// Atlas UV; `SOLID_UV` = solid color, `BACKDROP_UV` = the blurred scene times the color.
     uv: [f32; 2],
     color: [f32; 4],
 }
 
+/// The uv sentinel for solid color (the shader treats -1.5..0 as solid).
+const SOLID_UV: [f32; 2] = [-1.0, -1.0];
+/// The uv sentinel for the backdrop (the shader treats anything below -1.5 as backdrop).
+const BACKDROP_UV: [f32; 2] = [-2.0, -2.0];
+
 /// Immediate-mode 2D batch in pixel coordinates, origin top-left.
 pub struct Overlay {
     pipeline: wgpu::RenderPipeline,
+    bgl: wgpu::BindGroupLayout,
     screen_buf: wgpu::Buffer,
+    atlas_view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+    /// Bound at binding 3 while there is no backdrop.
+    no_backdrop: wgpu::TextureView,
+    /// The backdrop generation `screen_bg` was built for (`None`: built with `no_backdrop`).
+    backdrop_generation: Option<u64>,
     screen_bg: wgpu::BindGroup,
     vertex_buf: wgpu::Buffer,
     vertex_capacity: u64,
@@ -208,6 +221,16 @@ impl Overlay {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -256,29 +279,33 @@ impl Overlay {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let screen_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("overlay bind group"),
-            layout: &bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: screen_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&atlas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+        let no_backdrop = crate::texture::texture_2d(
+            device,
+            queue,
+            "no backdrop",
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            (1, 1),
+            4,
+            &[255; 4],
+        );
+        let screen_bg = Self::bind_group(
+            device,
+            &bgl,
+            &screen_buf,
+            &atlas_view,
+            &sampler,
+            &no_backdrop,
+        );
         let vertex_capacity = 16 * 1024;
         let vertex_buf = Self::vertex_buffer(device, vertex_capacity);
         Self {
             pipeline,
+            bgl,
             screen_buf,
+            atlas_view,
+            sampler,
+            no_backdrop,
+            backdrop_generation: None,
             screen_bg,
             vertex_buf,
             vertex_capacity,
@@ -295,6 +322,67 @@ impl Overlay {
         }
     }
 
+    fn bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        screen_buf: &wgpu::Buffer,
+        atlas_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+        backdrop: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("overlay bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(backdrop),
+                },
+            ],
+        })
+    }
+
+    /// Points `backdrop_quad` at `view` (the scene's blurred copy; `None` draws the tint alone).
+    /// Call it every frame after the scene renders: the bind group is rebuilt only when
+    /// `generation` differs from the last call's.
+    pub fn set_backdrop(
+        &mut self,
+        device: &wgpu::Device,
+        view: Option<&wgpu::TextureView>,
+        generation: u64,
+    ) {
+        if self.backdrop_generation == Some(generation) {
+            return;
+        }
+        self.backdrop_generation = Some(generation);
+        self.screen_bg = Self::bind_group(
+            device,
+            &self.bgl,
+            &self.screen_buf,
+            &self.atlas_view,
+            &self.sampler,
+            view.unwrap_or(&self.no_backdrop),
+        );
+    }
+
+    /// Four-point polygon (top-left, top-right, bottom-right, bottom-left) filled with the
+    /// blurred scene behind it, multiplied by `tint` (alpha is the panel's opacity).
+    pub fn backdrop_quad(&mut self, points: [[f32; 2]; 4], tint: [f32; 4]) {
+        self.vertices.extend(backdrop_quad_vertices(points, tint));
+    }
+
     fn vertex_buffer(device: &wgpu::Device, capacity: u64) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("overlay vertices"),
@@ -308,7 +396,7 @@ impl Overlay {
     pub fn triangle(&mut self, points: [[f32; 2]; 3], color: [f32; 4]) {
         self.vertices.extend(points.map(|pos| OverlayVertex {
             pos,
-            uv: [-1.0, -1.0],
+            uv: SOLID_UV,
             color,
         }));
     }
@@ -321,7 +409,7 @@ impl Overlay {
         for pos in [[x, y], [x1, y], [x1, y1], [x, y], [x1, y1], [x, y1]] {
             self.vertices.push(OverlayVertex {
                 pos,
-                uv: [-1.0, -1.0],
+                uv: SOLID_UV,
                 color,
             });
         }
@@ -453,9 +541,18 @@ impl Overlay {
 
 /// Two triangles for a quad given as top-left, top-right, bottom-right, bottom-left.
 fn quad_vertices(points: [[f32; 2]; 4], colors: [[f32; 4]; 4]) -> [OverlayVertex; 6] {
+    quad_with_uv(points, colors, SOLID_UV)
+}
+
+/// `quad_vertices` sampling the backdrop instead of drawing a solid color.
+fn backdrop_quad_vertices(points: [[f32; 2]; 4], tint: [f32; 4]) -> [OverlayVertex; 6] {
+    quad_with_uv(points, [tint; 4], BACKDROP_UV)
+}
+
+fn quad_with_uv(points: [[f32; 2]; 4], colors: [[f32; 4]; 4], uv: [f32; 2]) -> [OverlayVertex; 6] {
     let v = |i: usize| OverlayVertex {
         pos: points[i],
-        uv: [-1.0, -1.0],
+        uv,
         color: colors[i],
     };
     [v(0), v(1), v(2), v(0), v(2), v(3)]
@@ -599,7 +696,7 @@ fn rounded_rect_vertices(
     let clear = [color[0], color[1], color[2], 0.0];
     let vertex = |pos, color| OverlayVertex {
         pos,
-        uv: [-1.0, -1.0],
+        uv: SOLID_UV,
         color,
     };
     let center = [x + 0.5 * w, y + 0.5 * h];
@@ -651,6 +748,49 @@ mod tests {
             font("BigShouldersStencilDisplay-Black.ttf"),
         );
         FontAtlas::new(&face_specs(&h, &r, &d)).expect("atlas")
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Source {
+        Backdrop,
+        Solid,
+        Atlas,
+    }
+
+    /// Mirrors the uv sentinel test in `overlay.wgsl`'s `fs_main`.
+    fn source(v: &OverlayVertex) -> Source {
+        if v.uv[0] < -1.5 {
+            Source::Backdrop
+        } else if v.uv[0] < 0.0 {
+            Source::Solid
+        } else {
+            Source::Atlas
+        }
+    }
+
+    #[test]
+    fn uv_sentinels_select_backdrop_solid_and_atlas() {
+        let pts = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]];
+        let tint = [0.2, 0.1, 0.05, 0.9];
+        let back = backdrop_quad_vertices(pts, tint);
+        assert!(
+            back.iter()
+                .all(|v| source(v) == Source::Backdrop && v.color == tint)
+        );
+        let solid = [
+            quad_vertices(pts, [tint; 4]).to_vec(),
+            glow_vertices(0.0, 0.0, 10.0, 10.0, 4.0, tint),
+            rounded_rect_vertices(0.0, 0.0, 10.0, 10.0, 3.0, tint),
+        ];
+        for v in solid.iter().flatten() {
+            assert_eq!(
+                source(v),
+                Source::Solid,
+                "solid shapes never sample the backdrop"
+            );
+        }
+        let text = label_vertices(&test_atlas(), 0, "AB", 0.0, 0.0, 30.0, tint, tint);
+        assert!(text.iter().all(|v| source(v) == Source::Atlas));
     }
 
     #[test]

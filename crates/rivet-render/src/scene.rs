@@ -1,4 +1,5 @@
-//! The frame renderer: shadow pass, HDR scene (meshes + sky), bloom, tonemap, FXAA.
+//! The frame renderer: shadow pass, HDR scene (meshes + sky), bloom, tonemap, FXAA, and the
+//! blurred menu backdrop.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
@@ -17,6 +18,54 @@ const MAX_MATERIALS: usize = 48;
 /// Bloom starts at this HDR brightness (soft knee below it).
 const BLOOM_THRESHOLD: f32 = 1.4;
 const BLOOM_KNEE: f32 = 0.7;
+/// The menu backdrop is this many times smaller than the output on each axis.
+const BACKDROP_DIVISOR: u32 = 4;
+/// Tap offsets, in backdrop texels, of the two Kawase blur passes.
+const KAWASE_OFFSETS: [f32; 2] = [1.5, 2.5];
+
+/// Size of the menu backdrop for an output of `(w, h)` pixels: a quarter on each axis, rounded
+/// up, never zero.
+pub fn backdrop_size((w, h): (u32, u32)) -> (u32, u32) {
+    (
+        w.div_ceil(BACKDROP_DIVISOR).max(1),
+        h.div_ceil(BACKDROP_DIVISOR).max(1),
+    )
+}
+
+/// A process-wide counter, so two renderers (before and after a rebuild) never share a
+/// backdrop generation.
+fn next_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the backdrop runs, and a generation that changes whenever the view handed out by
+/// `SceneRenderer::backdrop_view` does (toggling, resize, rebuild).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackdropState {
+    enabled: bool,
+    generation: u64,
+}
+
+impl BackdropState {
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            generation: next_generation(),
+        }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        if enabled != self.enabled {
+            self.enabled = enabled;
+            self.invalidate();
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = next_generation();
+    }
+}
 
 /// Sun, sky and fog. Colors are linear; `Default` is a warm desert afternoon.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,6 +211,16 @@ struct Targets {
     ldr: Option<wgpu::TextureView>,
     /// prefilter, down[1..], up[..], composite, fxaa
     post_groups: PostGroups,
+    backdrop: Backdrop,
+}
+
+/// The menu backdrop: `a` (final) and `b` (ping-pong) at `backdrop_size(output)`.
+struct Backdrop {
+    a: wgpu::TextureView,
+    b: wgpu::TextureView,
+    /// scene -> a (tonemap + downsample), a -> b, b -> a.
+    down: wgpu::BindGroup,
+    kawase: [wgpu::BindGroup; 2],
 }
 
 struct PostGroups {
@@ -196,11 +255,15 @@ pub struct SceneRenderer {
     composite_ldr_pipeline: wgpu::RenderPipeline,
     composite_out_pipeline: wgpu::RenderPipeline,
     fxaa_pipeline: wgpu::RenderPipeline,
+    backdrop_down_pipeline: wgpu::RenderPipeline,
+    kawase_down_pipeline: wgpu::RenderPipeline,
+    kawase_up_pipeline: wgpu::RenderPipeline,
     particle_add_pipeline: wgpu::RenderPipeline,
     particle_alpha_pipeline: wgpu::RenderPipeline,
     particle_buf: wgpu::Buffer,
     particle_capacity: u64,
     targets: Targets,
+    backdrop: BackdropState,
     pub lighting: Lighting,
 }
 
@@ -666,6 +729,20 @@ impl SceneRenderer {
             output_format,
             None,
         );
+        let ldr_pipeline = |label: &str, fs: &str| {
+            fullscreen_pipeline(
+                device,
+                label,
+                &post_layout,
+                &post_module,
+                fs,
+                LDR_FORMAT,
+                None,
+            )
+        };
+        let backdrop_down_pipeline = ldr_pipeline("backdrop down", "fs_backdrop_down");
+        let kawase_down_pipeline = ldr_pipeline("backdrop kawase down", "fs_kawase_down");
+        let kawase_up_pipeline = ldr_pipeline("backdrop kawase up", "fs_kawase_up");
 
         let globals_buf = buffer(
             device,
@@ -788,11 +865,15 @@ impl SceneRenderer {
             composite_ldr_pipeline,
             composite_out_pipeline,
             fxaa_pipeline,
+            backdrop_down_pipeline,
+            kawase_down_pipeline,
+            kawase_up_pipeline,
             particle_add_pipeline,
             particle_alpha_pipeline,
             particle_buf,
             particle_capacity,
             targets,
+            backdrop: BackdropState::new(),
             lighting: Lighting::default(),
         }
     }
@@ -871,7 +952,20 @@ impl SceneRenderer {
             contents: bytemuck::bytes_of(&params),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bg = Self::post_group_with(device, layout, sampler, src, src2, &buf);
+        (bg, buf)
+    }
+
+    /// A post bind group that reads an existing params buffer.
+    fn post_group_with(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        src: &wgpu::TextureView,
+        src2: &wgpu::TextureView,
+        buf: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post bind group"),
             layout,
             entries: &[
@@ -892,8 +986,7 @@ impl SceneRenderer {
                     resource: wgpu::BindingResource::TextureView(src2),
                 },
             ],
-        });
-        (bg, buf)
+        })
     }
 
     fn make_targets(
@@ -962,6 +1055,28 @@ impl SceneRenderer {
         let fxaa = ldr
             .as_ref()
             .map(|l| Self::post_group(device, post_bgl, sampler, l, black, p(output_size)).0);
+        let backdrop = {
+            let size = backdrop_size(output_size);
+            let a = render_texture(device, "backdrop a", size, LDR_FORMAT);
+            let b = render_texture(device, "backdrop b", size, LDR_FORMAT);
+            // The first pass grades exactly like the composite, so it shares its params (whose
+            // texel is the scene texel it downsamples from).
+            let down = Self::post_group_with(
+                device,
+                post_bgl,
+                sampler,
+                &scene_color,
+                bloom_src,
+                &composite_params,
+            );
+            let kawase = |src: &wgpu::TextureView, offset: f32| {
+                let mut params = p(size);
+                params.a = Vec4::new(offset, 0.0, 0.0, 0.0);
+                Self::post_group(device, post_bgl, sampler, src, black, params).0
+            };
+            let kawase = [kawase(&a, KAWASE_OFFSETS[0]), kawase(&b, KAWASE_OFFSETS[1])];
+            Backdrop { a, b, down, kawase }
+        };
         Targets {
             scene_size,
             output_size,
@@ -977,6 +1092,7 @@ impl SceneRenderer {
                 composite_params,
                 fxaa,
             },
+            backdrop,
         }
     }
 
@@ -1000,6 +1116,25 @@ impl SceneRenderer {
             &self.post_sampler,
             &self.black_view,
         );
+        self.backdrop.invalidate();
+    }
+
+    /// Runs the menu backdrop passes from the next `render` on (while `enabled`). Call it every
+    /// frame; it is cheap when nothing changes.
+    pub fn set_backdrop(&mut self, enabled: bool) {
+        self.backdrop.set_enabled(enabled);
+    }
+
+    /// The blurred, tonemapped scene at a quarter of the output size, valid after `render`
+    /// while the backdrop is enabled.
+    pub fn backdrop_view(&self) -> Option<&wgpu::TextureView> {
+        self.backdrop.enabled.then_some(&self.targets.backdrop.a)
+    }
+
+    /// Changes whenever `backdrop_view` would hand out a different view (toggle, resize,
+    /// rebuild), so holders of a bind group know to rebuild it.
+    pub fn backdrop_generation(&self) -> u64 {
+        self.backdrop.generation
     }
 
     fn write_models(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw<'_>]) {
@@ -1274,6 +1409,33 @@ impl SceneRenderer {
             }
         }
 
+        // --- Menu backdrop: tonemapped quarter-size copy, then two Kawase blurs ---
+        if self.backdrop.enabled {
+            let bd = &self.targets.backdrop;
+            for (label, target, pipeline, bg) in [
+                (
+                    "backdrop down",
+                    &bd.a,
+                    &self.backdrop_down_pipeline,
+                    &bd.down,
+                ),
+                (
+                    "backdrop kawase down",
+                    &bd.b,
+                    &self.kawase_down_pipeline,
+                    &bd.kawase[0],
+                ),
+                (
+                    "backdrop kawase up",
+                    &bd.a,
+                    &self.kawase_up_pipeline,
+                    &bd.kawase[1],
+                ),
+            ] {
+                fullscreen(encoder, label, target, clear, pipeline, bg, None);
+            }
+        }
+
         // --- Composite (+ FXAA) ---
         match (&self.targets.ldr, &pg.fxaa) {
             (Some(ldr), Some(fxaa)) => {
@@ -1310,5 +1472,42 @@ impl SceneRenderer {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backdrop_is_a_quarter_of_the_output_rounded_up() {
+        assert_eq!(backdrop_size((1600, 900)), (400, 225));
+        assert_eq!(backdrop_size((1366, 767)), (342, 192));
+        assert_eq!(backdrop_size((3, 1)), (1, 1));
+        assert_eq!(backdrop_size((0, 0)), (1, 1), "never a zero-size texture");
+    }
+
+    #[test]
+    fn backdrop_generation_changes_only_when_the_view_does() {
+        let mut s = BackdropState::new();
+        let g0 = s.generation;
+        s.set_enabled(false);
+        assert_eq!(s.generation, g0, "staying off keeps the generation");
+        s.set_enabled(true);
+        let g1 = s.generation;
+        assert_ne!(g1, g0, "turning on hands out a view");
+        s.set_enabled(true);
+        assert_eq!(s.generation, g1, "staying on keeps the generation");
+        s.invalidate();
+        assert_ne!(s.generation, g1, "resize replaces the view");
+        let g2 = s.generation;
+        s.set_enabled(false);
+        assert_ne!(s.generation, g2, "turning off withdraws the view");
+    }
+
+    #[test]
+    fn rebuilt_renderers_never_reuse_a_generation() {
+        let (a, b) = (BackdropState::new(), BackdropState::new());
+        assert_ne!(a.generation, b.generation);
     }
 }

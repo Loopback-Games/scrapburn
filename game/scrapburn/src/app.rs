@@ -2237,10 +2237,17 @@ impl Game {
             additive: &additive,
             alpha: &alpha_p,
         };
+        // Menus (any attract screen; pause, settings and results in a race) get the blurred
+        // backdrop and, outside the garage, the warm menu grade.
+        let menu_visible =
+            matches!(self.session, Session::Attract) || self.menu.screen != Screen::Playing;
         let track_lighting = self.scene.lighting;
         if garage {
             self.scene.lighting = crate::garage::lighting();
+        } else if menu_visible {
+            self.scene.lighting = scrapburn::style::menu_grade(track_lighting);
         }
+        self.scene.set_backdrop(menu_visible);
         self.scene.render(
             &self.ctx.device,
             &self.ctx.queue,
@@ -2251,6 +2258,11 @@ impl Game {
             self.timer.as_mut(),
         );
         self.scene.lighting = track_lighting;
+        self.overlay.set_backdrop(
+            &self.ctx.device,
+            self.scene.backdrop_view(),
+            self.scene.backdrop_generation(),
+        );
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hud"),
