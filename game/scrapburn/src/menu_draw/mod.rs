@@ -364,7 +364,7 @@ fn header(v: &MenuView) -> (String, String) {
 pub fn draw(o: &mut Overlay, w: f32, h: f32, v: &MenuView) -> MenuHits {
     let s = menu_scale(w, h);
     let t = v.t();
-    draw_column(o, w, h, s, t);
+    draw_column(o, h, s, t);
     draw_embers(o, w, h, v.embers);
     let mut hits = MenuHits::default();
     let screen = v.menu.screen;
@@ -463,44 +463,16 @@ fn molten_title(o: &mut Overlay, x: f32, cy: f32, scale: f32, span: f32, title: 
 }
 
 /// The molten edge, the smoke glass over the blurred scene, and the ember glow low down.
+/// The smoke over the scene on the right is the scene's wash (`style::crucible::MENU_WASH`).
 ///
 /// The glass is opaque (it shows the blurred scene), so nothing is drawn under it: the
-/// scene's smoke starts at the glass edge, and the molten edge is only the strip outside it.
-fn draw_column(o: &mut Overlay, w: f32, h: f32, s: f32, t: f32) {
+/// molten edge is only the strip outside it.
+fn draw_column(o: &mut Overlay, h: f32, s: f32, t: f32) {
     let top = COLUMN_W * s;
     let edge_top = (COLUMN_W + EDGE) * s;
     let x_at = |top_w: f32, y: f32| top_w - (1.0 - CUT) * top_w * (y / h);
     // Where the glass ends at height `y`; the scene is visible to the right of it.
     let glass = |y: f32| x_at(top, y);
-    // The scene on the right is darkened toward the column and the edges (the mockup's tint
-    // and vignette), so previews read over bright tracks.
-    let smoke = |a: f32| [14.0 / 255.0, 8.0 / 255.0, 6.0 / 255.0, a];
-    // Horizontal smoke falls from 0.62 at x = 0 to 0.32 at the right edge. Its alpha is
-    // linear in x, so starting the quad at the glass edge leaves every pixel unchanged.
-    let across = |x: f32| smoke(0.62 + (0.32 - 0.62) * x / w);
-    o.quad(
-        [[glass(0.0), 0.0], [w, 0.0], [w, h], [glass(h), h]],
-        [across(glass(0.0)), across(w), across(w), across(glass(h))],
-    );
-    let band = 0.28 * h;
-    o.quad(
-        [[glass(0.0), 0.0], [w, 0.0], [w, band], [glass(band), band]],
-        [smoke(0.45), smoke(0.45), smoke(0.0), smoke(0.0)],
-    );
-    o.quad(
-        [
-            [glass(h - band), h - band],
-            [w, h - band],
-            [w, h],
-            [glass(h), h],
-        ],
-        [smoke(0.0), smoke(0.0), smoke(0.55), smoke(0.55)],
-    );
-    let side = 0.18 * w;
-    o.quad(
-        [[w - side, 0.0], [w, 0.0], [w, h], [w - side, h]],
-        [smoke(0.0), smoke(0.4), smoke(0.4), smoke(0.0)],
-    );
     // A wide soft glow off the molten edge into the scene.
     let glow = 26.0 * s;
     o.quad(
@@ -554,34 +526,122 @@ fn draw_column(o: &mut Overlay, w: f32, h: f32, s: f32, t: f32) {
             [c, c, fade(c, 0.0), fade(c, 0.0)],
         );
     }
-    // The glass: the frosted scene, darkened and warmed.
-    o.backdrop_quad(
-        [[0.0, 0.0], [top, 0.0], [x_at(top, h), h], [0.0, h]],
-        [0.55, 0.48, 0.42, 1.0],
-    );
-    let glass_top = [16.0 / 255.0, 10.0 / 255.0, 8.0 / 255.0, 0.62];
-    let glass_bottom = [24.0 / 255.0, 12.0 / 255.0, 8.0 / 255.0, 0.5];
-    o.quad(
-        [[0.0, 0.0], [top, 0.0], [x_at(top, h), h], [0.0, h]],
-        [glass_top, glass_top, glass_bottom, glass_bottom],
-    );
-    // Forge light rising from the lower left.
-    let warm = [1.0, 0.35, 0.08, 0.0];
-    let mid = 0.45 * h;
-    o.quad(
-        [
-            [0.0, mid],
-            [x_at(top, mid), mid],
-            [x_at(top, h), h],
-            [0.0, h],
-        ],
-        [
-            warm,
-            warm,
-            fade([1.0, 0.35, 0.08, 1.0], 0.16),
-            fade([1.0, 0.35, 0.08, 1.0], 0.34),
-        ],
-    );
+    // The glass: the frosted scene, darkened and warmed. Its smoke and the forge light
+    // rising from the lower left are a glaze on it, so the column fills once.
+    let glass = Glass { top, h };
+    for cell in glass.cells() {
+        o.backdrop_glazed(cell, GLASS_TINT, cell.map(|[x, y]| glass.glaze(x, y)));
+    }
+}
+
+/// The frosted scene in the glass is multiplied by this.
+const GLASS_TINT: [f32; 4] = [0.55, 0.48, 0.42, 1.0];
+/// The glass's smoke at its top and bottom.
+const GLASS_SMOKE: [[f32; 4]; 2] = [
+    [16.0 / 255.0, 10.0 / 255.0, 8.0 / 255.0, 0.62],
+    [24.0 / 255.0, 12.0 / 255.0, 8.0 / 255.0, 0.5],
+];
+/// The forge light: its color, where it starts (a fraction of the height), and its opacity
+/// at the bottom right and bottom left.
+const FORGE: [f32; 3] = [1.0, 0.35, 0.08];
+const FORGE_TOP: f32 = 0.45;
+const FORGE_BOTTOM: [f32; 2] = [0.16, 0.34];
+/// The glass's grid: columns right and left of the forge light's diagonal, and rows through
+/// the light.
+const GLASS_COLUMNS: usize = 6;
+const FORGE_LEFT_COLUMNS: usize = 3;
+const FORGE_ROWS: usize = 8;
+
+/// The column's glass, `top` wide at the top of an `h`-tall window.
+struct Glass {
+    top: f32,
+    h: f32,
+}
+
+impl Glass {
+    /// The glass's right edge at height `y`.
+    fn edge(&self, y: f32) -> f32 {
+        self.top - (1.0 - CUT) * self.top * (y / self.h)
+    }
+
+    /// The glaze at (`x`, `y`): the forge light over the smoke, as the two used to be drawn,
+    /// one quad each (the forge light's quad split along its top-left to bottom-right
+    /// diagonal), blended over each other.
+    fn glaze(&self, x: f32, y: f32) -> [f32; 4] {
+        let t = (y / self.h).clamp(0.0, 1.0);
+        let [a, b] = GLASS_SMOKE;
+        let lin = |c: f32| c.powf(2.2);
+        let smoke: [f32; 4] = std::array::from_fn(|i| {
+            if i == 3 {
+                a[3] + (b[3] - a[3]) * t
+            } else {
+                (lin(a[i]) + (lin(b[i]) - lin(a[i])) * t).powf(1.0 / 2.2)
+            }
+        });
+        let [r, g, bl] = FORGE;
+        rivet_render::blend_over([r, g, bl, self.forge(x, y)], smoke)
+    }
+
+    /// How far down the forge light (0 at its top, 1 at the bottom) height `y` is.
+    fn forge_depth(&self, y: f32) -> f32 {
+        let mid = FORGE_TOP * self.h;
+        ((y - mid) / (self.h - mid)).max(0.0)
+    }
+
+    /// Where the forge light's quad is split at height `y`: on the diagonal from its top left
+    /// to the bottom right.
+    fn diagonal(&self, y: f32) -> f32 {
+        self.forge_depth(y) * self.edge(self.h)
+    }
+
+    /// The forge light's opacity at (`x`, `y`): none down to `FORGE_TOP`, then rising to
+    /// `FORGE_BOTTOM` at the bottom corners, linear within each half of its quad.
+    fn forge(&self, x: f32, y: f32) -> f32 {
+        let v = self.forge_depth(y);
+        if v <= 0.0 {
+            return 0.0;
+        }
+        let diagonal = self.diagonal(y);
+        let [right, left] = FORGE_BOTTOM;
+        if x >= diagonal {
+            // The upper triangle: no light along the top, `right` at the bottom right.
+            v * right
+        } else {
+            // The lower triangle: `right` along the diagonal, `left` at the bottom left.
+            let w = 1.0 - x / diagonal.max(f32::EPSILON);
+            v * (right + (left - right) * w)
+        }
+    }
+
+    /// The grid of quads that covers the glass: one row down to the forge light, then
+    /// `FORGE_ROWS` through it. Columns split at the forge light's diagonal, so each cell
+    /// lies in one half of its quad, where its opacity is linear (above the light, the left
+    /// columns have no width).
+    fn cells(&self) -> impl Iterator<Item = [[f32; 2]; 4]> + '_ {
+        let mid = FORGE_TOP * self.h;
+        let row = move |k: usize| {
+            if k == 0 {
+                0.0
+            } else {
+                mid + (self.h - mid) * (k - 1) as f32 / FORGE_ROWS as f32
+            }
+        };
+        let at = move |j: usize, y: f32| {
+            let d = self.diagonal(y);
+            let x = if j <= FORGE_LEFT_COLUMNS {
+                d * j as f32 / FORGE_LEFT_COLUMNS as f32
+            } else {
+                let u = (j - FORGE_LEFT_COLUMNS) as f32 / GLASS_COLUMNS as f32;
+                d + (self.edge(y) - d) * u
+            };
+            [x, y]
+        };
+        (0..=FORGE_ROWS).flat_map(move |k| {
+            let (y0, y1) = (row(k), row(k + 1));
+            (0..FORGE_LEFT_COLUMNS + GLASS_COLUMNS)
+                .map(move |j| [at(j, y0), at(j + 1, y0), at(j + 1, y1), at(j, y1)])
+        })
+    }
 }
 
 /// The embers, scaled from the design space to the window.
@@ -1043,6 +1103,65 @@ mod tests {
         assert!(!hits.decrease_at(7, 350.0));
         assert_eq!(hits.tab_at(80.0, 230.0), Some(Tab::Audio));
         assert_eq!(hits.tab_at(80.0, 300.0), None);
+    }
+
+    #[test]
+    fn the_glass_glaze_matches_its_layers() {
+        let g = Glass {
+            top: 775.0,
+            h: 900.0,
+        };
+        let lin = |c: f32| c.powf(2.2);
+        // Above the forge light the glaze is the smoke alone, linear in height.
+        let top = g.glaze(100.0, 0.0);
+        assert!((0..4).all(|i| (top[i] - GLASS_SMOKE[0][i]).abs() < 1e-5));
+        assert_eq!(g.forge(300.0, 0.45 * 900.0), 0.0);
+        // The forge light's corners.
+        let bottom_right = g.edge(900.0);
+        assert!((g.forge(bottom_right, 900.0) - 0.16).abs() < 1e-5);
+        assert!((g.forge(0.0, 900.0) - 0.34).abs() < 1e-5);
+        // At the bottom left the light is over the smoke.
+        let c = g.glaze(0.0, 900.0);
+        let (s, f) = (GLASS_SMOKE[1], 0.34);
+        let a = 1.0 - (1.0 - f) * (1.0 - s[3]);
+        assert!((c[3] - a).abs() < 1e-5);
+        let want = (f * lin(FORGE[0]) + (1.0 - f) * s[3] * lin(s[0])) / a;
+        assert!((lin(c[0]) - want).abs() < 1e-5);
+        // Every cell is inside the glass, and the cells tile it.
+        let area = |p: [[f32; 2]; 4]| {
+            0.5 * (0..4)
+                .map(|i| {
+                    let (a, b) = (p[i], p[(i + 1) % 4]);
+                    a[0] * b[1] - b[0] * a[1]
+                })
+                .sum::<f32>()
+                .abs()
+        };
+        let total: f32 = g.cells().map(area).sum();
+        let glass = 0.5 * (g.edge(0.0) + g.edge(900.0)) * 900.0;
+        assert!((total - glass).abs() / glass < 1e-4);
+        // Inside each cell triangle, what the GPU interpolates (opacity, and linear color
+        // premultiplied by it) stays within half an 8-bit step of the layers.
+        let mut worst: f32 = 0.0;
+        for cell in g.cells() {
+            for tri in [[0, 1, 2], [0, 2, 3]] {
+                let p = tri.map(|i| cell[i]);
+                let m = [
+                    p.iter().map(|q| q[0]).sum::<f32>() / 3.0,
+                    p.iter().map(|q| q[1]).sum::<f32>() / 3.0,
+                ];
+                let exact = g.glaze(m[0], m[1]);
+                let corners = p.map(|q| g.glaze(q[0], q[1]));
+                let mean =
+                    |f: &dyn Fn([f32; 4]) -> f32| corners.iter().map(|&c| f(c)).sum::<f32>() / 3.0;
+                worst = worst.max((mean(&|c| c[3]) - exact[3]).abs());
+                for i in 0..3 {
+                    let lerped = mean(&|c| lin(c[i]) * c[3]);
+                    worst = worst.max((lerped - lin(exact[i]) * exact[3]).abs());
+                }
+            }
+        }
+        assert!(worst < 0.5 / 255.0, "worst {worst}");
     }
 
     fn seat_names(seat: usize, _place: usize) -> (String, Option<f64>) {

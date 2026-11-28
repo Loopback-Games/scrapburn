@@ -2573,6 +2573,8 @@ impl Game {
             self.scene.lighting = scrapburn::style::menu_grade(track_lighting);
         }
         self.scene.set_backdrop(menu_visible);
+        self.scene
+            .set_wash(menu_visible.then_some(scrapburn::style::crucible::MENU_WASH));
         self.scene.render(
             &self.ctx.device,
             &self.ctx.queue,

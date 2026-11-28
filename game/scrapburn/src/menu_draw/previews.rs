@@ -289,17 +289,13 @@ fn route(o: &mut Overlay, a: Area, v_time: f32, route: &[Vec3], rect: (f32, f32,
 fn glass_panel(o: &mut Overlay, a: Area, (x, y, w, h): (f32, f32, f32, f32)) {
     let [px, py] = a.p(x, y);
     let (pw, ph) = (a.d(w), a.d(h));
-    o.glow_rect(px, py, pw, ph, a.d(30.0), [0.0, 0.0, 0.0, 0.35]);
-    o.backdrop_quad(
+    // The panel is opaque, so its shadow is only the ring outside it, and its smoke is a
+    // glaze on the frosted scene rather than a second fill.
+    o.glow_ring(px, py, pw, ph, a.d(30.0), [0.0, 0.0, 0.0, 0.35]);
+    o.backdrop_glazed(
         [[px, py], [px + pw, py], [px + pw, py + ph], [px, py + ph]],
         [0.42, 0.36, 0.32, 1.0],
-    );
-    o.rect(
-        px,
-        py,
-        pw,
-        ph,
-        [16.0 / 255.0, 10.0 / 255.0, 8.0 / 255.0, 0.35],
+        [[16.0 / 255.0, 10.0 / 255.0, 8.0 / 255.0, 0.35]; 4],
     );
     outline(o, px, py, pw, ph, a.d(1.0), [1.0, 0.75, 0.51, 0.25]);
 }

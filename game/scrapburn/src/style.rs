@@ -30,6 +30,17 @@ const fn hex(rgb: u32, a: f32) -> [f32; 4] {
 pub mod crucible {
     use super::hex;
 
+    /// The smoke over the scene beside a menu (the mockup's tint and vignette), darker toward
+    /// the column and the edges so previews read over bright tracks. The scene renderer lays it
+    /// on in its composite pass.
+    pub const MENU_WASH: rivet_render::Wash = rivet_render::Wash {
+        color: [14.0 / 255.0, 8.0 / 255.0, 6.0 / 255.0],
+        across: [0.62, 0.32],
+        top: (0.45, 0.28),
+        bottom: (0.55, 0.28),
+        right: (0.4, 0.18),
+    };
+
     /// Near-black warm char: text on the molten selection.
     pub const CHAR: [f32; 4] = hex(0x140d0a, 1.0);
     /// Smoke glass: the column's tint over the blurred scene.
