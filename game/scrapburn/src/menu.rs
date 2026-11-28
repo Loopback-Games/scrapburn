@@ -799,7 +799,7 @@ impl MenuState {
                 ]
             }
             Screen::Settings(tab) => {
-                let mut v = self.settings_rows(tab, s);
+                let mut v = self.tab_rows(tab, s);
                 v.push(Row::go(RowId::Back, "Back", "Save and go back."));
                 v
             }
@@ -934,8 +934,8 @@ impl MenuState {
         }
     }
 
-    /// The rows of one Settings tab, without the closing Back row.
-    fn settings_rows(&self, tab: Tab, s: &Settings) -> Vec<Row> {
+    /// The rows of one Settings tab, without the closing Back row, whatever screen is showing.
+    pub fn tab_rows(&self, tab: Tab, s: &Settings) -> Vec<Row> {
         let p = &s.prefs;
         let g = &p.graphics;
         let q = &g.quality;
@@ -1422,8 +1422,15 @@ impl MenuState {
         MenuAction::BindingCaptured
     }
 
+    /// Keeps the highlight on one of `rows` rows (after the list shrinks).
+    pub fn clamp_selection(&mut self, rows: usize) {
+        self.selected = self.selected.min(rows.saturating_sub(1));
+    }
+
     pub fn handle(&mut self, input: MenuInput, s: &mut Settings) -> MenuAction {
-        if self.capturing.is_some() {
+        // Most frames have no input; they change nothing, so skip building the rows. The
+        // app clamps the selection when it draws (`clamp_selection`).
+        if self.capturing.is_some() || input == MenuInput::default() {
             return MenuAction::None;
         }
         if let Screen::Settings(tab) = self.screen {
@@ -1720,6 +1727,57 @@ mod tests {
         let mut m = MenuState::new(Screen::Title);
         m.go(Screen::Settings(tab));
         m
+    }
+
+    #[test]
+    fn idle_input_leaves_every_screen_alone() {
+        let mut screens = vec![
+            Screen::Title,
+            Screen::RaceSetup,
+            Screen::Circuits,
+            Screen::Garage,
+            Screen::Online,
+            Screen::Tailscale,
+            Screen::DriverName,
+            Screen::Lobby,
+            Screen::Paused,
+            Screen::Results,
+        ];
+        screens.extend(Tab::ALL.map(Screen::Settings));
+        for screen in screens {
+            let mut m = MenuState::new(Screen::Title);
+            m.lobby_host = true;
+            m.go(screen);
+            let mut s = Settings::default();
+            for selected in 0..m.rows(&s).len() {
+                m.selected = selected;
+                let before = (format!("{m:?}"), s);
+                assert_eq!(m.handle(MenuInput::default(), &mut s), MenuAction::None);
+                assert_eq!((format!("{m:?}"), s), before, "{screen:?} row {selected}");
+            }
+        }
+    }
+
+    #[test]
+    fn clamping_keeps_the_highlight_on_a_row() {
+        let mut m = MenuState::new(Screen::Title);
+        m.selected = 9;
+        m.clamp_selection(5);
+        assert_eq!(m.selected, 4);
+        m.clamp_selection(0);
+        assert_eq!(m.selected, 0);
+    }
+
+    #[test]
+    fn settings_rows_of_any_tab_need_no_screen_change() {
+        let s = Settings::default();
+        let m = MenuState::new(Screen::Title);
+        for tab in Tab::ALL {
+            let mut rows = open_tab(tab).rows(&s);
+            assert_eq!(rows.pop().map(|r| r.id), Some(RowId::Back));
+            let ids = |r: &[Row]| r.iter().map(|r| r.id).collect::<Vec<_>>();
+            assert_eq!(ids(&m.tab_rows(tab, &s)), ids(&rows), "{tab:?}");
+        }
     }
 
     #[test]

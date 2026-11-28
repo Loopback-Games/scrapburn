@@ -213,8 +213,9 @@ pub struct PauseInfo {
     pub lap: u32,
     pub laps: Option<u32>,
     pub best: Option<f64>,
-    pub track_name: String,
-    pub route: Vec<Vec3>,
+    pub track_name: &'static str,
+    /// The track's index in `TRACKS`, for its route in `MenuView::routes`.
+    pub track: usize,
     /// Round and rounds, in a circuit.
     pub circuit: Option<(usize, usize)>,
 }

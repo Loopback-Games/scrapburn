@@ -2726,8 +2726,11 @@ impl Game {
                         .ghost()
                         .map(|g| g.lap_time)
                         .filter(|_| !in_race)),
-                    track_name: self.track.name.to_string(),
-                    route: self.track.centerline.clone(),
+                    track_name: self.track.name,
+                    track: TRACKS
+                        .iter()
+                        .position(|d| d.name == self.track.name)
+                        .unwrap_or(usize::MAX),
                     circuit: self
                         .circuit
                         .map(|c| (c.round as usize + 1, scrapburn::circuit::ROUNDS)),
@@ -2777,7 +2780,9 @@ impl Game {
             matches!(self.session, Session::Attract) || self.menu.screen != Screen::Playing;
         if menu_up {
             let extra = self.menu_extra(focus);
+            // The frame's rows, built once: `MenuState::handle` skips idle frames.
             let rows = self.menu.rows(&self.settings);
+            self.menu.clamp_selection(rows.len());
             let view = MenuView {
                 menu: &self.menu,
                 rows: &rows,

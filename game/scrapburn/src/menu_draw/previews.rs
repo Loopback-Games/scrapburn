@@ -1,6 +1,8 @@
 //! The right-hand side of the Crucible menus: what the highlighted row is about. Each
 //! preview draws in a 570x430 design-pixel area at (660, 110), as in the mockup.
 
+use std::borrow::Cow;
+
 use glam::Vec3;
 use rivet_render::{Face, Overlay};
 use winit::keyboard::KeyCode;
@@ -11,7 +13,7 @@ use super::{
 };
 use crate::bindings::{BindRow, PadBind};
 use crate::hud::{Minimap, fmt_time, ordinal};
-use crate::menu::{MenuState, Row, RowId, RowKind, Screen, Tab};
+use crate::menu::{Row, RowId, RowKind, Screen, Tab};
 use crate::style::crucible::{ASH, EMBER, GLOW, GOLD, HOT, fade};
 use crate::track::TRACKS;
 use rivet_platform::PadButtons;
@@ -209,7 +211,7 @@ pub fn draw(o: &mut Overlay, w: f32, h: f32, s: f32, v: &MenuView) {
         }
         Screen::Paused => {
             if let Extra::Pause(p) = &v.extra {
-                pause(o, a, p);
+                pause(o, a, p, v.routes.get(p.track).map_or(&[], Vec::as_slice));
             }
         }
         Screen::Results => {
@@ -226,11 +228,13 @@ pub fn draw(o: &mut Overlay, w: f32, h: f32, s: f32, v: &MenuView) {
     }
 }
 
-/// The rows of a settings tab, whatever screen is showing.
-fn tab_rows(v: &MenuView, tab: Tab) -> Vec<Row> {
-    let mut m: MenuState = v.menu.clone();
-    m.screen = Screen::Settings(tab);
-    m.rows(v.settings)
+/// The rows of a settings tab: the frame's own rows on that tab, else built for it.
+fn tab_rows<'a>(v: &MenuView<'a>, tab: Tab) -> Cow<'a, [Row]> {
+    if v.menu.screen == Screen::Settings(tab) {
+        Cow::Borrowed(v.rows)
+    } else {
+        Cow::Owned(v.menu.tab_rows(tab, v.settings))
+    }
 }
 
 fn row_value(rows: &[Row], id: RowId) -> String {
@@ -536,7 +540,7 @@ fn grid(o: &mut Overlay, a: Area, lines: &[String], names: &[String], slots: usi
 }
 
 /// Position, lap, best lap and the route, under the pause menu.
-fn pause(o: &mut Overlay, a: Area, p: &PauseInfo) {
+fn pause(o: &mut Overlay, a: Area, p: &PauseInfo, route: &[Vec3]) {
     frame_label(o, a, "Race status");
     glass_panel(o, a, (0.0, 24.0, 570.0, 306.0));
     text(o, a, 30.0, 60.0, 13.0, Style::Accent, "Position");
@@ -560,11 +564,11 @@ fn pause(o: &mut Overlay, a: Area, p: &PauseInfo) {
     text(o, a, 260.0, 210.0, 13.0, Style::Accent, "Best lap");
     let best = p.best.map_or_else(|| "None yet".to_string(), fmt_time);
     text(o, a, 260.0, 256.0, 42.0, Style::Display, &best);
-    if !p.route.is_empty() {
-        let points = route_points(a, &p.route, (340.0, 48.0, 200.0, 120.0));
+    if !route.is_empty() {
+        let points = route_points(a, route, (340.0, 48.0, 200.0, 120.0));
         glow_polyline(o, a, &points, 2.5, true);
     }
-    let mut foot = p.track_name.clone();
+    let mut foot = p.track_name.to_string();
     if let Some((round, rounds)) = p.circuit {
         foot.push_str(&format!("   Circuit round {round} of {rounds}"));
     }
@@ -1033,8 +1037,13 @@ fn cubic(out: &mut Vec<[f32; 2]>, p0: [f32; 2], c: [[f32; 2]; 3]) {
     }
 }
 
-/// The controller outline from the mockup, in its own 540-wide coordinates.
-fn pad_outline() -> Vec<[f32; 2]> {
+/// The controller outline from the mockup, in its own 540-wide coordinates (built once).
+fn pad_outline() -> &'static [[f32; 2]] {
+    static OUTLINE: std::sync::OnceLock<Vec<[f32; 2]>> = std::sync::OnceLock::new();
+    OUTLINE.get_or_init(build_pad_outline)
+}
+
+fn build_pad_outline() -> Vec<[f32; 2]> {
     let segs: [[[f32; 2]; 3]; 8] = [
         [[200.0, 78.0], [340.0, 78.0], [390.0, 90.0]],
         [[440.0, 100.0], [470.0, 190.0], [482.0, 250.0]],
