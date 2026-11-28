@@ -25,7 +25,7 @@ use scrapburn::fx_meshes;
 use scrapburn::ghost::{BestGhost, GhostRecorder};
 use scrapburn::hud::{self, CircuitHud, HudInfo, RaceHud};
 use scrapburn::materials::{find_assets_dir, load_layers, shading};
-use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings};
+use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings, Tab};
 use scrapburn::netplay::{
     self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
 };
@@ -1311,10 +1311,9 @@ impl Game {
             Screen::Title
             | Screen::RaceSetup
             | Screen::Circuits
-            | Screen::Controls
             | Screen::DriverName
             | Screen::Garage
-            | Screen::Settings
+            | Screen::Settings(_)
             | Screen::Paused
             | Screen::Results
             | Screen::Online
@@ -1336,7 +1335,7 @@ impl Game {
                 };
                 if let Some((screen, row, previous)) = self.clicked.take()
                     && screen == self.menu.screen
-                    && row < self.menu.items(&self.settings).len()
+                    && row < self.menu.rows(&self.settings).len()
                 {
                     self.menu.selected = row;
                     // Clicking the name field focuses it; Enter or SAVE NAME submits.
@@ -1354,9 +1353,10 @@ impl Game {
                 } else if pending {
                     input = Default::default();
                 }
-                let was_settings = self.menu.screen == Screen::Settings;
+                // Save on leaving Settings, not on switching between its tabs.
+                let was_settings = matches!(self.menu.screen, Screen::Settings(_));
                 let action = self.menu.handle(input, &mut self.settings);
-                if was_settings && self.menu.screen != Screen::Settings {
+                if was_settings && !matches!(self.menu.screen, Screen::Settings(_)) {
                     self.save_prefs();
                 }
                 match action {
@@ -1402,6 +1402,23 @@ impl Game {
                         self.tuner.stop();
                         self.rebuild_renderer();
                     }
+                    MenuAction::GraphicsChanged => {
+                        // As with a preset: an edit made in the menu is saved. Task 6
+                        // debounces this rebuild and builds from the edited quality.
+                        self.cli_graphics = None;
+                        if !self.settings.prefs.graphics.auto {
+                            self.tuner.stop();
+                        }
+                        self.rebuild_renderer();
+                    }
+                    // Task 7 applies the display mode, V-sync, and frame cap.
+                    MenuAction::DisplayChanged
+                    | MenuAction::VsyncChanged
+                    | MenuAction::FrameCapChanged => {}
+                    // Task 8 applies bus volumes and plays the previewed song.
+                    MenuAction::VolumeChanged | MenuAction::PreviewSong(_) => {}
+                    // Task 10 adds rebinding.
+                    MenuAction::BindingCaptured => {}
                     MenuAction::SaveName => {
                         self.player_name =
                             rivet_net::clean_name(&self.menu.name_entry).to_ascii_uppercase();
@@ -1593,8 +1610,8 @@ impl Game {
                 // The countdown: silence, then the circuit's song on GO.
                 Screen::Playing if in_race => MusicCue::Off,
                 Screen::Results if in_race => MusicCue::Results,
-                // The pause menu, and the settings and controls opened from it.
-                Screen::Paused | Screen::Settings | Screen::Controls if in_race => {
+                // The pause menu, and the settings and name editor opened from it.
+                Screen::Paused | Screen::Settings(_) | Screen::DriverName if in_race => {
                     if racing {
                         MusicCue::Paused
                     } else {
@@ -2260,14 +2277,16 @@ impl Game {
         let r = &race.racers[focus];
         let o = &mut self.overlay;
         if matches!(self.session, Session::Attract) {
-            let items = self.menu.items(&self.settings);
+            let rows = self.menu.rows(&self.settings);
             self.menu_rows = Some((
                 self.menu.screen,
-                hud::draw_menu(o, w, h, &self.menu, &items, self.attract_t),
+                hud::draw_menu(o, w, h, &self.menu, &rows, self.attract_t),
             ));
             match self.menu.screen {
                 Screen::Garage => hud::garage_card(o, w, h, self.settings.loadout),
-                Screen::Controls => hud::controls_card(o, w, h, self.menu.gamepad_guide),
+                Screen::Settings(Tab::Controls) => {
+                    hud::controls_card(o, w, h, self.menu.gamepad_guide)
+                }
                 _ => {}
             }
             let n_tracks = scrapburn::track::TRACKS.len();
@@ -2482,24 +2501,23 @@ impl Game {
             if race.combat_on {
                 hud::draw_item_slot(o, w, h, race.combat.held[focus], self.attract_t);
             }
-            let items = self.menu.items(&self.settings);
+            let rows = self.menu.rows(&self.settings);
             match self.menu.screen {
-                Screen::Paused | Screen::Settings | Screen::Controls | Screen::Results => {
+                Screen::Paused | Screen::Settings(_) | Screen::DriverName | Screen::Results => {
                     if self.menu.screen != Screen::Results {
                         hud::dim(o, w, h);
                     }
                     self.menu_rows = Some((
                         self.menu.screen,
-                        hud::draw_menu(o, w, h, &self.menu, &items, self.attract_t),
+                        hud::draw_menu(o, w, h, &self.menu, &rows, self.attract_t),
                     ));
-                    if self.menu.screen == Screen::Controls {
+                    if self.menu.screen == Screen::Settings(Tab::Controls) {
                         hud::controls_card(o, w, h, self.menu.gamepad_guide);
                     }
                 }
                 Screen::Garage
                 | Screen::RaceSetup
                 | Screen::Circuits
-                | Screen::DriverName
                 | Screen::Title
                 | Screen::Playing
                 | Screen::Online
@@ -2582,7 +2600,7 @@ impl ApplicationHandler for App {
                     winit::event::MouseScrollDelta::LineDelta(_, v) => v,
                     winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
                 };
-                let last = game.menu.items(&game.settings).len().saturating_sub(1);
+                let last = game.menu.rows(&game.settings).len().saturating_sub(1);
                 if dy < 0. {
                     game.menu.selected = (game.menu.selected + 1).min(last);
                 }

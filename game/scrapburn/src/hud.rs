@@ -1164,93 +1164,42 @@ impl MenuRows {
 }
 
 /// The navigation rail shares its row window with keyboard focus and pointer hit testing.
+/// Rows draw through `Row::legacy_string` until the Crucible renderer replaces this.
 pub fn draw_menu(
     o: &mut Overlay,
     w: f32,
     h: f32,
     menu: &crate::menu::MenuState,
-    items: &[String],
+    rows: &[crate::menu::Row],
     time: f32,
 ) -> MenuRows {
     use crate::menu::Screen;
     let u = menu_scale(w, h);
-    let (heading, section, help) = match menu.screen {
+    let items: Vec<String> = rows.iter().map(crate::menu::Row::legacy_string).collect();
+    let help = rows.get(menu.selected).map_or("", |r| r.help.as_str());
+    let tab_section;
+    let (heading, section) = match menu.screen {
         Screen::Title => (
             "SCRAPBURN",
             concat!("MAIN MENU   v", env!("CARGO_PKG_VERSION")),
-            [
-                "Pick a track or run a circuit.",
-                "Host a race or join friends.",
-                "Choose your chassis and paint.",
-                "Keyboard and gamepad bindings.",
-                "Graphics and race preferences.",
-                if menu.update.is_some() && menu.selected == 5 {
-                    "Download the new version and restart."
-                } else {
-                    "Exit to desktop."
-                },
-            ][menu.selected.min(5)],
         ),
-        Screen::RaceSetup => (
-            "Race setup",
-            "SOLO RACE",
-            if menu.selected == 2 {
-                match menu.solo_event() {
-                    crate::circuit::Event::Single => "One race on the track of your choice.",
-                    crate::circuit::Event::Circuit => {
-                        "Race every track in order. Points decide the champion."
-                    }
-                }
-            } else {
-                menu.mode.description()
-            },
-        ),
-        Screen::Circuits => (
-            "Tracks",
-            "TRACK SELECT",
-            "Browse the routes. Select a track to equip it.",
-        ),
-        Screen::Tailscale => (
-            "Tailscale",
-            "MULTIPLAYER / TAILNET",
-            if menu.peers.is_empty() {
-                "No Tailscale peers online yet. The list refreshes every few seconds."
-            } else {
-                "Pick a device on your tailnet to join its race."
-            },
-        ),
-        Screen::Garage => (
-            "Garage",
-            "MOTOR POOL",
-            "Cars race trucks. ATVs race dirt bikes.",
-        ),
-        Screen::Online => (
-            "Multiplayer",
-            "RACE NETWORK",
-            "Create a private invite or join a host.",
-        ),
-        Screen::DriverName => (
-            "Racer name",
-            "MULTIPLAYER / PROFILE",
-            "Type your new name, then press Enter to save.",
-        ),
-        Screen::Lobby => (
-            "Race lobby",
-            "MULTIPLAYER",
-            "Gather your drivers on the starting grid.",
-        ),
-        Screen::Controls => (
-            "Controls",
-            "DRIVER GUIDE",
-            "Switch devices to see the racing controls.",
-        ),
-        Screen::Settings => (
-            "Settings",
-            "PREFERENCES",
-            "Use the arrows to adjust an option.",
-        ),
-        Screen::Paused => ("Paused", "RACE MENU", ""),
-        Screen::Results | Screen::Playing => ("", "", ""),
+        Screen::RaceSetup => ("Race setup", "SOLO RACE"),
+        Screen::Circuits => ("Tracks", "TRACK SELECT"),
+        Screen::Tailscale => ("Tailscale", "MULTIPLAYER / TAILNET"),
+        Screen::Garage => ("Garage", "MOTOR POOL"),
+        Screen::Online => ("Multiplayer", "RACE NETWORK"),
+        Screen::DriverName => ("Racer name", "MULTIPLAYER / PROFILE"),
+        Screen::Lobby => ("Race lobby", "MULTIPLAYER"),
+        Screen::Settings(tab) => {
+            let page = crate::menu::Tab::ALL
+                .iter()
+                .position(|t| *t == tab)
+                .unwrap_or(0);
+            tab_section = format!("SETTINGS {} / 5   Q E  LB RB", page + 1);
+            (tab.name(), tab_section.as_str())
+        }
+        Screen::Paused => ("Paused", "RACE MENU"),
+        Screen::Results | Screen::Playing => ("", ""),
     };
     let results = menu.screen == Screen::Results;
     let x = 38. * u;

@@ -124,6 +124,8 @@ pub fn menu_input(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu::MenuI
         right: k(KeyCode::ArrowRight, KeyCode::KeyD) || p(PadButtons::DPAD_RIGHT),
         select: k(KeyCode::Enter, KeyCode::Space) || p(PadButtons::SOUTH),
         back: k(KeyCode::Escape, KeyCode::Backspace) || p(PadButtons::EAST),
+        tab_prev: keys.just_pressed(KeyCode::KeyQ) || p(PadButtons::LEFT_BUMPER),
+        tab_next: keys.just_pressed(KeyCode::KeyE) || p(PadButtons::RIGHT_BUMPER),
     }
 }
 
@@ -139,6 +141,7 @@ pub fn menu_input_typing(keys: &KeyInput, pad: Option<&PadState>) -> crate::menu
         right: false,
         select: k(KeyCode::Enter) || k(KeyCode::NumpadEnter) || p(PadButtons::SOUTH),
         back: k(KeyCode::Escape) || p(PadButtons::EAST),
+        ..Default::default()
     }
 }
 
@@ -250,6 +253,32 @@ mod tests {
         };
         let m = menu_input(&KeyInput::default(), Some(&pad));
         assert!(m.up && m.back);
+    }
+
+    #[test]
+    fn menu_tabs_from_q_e_and_bumpers() {
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyQ, true);
+        let m = menu_input(&k, None);
+        assert!(m.tab_prev && !m.tab_next);
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyE, true);
+        assert!(menu_input(&k, None).tab_next);
+        let pad = PadState {
+            just_pressed: PadButtons::LEFT_BUMPER,
+            ..Default::default()
+        };
+        let m = menu_input(&KeyInput::default(), Some(&pad));
+        assert!(m.tab_prev && !m.tab_next);
+        let pad = PadState {
+            just_pressed: PadButtons::RIGHT_BUMPER,
+            ..Default::default()
+        };
+        assert!(menu_input(&KeyInput::default(), Some(&pad)).tab_next);
+        // A text field keeps Q and E for typing.
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyQ, true);
+        assert!(!menu_input_typing(&k, None).tab_prev);
     }
 
     #[test]
