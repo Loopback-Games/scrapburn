@@ -597,9 +597,11 @@ fn results(o: &mut Overlay, a: Area, r: &ResultsInfo) {
     let row_h = ((430.0 - 40.0) / n).min(38.0);
     glass_panel(o, a, (-14.0, -10.0, width + 28.0, 38.0 + n * row_h + 10.0));
     let cols: &[(&str, f32, bool)] = if circuit {
+        // Pos is the place in the circuit; Race is the place in the race just run.
         &[
             ("Pos", 6.0, false),
             ("Driver", 58.0, false),
+            ("Race", 290.0, true),
             ("Time", 410.0, true),
             ("+Pts", 482.0, true),
             ("Total", 552.0, true),
@@ -653,6 +655,7 @@ fn results(o: &mut Overlay, a: Area, r: &ResultsInfo) {
         cell(o, 58.0, false, &row.name);
         let time = row.time.map_or_else(|| "--".to_string(), fmt_time);
         if let Some((gained, total)) = row.points.filter(|_| circuit) {
+            cell(o, 290.0, true, &crate::hud::ordinal(row.place));
             cell(o, 410.0, true, &time);
             cell(o, 482.0, true, &format!("+{gained}"));
             cell(o, 552.0, true, &total.to_string());

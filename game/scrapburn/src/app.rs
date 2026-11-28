@@ -29,7 +29,7 @@ use scrapburn::haptics::{self, Kind};
 use scrapburn::hud::{self, CircuitHud, HudInfo, RaceHud};
 use scrapburn::materials::{find_assets_dir, load_layers, shading};
 use scrapburn::menu::{FpsDisplay, MenuAction, MenuState, Screen, Settings, Tab};
-use scrapburn::menu_draw::{self, Extra, MenuHits, MenuView, PauseInfo, ResultRow, ResultsInfo};
+use scrapburn::menu_draw::{self, Extra, MenuHits, MenuView, PauseInfo, ResultsInfo};
 use scrapburn::netplay::{
     self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
 };
@@ -2736,27 +2736,22 @@ impl Game {
             (_, Screen::Results) => {
                 let race = &self.race;
                 let standings = race.standings(&self.track);
-                let totals = self.circuit.map(|c| (c.totals(&standings), c));
-                let rows = standings
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &i)| {
-                        let racer = &race.racers[i];
+                let rows = menu_draw::results_rows(
+                    &standings,
+                    self.circuit.as_ref(),
+                    focus,
+                    |seat, place| {
+                        let racer = &race.racers[seat];
                         // `--menu results` shows a race that has not finished; give it times.
-                        let demo = self.menu_demo.then_some(252.806 + k as f64 * 1.27);
-                        ResultRow {
-                            name: racer.name.to_string(),
-                            time: racer.finish.map(|f| f.1).or(demo),
-                            points: totals.as_ref().map(|(t, c)| (t[i] - c.points[i], t[i])),
-                            me: i == focus,
-                        }
-                    })
-                    .collect();
-                let champion = totals.as_ref().and_then(|(t, c)| {
-                    (c.round as usize + 1 >= scrapburn::circuit::ROUNDS)
-                        .then(|| scrapburn::circuit::table(t, &standings, race.racers.len()))
-                        .and_then(|order| order.first().map(|&s| race.racers[s].name.to_string()))
-                });
+                        let demo = self.menu_demo.then_some(252.806 + place as f64 * 1.27);
+                        (racer.name.to_string(), racer.finish.map(|f| f.1).or(demo))
+                    },
+                );
+                // In a circuit the rows are already in points order.
+                let champion = self
+                    .circuit
+                    .filter(Circuit::is_final)
+                    .and_then(|_| rows.first().map(|r| r.name.clone()));
                 Extra::Results(ResultsInfo {
                     rows,
                     finished: race.racers[focus].finish.map(|(p, _)| p),

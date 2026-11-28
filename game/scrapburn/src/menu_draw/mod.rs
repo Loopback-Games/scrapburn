@@ -9,6 +9,7 @@ use std::ops::Range;
 use glam::Vec3;
 use rivet_render::{Face, Overlay, label_width_face};
 
+use crate::circuit::Circuit;
 use crate::embers::Embers;
 use crate::hud::PadGlyph;
 use crate::menu::{MenuState, Row, RowKind, Screen, Settings, Tab};
@@ -219,12 +220,55 @@ pub struct PauseInfo {
 }
 
 /// One line of the results table.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResultRow {
     pub name: String,
     pub time: Option<f64>,
+    /// Place in this race, 1-based.
+    pub place: usize,
     /// Points this round and the circuit total.
     pub points: Option<(u8, u8)>,
     pub me: bool,
+}
+
+/// The results table: race order for a single race; circuit order (most points first, ties
+/// to the better place in this race) in a circuit. `racer(seat, place)` gives a seat's name
+/// and finishing time, `place` being 0-based in this race.
+pub fn results_rows(
+    standings: &[usize],
+    circuit: Option<&Circuit>,
+    focus: usize,
+    mut racer: impl FnMut(usize, usize) -> (String, Option<f64>),
+) -> Vec<ResultRow> {
+    let place = |seat: usize| standings.iter().position(|&s| s == seat);
+    let totals = circuit.map(|c| (c.totals(standings), c));
+    let mut order = match &totals {
+        Some((t, _)) => crate::circuit::table(t, standings, standings.len()),
+        None => Vec::with_capacity(standings.len()),
+    };
+    // Anyone the points table has no seat for follows in race order.
+    for &seat in standings {
+        if !order.contains(&seat) {
+            order.push(seat);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|seat| {
+            let k = place(seat)?;
+            let (name, time) = racer(seat, k);
+            Some(ResultRow {
+                name,
+                time,
+                place: k + 1,
+                points: totals.as_ref().and_then(|(t, c)| {
+                    let (total, before) = (*t.get(seat)?, *c.points.get(seat)?);
+                    Some((total - before, total))
+                }),
+                me: seat == focus,
+            })
+        })
+        .collect()
 }
 
 pub struct ResultsInfo {
@@ -994,6 +1038,54 @@ mod tests {
         assert!(!hits.decrease_at(7, 350.0));
         assert_eq!(hits.tab_at(80.0, 230.0), Some(Tab::Audio));
         assert_eq!(hits.tab_at(80.0, 300.0), None);
+    }
+
+    fn seat_names(seat: usize, _place: usize) -> (String, Option<f64>) {
+        (format!("S{seat}"), Some(seat as f64))
+    }
+
+    #[test]
+    fn single_race_results_follow_the_race() {
+        let rows = results_rows(&[2, 0, 1], None, 0, seat_names);
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["S2", "S0", "S1"]);
+        assert_eq!(rows.iter().map(|r| r.place).collect::<Vec<_>>(), [1, 2, 3]);
+        assert!(rows[1].me && !rows[0].me);
+        assert!(rows.iter().all(|r| r.points.is_none()));
+    }
+
+    #[test]
+    fn circuit_results_follow_the_points_table() {
+        // Seat 1 leads on points from earlier rounds but finishes last in this race.
+        let mut c = Circuit {
+            round: 2,
+            ..Circuit::default()
+        };
+        c.points[..3].copy_from_slice(&[4, 30, 10]);
+        let rows = results_rows(&[0, 2, 1], Some(&c), 2, seat_names);
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        // Totals: seat 0 = 14, seat 1 = 36, seat 2 = 18.
+        assert_eq!(names, ["S1", "S2", "S0"]);
+        assert_eq!(rows.iter().map(|r| r.place).collect::<Vec<_>>(), [3, 2, 1]);
+        assert_eq!(
+            rows.iter().map(|r| r.points).collect::<Vec<_>>(),
+            [Some((6, 36)), Some((8, 18)), Some((10, 14))]
+        );
+        let totals: Vec<u8> = rows.iter().filter_map(|r| r.points.map(|p| p.1)).collect();
+        assert!(totals.windows(2).all(|w| w[0] >= w[1]), "totals never rise");
+        assert!(rows[1].me);
+    }
+
+    #[test]
+    fn the_racer_callback_gets_the_race_place() {
+        let mut seen = Vec::new();
+        let c = Circuit::default();
+        results_rows(&[1, 0], Some(&c), 0, |seat, place| {
+            seen.push((seat, place));
+            seat_names(seat, place)
+        });
+        seen.sort_unstable();
+        assert_eq!(seen, [(0, 1), (1, 0)]);
     }
 
     #[test]
