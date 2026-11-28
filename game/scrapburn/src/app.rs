@@ -12,7 +12,7 @@ use rivet_physics::{DriveInput, VehicleState};
 use rivet_platform::{Gamepads, KeyInput, PadButtons};
 use rivet_render::{
     Draw, FontSet, FrameContent, GpuContext, GpuMesh, GpuTimer, MeshData, Overlay,
-    ParticleInstance, SceneRenderer, View, box_mesh, draw_frame_graph,
+    ParticleInstance, PresentChoice, SceneRenderer, View, box_mesh, draw_frame_graph,
 };
 use scrapburn::args::{Args, MenuShot, Mode};
 use scrapburn::bench::{Bench, BenchPhase};
@@ -33,7 +33,7 @@ use scrapburn::netplay::{
     self, ClientNote, ClientView, HostNote, Lobby, NetClient, NetHost, RaceSetup, Snapshot,
 };
 use scrapburn::particles::{Blend, Particle, ParticleSystem};
-use scrapburn::prefs::Prefs;
+use scrapburn::prefs::{CliOverrides, DisplayMode, Prefs};
 use scrapburn::race::{Phase, Race, RaceEvent};
 use scrapburn::scenery;
 use scrapburn::sound::{MusicCue, SoundDirector};
@@ -45,7 +45,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 /// Seconds after the player finishes before the results screen appears.
 const RESULTS_DELAY: f64 = 2.5;
@@ -159,18 +159,67 @@ impl Lcg {
     }
 }
 
-/// The settings for this run (see `Prefs::with_cli`) and the file's graphics to keep when saving.
-fn initial_prefs(
-    args: &Args,
-    dir: Option<&std::path::Path>,
-) -> (Prefs, Option<scrapburn::prefs::Graphics>) {
+/// The settings for this run (see `Prefs::with_cli`) and the file's values to keep when saving.
+fn initial_prefs(args: &Args, dir: Option<&std::path::Path>) -> (Prefs, CliOverrides) {
     let bench = args.bench.is_some();
     // Benchmarks ignore the file so their numbers do not depend on saved choices.
     let loaded = match dir {
         Some(d) if !bench => Prefs::load(d),
         _ => Prefs::default(),
     };
-    loaded.with_cli(args.preset, bench, args.attract)
+    // `--present` beats the saved V-sync; a benchmark always uses its own present choice.
+    let vsync = (bench || args.present_given).then_some(args.present == PresentChoice::Vsync);
+    loaded.with_cli(args.preset, vsync, bench, args.attract)
+}
+
+fn present_choice(vsync: bool) -> PresentChoice {
+    if vsync {
+        PresentChoice::Vsync
+    } else {
+        PresentChoice::Immediate
+    }
+}
+
+/// True when the window is a Wayland surface, where winit ignores exclusive fullscreen.
+fn on_wayland(window: &Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .window_handle()
+        .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)))
+}
+
+/// Exclusive fullscreen on the window's monitor, in the video mode closest to `want` at its
+/// highest refresh rate. Borderless when the monitor lists no modes, or on Wayland.
+fn exclusive_fullscreen(window: &Window, want: PhysicalSize<u32>) -> Fullscreen {
+    use scrapburn::display::{ModeInfo, pick_video_mode};
+    let modes: Vec<_> = window
+        .current_monitor()
+        .or_else(|| window.primary_monitor())
+        .map(|m| m.video_modes().collect())
+        .unwrap_or_default();
+    let infos: Vec<ModeInfo> = modes
+        .iter()
+        .map(|m| ModeInfo {
+            size: (m.size().width, m.size().height),
+            refresh_mhz: m.refresh_rate_millihertz(),
+        })
+        .collect();
+    let Some(i) = pick_video_mode(&infos, (want.width, want.height)) else {
+        log::info!("the monitor lists no video modes; using borderless fullscreen");
+        return Fullscreen::Borderless(None);
+    };
+    if on_wayland(window) {
+        log::info!("Wayland has no exclusive fullscreen; using borderless fullscreen");
+        return Fullscreen::Borderless(None);
+    }
+    let m = &infos[i];
+    log::info!(
+        "exclusive fullscreen: {}x{} at {:.2} Hz",
+        m.size.0,
+        m.size.1,
+        f64::from(m.refresh_mhz) / 1000.0
+    );
+    Fullscreen::Exclusive(modes[i].clone())
 }
 
 /// Opens the screen `--menu` names. Lobby, Pause and Results get stand-in data in
@@ -284,8 +333,17 @@ struct Game {
     /// The circuit being raced, if any.
     circuit: Option<Circuit>,
     settings: Settings,
-    /// The file's graphics while `--preset` overrides them; kept out of the saved file.
-    cli_graphics: Option<scrapburn::prefs::Graphics>,
+    /// The file's values while `--preset` or `--present` overrides them; kept out of the
+    /// saved file.
+    cli: CliOverrides,
+    /// The display mode the window is in now.
+    display: DisplayMode,
+    /// The window's size when it was last windowed, restored on returning to Windowed.
+    windowed_size: PhysicalSize<u32>,
+    /// With a frame cap, when the next frame may start (see `limiter`).
+    next_frame: Option<Instant>,
+    /// `--bench-cap`: a benchmark's frame cap.
+    bench_cap: Option<u32>,
     clock: FixedTimestep,
     camera: ChaseCamera,
     keys: KeyInput,
@@ -387,15 +445,22 @@ fn placeholder_kart() -> MeshData {
 
 impl Game {
     fn new(event_loop: &ActiveEventLoop, args: &Args) -> anyhow::Result<Self> {
+        let (prefs, cli) = initial_prefs(args, scrapburn::ghost::data_dir().as_deref());
+        let windowed_size = PhysicalSize::new(args.size.0, args.size.1);
         let attrs = Window::default_attributes()
             .with_title("Scrapburn")
-            .with_inner_size(PhysicalSize::new(args.size.0, args.size.1));
+            .with_inner_size(windowed_size);
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
                 .context("creating the window")?,
         );
-        let ctx = GpuContext::new(window.clone(), &args.adapter, args.present, args.offscreen)?;
+        let ctx = GpuContext::new(
+            window.clone(),
+            &args.adapter,
+            present_choice(prefs.graphics.vsync),
+            args.offscreen,
+        )?;
         let assets =
             find_assets_dir().context("could not find the assets directory (set RIVET_ASSETS)")?;
         let mut layers = load_layers(&assets).context("loading material textures")?;
@@ -504,7 +569,6 @@ impl Game {
                 }
             }
         }
-        let (prefs, cli_graphics) = initial_prefs(args, scrapburn::ghost::data_dir().as_deref());
         let settings = Settings {
             loadout: scrapburn::ghost::data_dir()
                 .map(|d| scrapburn::kart::Loadout::read(&d))
@@ -691,7 +755,11 @@ impl Game {
             peers_at: -100.0,
             resolving: None,
             net_ticks: 0,
-            cli_graphics,
+            cli,
+            display: DisplayMode::Windowed,
+            windowed_size,
+            next_frame: None,
+            bench_cap: args.bench_cap,
             tuner: {
                 let mut t = scrapburn::autotune::AutoTuner::new();
                 // Benchmarks of races use a fixed preset; a title-screen benchmark may tune.
@@ -706,17 +774,54 @@ impl Game {
         })
     }
 
+    /// Puts the window in the display mode the settings name. Benchmarks stay windowed so
+    /// their numbers are repeatable.
+    fn apply_display(&mut self) {
+        let want = self.settings.prefs.graphics.display;
+        if self.bench.is_some() || want == self.display {
+            return;
+        }
+        if self.display == DisplayMode::Windowed {
+            let size = self.window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                self.windowed_size = size;
+            }
+        }
+        match want {
+            DisplayMode::Windowed => {
+                self.window.set_fullscreen(None);
+                // Leaving fullscreen usually restores the size; ask in case it does not.
+                let _ = self.window.request_inner_size(self.windowed_size);
+            }
+            DisplayMode::Borderless => {
+                self.window
+                    .set_fullscreen(Some(Fullscreen::Borderless(None)));
+            }
+            DisplayMode::Fullscreen => {
+                let mode = exclusive_fullscreen(&self.window, self.windowed_size);
+                self.window.set_fullscreen(Some(mode));
+            }
+        }
+        log::info!("display: {want:?}");
+        self.display = want;
+    }
+
+    /// The frame cap in force: the saved one, or `--bench-cap` for a benchmark.
+    fn frame_cap(&self) -> Option<u32> {
+        if self.bench.is_some() {
+            self.bench_cap
+        } else {
+            self.settings.prefs.graphics.frame_cap
+        }
+    }
+
     /// Write the settings file. Benchmarks never touch it.
     fn save_prefs(&self) {
         if self.bench.is_some() {
             return;
         }
         if let Some(dir) = scrapburn::ghost::data_dir()
-            && let Err(e) = self
-                .settings
-                .prefs
-                .persisted(self.cli_graphics.as_ref())
-                .save(&dir)
+            && let Err(e) = self.settings.prefs.persisted(&self.cli).save(&dir)
         {
             log::warn!("saving settings: {e}");
         }
@@ -1532,7 +1637,7 @@ impl Game {
                         // An edit made in the menu is saved, and replaces any `--preset`.
                         // Rebuilds wait for a pause in the edits (see `RebuildSchedule`); this
                         // includes presets, since holding an arrow on that row cycles them.
-                        self.cli_graphics = None;
+                        self.cli.graphics = None;
                         let g = self.settings.prefs.graphics;
                         if !g.auto {
                             self.tuner.stop();
@@ -1546,10 +1651,15 @@ impl Game {
                         }
                         self.rebuild.request(Instant::now());
                     }
-                    // Task 7 applies the display mode, V-sync, and frame cap.
-                    MenuAction::DisplayChanged
-                    | MenuAction::VsyncChanged
-                    | MenuAction::FrameCapChanged => {}
+                    MenuAction::DisplayChanged => self.apply_display(),
+                    MenuAction::VsyncChanged => {
+                        // A menu edit replaces any `--present`.
+                        self.cli.vsync = None;
+                        self.ctx
+                            .set_present(present_choice(self.settings.prefs.graphics.vsync));
+                    }
+                    // `about_to_wait` reads the cap every iteration.
+                    MenuAction::FrameCapChanged => {}
                     MenuAction::VolumeChanged => {
                         if let Some(audio) = &self.audio {
                             scrapburn::sound::send_volumes(audio, &self.settings.prefs.audio);
@@ -2751,7 +2861,11 @@ impl ApplicationHandler for App {
             return;
         }
         match Game::new(event_loop, &self.args) {
-            Ok(g) => self.game = Some(g),
+            Ok(mut g) => {
+                // The saved display mode; V-sync was chosen when the surface was made.
+                g.apply_display();
+                self.game = Some(g);
+            }
             Err(e) => {
                 eprintln!("error: {e:#}");
                 self.exit = ExitCode::from(2);
@@ -2854,9 +2968,33 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(game) = self.game.as_ref() {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        use scrapburn::limiter::{self, Wait};
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        let Some(hz) = game.frame_cap() else {
+            game.next_frame = None;
+            event_loop.set_control_flow(ControlFlow::Poll);
             game.window.request_redraw();
+            return;
+        };
+        // Sleep until just before the deadline, then spin: OS timers wake late.
+        if let Some(deadline) = game.next_frame {
+            loop {
+                match limiter::wait_mode(Instant::now(), deadline) {
+                    Wait::Sleep(until) => {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(until));
+                        return;
+                    }
+                    Wait::Spin => std::hint::spin_loop(),
+                    Wait::Go => break,
+                }
+            }
         }
+        let next = limiter::next_deadline(Instant::now(), hz);
+        game.next_frame = Some(next);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next - limiter::SPIN));
+        game.window.request_redraw();
     }
 }

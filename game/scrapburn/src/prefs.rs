@@ -118,6 +118,16 @@ impl Units {
     }
 }
 
+/// The file's values that command-line flags replaced for this run. `persisted` writes these
+/// instead, so a flag lasts one run. A menu edit of the same setting drops its entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CliOverrides {
+    /// Preset, quality and auto flag, replaced by `--preset`.
+    pub graphics: Option<Graphics>,
+    /// V-sync, replaced by `--present`.
+    pub vsync: Option<bool>,
+}
+
 /// Frame caps the menu offers; `None` is uncapped.
 pub const FRAME_CAPS: [Option<u32>; 5] = [Some(30), Some(60), Some(120), Some(144), None];
 
@@ -381,16 +391,19 @@ impl Prefs {
         }
     }
 
-    /// The settings for this run: `self` (as loaded) with the command line on top. Benchmarks
-    /// of races stay on Medium. Also returns the file's graphics when the command line
-    /// overrode them, so `persisted` can keep the override out of the saved file.
+    /// The settings for this run: `self` (as loaded) with the command line on top (`preset`
+    /// from `--preset`, `vsync` from `--present`). Benchmarks of races stay on Medium. Also
+    /// returns the file's values the command line overrode, so `persisted` can keep the
+    /// overrides out of the saved file.
     pub fn with_cli(
         mut self,
         preset: Option<Preset>,
+        vsync: Option<bool>,
         bench: bool,
         attract: bool,
-    ) -> (Self, Option<Graphics>) {
+    ) -> (Self, CliOverrides) {
         let loaded = self.graphics;
+        let vsync_restore = vsync.map(|v| std::mem::replace(&mut self.graphics.vsync, v));
         let g = &mut self.graphics;
         g.auto = g.auto && preset.is_none() && (!bench || attract);
         let restore = match preset {
@@ -408,17 +421,26 @@ impl Prefs {
                 None
             }
         };
-        (self, restore)
+        (
+            self,
+            CliOverrides {
+                graphics: restore,
+                vsync: vsync_restore,
+            },
+        )
     }
 
-    /// What to write: `self`, except the graphics preset, quality and auto flag come from
-    /// `restore` while a command-line override is in force.
-    pub fn persisted(&self, restore: Option<&Graphics>) -> Self {
+    /// What to write: `self`, except the values in `restore` while a command-line override
+    /// of them is in force.
+    pub fn persisted(&self, restore: &CliOverrides) -> Self {
         let mut p = *self;
-        if let Some(r) = restore {
+        if let Some(r) = &restore.graphics {
             p.graphics.preset = r.preset;
             p.graphics.auto = r.auto;
             p.graphics.quality = r.quality;
+        }
+        if let Some(v) = restore.vsync {
+            p.graphics.vsync = v;
         }
         p
     }
@@ -685,23 +707,55 @@ mod tests {
         let mut file = Prefs::default();
         file.graphics.set_preset(Preset::High);
         file.graphics.auto = true;
-        let (run, restore) = file.with_cli(Some(Preset::Low), false, false);
+        let (run, restore) = file.with_cli(Some(Preset::Low), None, false, false);
         assert_eq!(run.graphics.preset, PresetChoice::Low);
         assert!(!run.graphics.auto);
         assert_eq!(run.graphics.quality, Preset::Low.settings());
-        let saved = run.persisted(restore.as_ref());
+        let saved = run.persisted(&restore);
         assert_eq!(saved.graphics, file.graphics);
         // Without an override the run's graphics are saved as they are.
-        let (run, restore) = file.with_cli(None, false, false);
-        assert_eq!(run.persisted(restore.as_ref()), run);
+        let (run, restore) = file.with_cli(None, None, false, false);
+        assert_eq!(restore, CliOverrides::default());
+        assert_eq!(run.persisted(&restore), run);
+    }
+
+    #[test]
+    fn cli_present_is_not_persisted() {
+        let mut file = Prefs::default();
+        file.graphics.vsync = true;
+        let (run, restore) = file.with_cli(None, Some(false), false, false);
+        assert!(!run.graphics.vsync);
+        assert!(run.persisted(&restore).graphics.vsync);
+        // Other edits made during the run are still saved.
+        let mut edited = run;
+        edited.graphics.frame_cap = Some(60);
+        assert_eq!(edited.persisted(&restore).graphics.frame_cap, Some(60));
+        // Once the menu changes V-sync, the override is dropped and the edit is saved.
+        let dropped = CliOverrides {
+            vsync: None,
+            ..restore
+        };
+        assert!(!run.persisted(&dropped).graphics.vsync);
+    }
+
+    #[test]
+    fn cli_preset_and_present_restore_separately() {
+        let file = Prefs::default();
+        let (mut run, mut restore) = file.with_cli(Some(Preset::Low), Some(false), false, false);
+        // The menu picks a preset (dropping that override) but leaves V-sync alone.
+        restore.graphics = None;
+        run.graphics.set_preset(Preset::High);
+        let saved = run.persisted(&restore);
+        assert_eq!(saved.graphics.preset, PresetChoice::High);
+        assert!(saved.graphics.vsync);
     }
 
     #[test]
     fn bench_ignores_auto_unless_attract() {
-        let (race, _) = Prefs::default().with_cli(None, true, false);
+        let (race, _) = Prefs::default().with_cli(None, None, true, false);
         assert!(!race.graphics.auto);
         assert_eq!(race.graphics.preset, PresetChoice::Medium);
-        let (title, _) = Prefs::default().with_cli(None, true, true);
+        let (title, _) = Prefs::default().with_cli(None, None, true, true);
         assert!(title.graphics.auto);
         assert_eq!(title.graphics.preset, PresetChoice::High);
     }

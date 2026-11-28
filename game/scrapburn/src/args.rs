@@ -8,11 +8,16 @@ pub struct Args {
     pub adapter: AdapterPreference,
     pub size: (u32, u32),
     pub present: PresentChoice,
+    /// `--present` was on the command line: it beats the saved V-sync setting for this run.
+    pub present_given: bool,
     /// Seconds of measured benchmark after warmup; the autopilot drives.
     pub bench: Option<u32>,
     /// Render to an offscreen image instead of the window (bench only). For GPUs that can
     /// render but not present to this display, e.g. an iGPU when the monitor is on a dGPU.
     pub offscreen: bool,
+    /// Frame cap for a benchmark (`--bench-cap HZ`), to measure the limiter. Benchmarks
+    /// otherwise ignore the saved cap.
+    pub bench_cap: Option<u32>,
     /// Write the last offscreen bench frame here as PNG.
     pub screenshot: Option<std::path::PathBuf>,
     /// `None`: pick automatically (benchmarks use Medium).
@@ -128,8 +133,9 @@ impl std::str::FromStr for Mode {
 pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<name>] [--size WxH] \
 [--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway|orchard|helios] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--no-motion] \
 [--menu title|race-setup|tracks|garage|multiplayer|lobby|pause|results|graphics|audio|controls|camera|gameplay] \
-[--bench SECS [--offscreen [--screenshot FILE.png]]]
+[--bench SECS [--bench-cap HZ] [--offscreen [--screenshot FILE.png]]]
 
+  --bench-cap HZ  cap a benchmark's frame rate (to measure the frame limiter)
   --no-motion  reduced motion: the menu embers and the molten flow stand still
   --menu NAME  open that menu screen at launch (with --bench --offscreen, for screenshots)";
 
@@ -144,6 +150,7 @@ pub fn parse(
     let mut present = None;
     let mut bench = None;
     let mut offscreen = false;
+    let mut bench_cap = None;
     let mut screenshot = None;
     let mut preset = None;
     let mut mode = Mode::Race;
@@ -187,6 +194,15 @@ pub fn parse(
                 );
             }
             "--offscreen" => offscreen = true,
+            "--bench-cap" => {
+                let v = value()?;
+                bench_cap = Some(
+                    v.parse::<u32>()
+                        .ok()
+                        .filter(|c| (1..=1000).contains(c))
+                        .ok_or_else(|| format!("--bench-cap expects 1..1000 Hz, got '{v}'"))?,
+                );
+            }
             "--preset" => preset = Some(value()?.parse()?),
             "--mode" => mode = value()?.parse()?,
             "--garage" => garage = true,
@@ -217,6 +233,9 @@ pub fn parse(
     if offscreen && bench.is_none() {
         return Err(format!("--offscreen only works with --bench\n{USAGE}"));
     }
+    if bench_cap.is_some() && bench.is_none() {
+        return Err(format!("--bench-cap only works with --bench\n{USAGE}"));
+    }
     if screenshot.is_some() && !offscreen {
         return Err(format!(
             "--screenshot needs --bench and --offscreen\n{USAGE}"
@@ -226,6 +245,7 @@ pub fn parse(
     if menu.is_some_and(|m| !m.in_race()) {
         attract = true;
     }
+    let present_given = present.is_some();
     let present = present.unwrap_or(if bench.is_some() {
         PresentChoice::Immediate
     } else {
@@ -235,8 +255,10 @@ pub fn parse(
         adapter: adapter.unwrap_or_default(),
         size,
         present,
+        present_given,
         bench,
         offscreen,
+        bench_cap,
         screenshot,
         preset,
         mode,
@@ -290,6 +312,32 @@ mod tests {
         assert_eq!(a.present, PresentChoice::Immediate);
         let a = parse_strs(&["--bench", "30", "--present", "vsync"], None).unwrap();
         assert_eq!(a.present, PresentChoice::Vsync);
+    }
+
+    #[test]
+    fn args_present_given_only_when_on_the_command_line() {
+        assert!(!parse_strs(&[], None).unwrap().present_given);
+        assert!(!parse_strs(&["--bench", "30"], None).unwrap().present_given);
+        assert!(
+            parse_strs(&["--present", "immediate"], None)
+                .unwrap()
+                .present_given
+        );
+    }
+
+    #[test]
+    fn args_bench_cap() {
+        assert_eq!(parse_strs(&[], None).unwrap().bench_cap, None);
+        let a = parse_strs(&["--bench", "10", "--bench-cap", "144"], None).unwrap();
+        assert_eq!(a.bench_cap, Some(144));
+        assert!(
+            parse_strs(&["--bench-cap", "60"], None)
+                .unwrap_err()
+                .contains("--bench")
+        );
+        for bad in ["0", "fast", "1001"] {
+            assert!(parse_strs(&["--bench", "10", "--bench-cap", bad], None).is_err());
+        }
     }
 
     #[test]
