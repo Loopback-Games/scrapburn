@@ -1,4 +1,5 @@
-//! Menus: title, settings, pause, results. Pure state and navigation; drawing lives in hud.rs.
+//! Menus: title, settings, pause, results. Pure state and navigation; drawing lives in
+//! menu_draw.
 
 use rivet_audio::Theme;
 use rivet_render::{Preset, QualitySettings};
@@ -345,23 +346,6 @@ impl Row {
     fn fresh(mut self) -> Self {
         self.new = true;
         self
-    }
-
-    /// The old `"LABEL  < VALUE >"` string `hud::draw_menu` parses. Temporary: Task 5 draws
-    /// rows directly and deletes this.
-    pub fn legacy_string(&self) -> String {
-        let label = self.label.to_ascii_uppercase();
-        match &self.kind {
-            RowKind::Go => label,
-            RowKind::Choice { value }
-            | RowKind::Slider {
-                value_text: value, ..
-            } => format!("{label}  < {} >", value.to_ascii_uppercase()),
-            RowKind::Bind { text: value } | RowKind::Text { value } if !value.is_empty() => {
-                format!("{label}  {}", value.to_ascii_uppercase())
-            }
-            RowKind::Bind { .. } | RowKind::Text { .. } => label,
-        }
     }
 }
 
@@ -1702,9 +1686,25 @@ mod tests {
         i
     }
 
-    /// The rows as the old renderer sees them.
+    /// A row as one line of text: `"LABEL  < CHOICE >"` or `"LABEL  VALUE"`.
+    fn text(r: &Row) -> String {
+        let label = r.label.to_ascii_uppercase();
+        match &r.kind {
+            RowKind::Go => label,
+            RowKind::Choice { value }
+            | RowKind::Slider {
+                value_text: value, ..
+            } => format!("{label}  < {} >", value.to_ascii_uppercase()),
+            RowKind::Bind { text: value } | RowKind::Text { value } if !value.is_empty() => {
+                format!("{label}  {}", value.to_ascii_uppercase())
+            }
+            RowKind::Bind { .. } | RowKind::Text { .. } => label,
+        }
+    }
+
+    /// The rows of the current screen as text.
     fn texts(m: &MenuState, s: &Settings) -> Vec<String> {
-        m.rows(s).iter().map(Row::legacy_string).collect()
+        m.rows(s).iter().map(text).collect()
     }
 
     /// Select the row `id` on the current screen.
@@ -2550,10 +2550,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_strings_for_each_kind() {
+    fn row_text_for_each_kind() {
         let s = Settings::default();
         let rows = open_tab(Tab::Graphics).rows(&s);
-        assert_eq!(rows[2].legacy_string(), "RENDER SCALE  < 100% >");
+        assert_eq!(text(&rows[2]), "RENDER SCALE  < 100% >");
         let mut m = MenuState::new(Screen::Circuits);
         m.go(Screen::Circuits);
         let rows = texts(&m, &s);
