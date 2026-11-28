@@ -1211,6 +1211,8 @@ impl SceneRenderer {
     }
 
     /// Renders the 3D frame into `output` (the HUD is drawn afterwards by the caller).
+    /// `timer` gets its begin timestamp on the first pass; the caller writes the end one on
+    /// its last pass (`GpuTimer::end_writes`), so the frame time covers the HUD too.
     // A frame genuinely needs device, queue, encoder, target, view, draws and timer.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
@@ -1221,7 +1223,7 @@ impl SceneRenderer {
         output: &wgpu::TextureView,
         view: &View,
         content: &FrameContent<'_>,
-        mut timer: Option<&mut GpuTimer>,
+        timer: Option<&mut GpuTimer>,
     ) {
         let draws = content.draws;
         let l = self.lighting;
@@ -1292,7 +1294,7 @@ impl SceneRenderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: timer.as_deref_mut().and_then(GpuTimer::begin_writes),
+                timestamp_writes: timer.and_then(GpuTimer::begin_writes),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1468,7 +1470,6 @@ impl SceneRenderer {
                     &pg.composite,
                     None,
                 );
-                let end = timer.as_deref().and_then(GpuTimer::end_writes);
                 fullscreen(
                     encoder,
                     "fxaa",
@@ -1476,11 +1477,10 @@ impl SceneRenderer {
                     clear,
                     &self.fxaa_pipeline,
                     fxaa,
-                    end,
+                    None,
                 );
             }
             _ => {
-                let end = timer.as_deref().and_then(GpuTimer::end_writes);
                 fullscreen(
                     encoder,
                     "composite",
@@ -1488,7 +1488,7 @@ impl SceneRenderer {
                     clear,
                     &self.composite_out_pipeline,
                     &pg.composite,
-                    end,
+                    None,
                 );
             }
         }

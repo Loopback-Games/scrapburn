@@ -2601,7 +2601,8 @@ impl Game {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                // The frame's GPU time runs from the first scene pass to the end of this one.
+                timestamp_writes: self.timer.as_ref().and_then(GpuTimer::end_writes),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });

@@ -16,7 +16,8 @@ struct Slot {
     state: Arc<AtomicU8>,
 }
 
-/// Times one render pass per frame with begin/end timestamps, read back a few frames later.
+/// Times each frame from the first pass's begin timestamp to the last pass's end timestamp,
+/// read back a few frames later.
 /// Never blocks: if every slot is still in flight, that frame simply isn't timed.
 pub struct GpuTimer {
     slots: Vec<Slot>,
