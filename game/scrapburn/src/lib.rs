@@ -11,6 +11,7 @@ pub mod circuit;
 pub mod combat;
 pub mod controls;
 pub mod effects;
+pub mod embers;
 pub mod fx_meshes;
 pub mod ghost;
 pub mod hud;

@@ -16,6 +16,62 @@ pub fn tier_color(tier: usize) -> [f32; 4] {
     TIER_COLORS[tier.min(TIER_COLORS.len() - 1)]
 }
 
+/// A `0xRRGGBB` color with alpha `a`, as overlay color channels.
+const fn hex(rgb: u32, a: f32) -> [f32; 4] {
+    [
+        ((rgb >> 16) & 0xff) as f32 / 255.0,
+        ((rgb >> 8) & 0xff) as f32 / 255.0,
+        (rgb & 0xff) as f32 / 255.0,
+        a,
+    ]
+}
+
+/// Crucible menu palette (from the design mockup).
+pub mod crucible {
+    use super::hex;
+
+    /// Near-black warm char: text on the molten selection.
+    pub const CHAR: [f32; 4] = hex(0x140d0a, 1.0);
+    /// Smoke glass: the column's tint over the blurred scene.
+    pub const GLASS: [f32; 4] = hex(0x1a100c, 0.52);
+    /// Ash: body text and row labels.
+    pub const ASH: [f32; 4] = hex(0xcdbfb2, 1.0);
+    /// Dim ash: inactive tabs and footer words.
+    pub const ASH_DIM: [f32; 4] = hex(0xcdbfb2, 0.5);
+    /// Ember orange: accents, the active tab's underline, preview strokes.
+    pub const EMBER: [f32; 4] = hex(0xff6a1a, 1.0);
+    /// Gold: kickers and preview captions.
+    pub const GOLD: [f32; 4] = hex(0xffc35c, 1.0);
+    /// White heat: highlighted text and slider knobs.
+    pub const HOT: [f32; 4] = hex(0xfff1d6, 1.0);
+    /// The molten gradient, left to right (or bottom to top), with its stop positions.
+    pub const MOLTEN: [([f32; 4], f32); 4] = [
+        (hex(0xff3a0a, 1.0), 0.0),
+        (hex(0xff8a1f, 1.0), 0.35),
+        (hex(0xffc35c, 1.0), 0.75),
+        (hex(0xfff1d6, 1.0), 1.0),
+    ];
+    /// The glow around molten shapes.
+    pub const GLOW: [f32; 4] = hex(0xff6e1e, 0.55);
+
+    /// The molten gradient's color at `t` (0-1).
+    pub fn molten(t: f32) -> [f32; 4] {
+        let t = t.clamp(0.0, 1.0);
+        let i = MOLTEN.iter().rposition(|(_, at)| *at <= t).unwrap_or(0);
+        let Some(&(b, tb)) = MOLTEN.get(i + 1) else {
+            return MOLTEN[MOLTEN.len() - 1].0;
+        };
+        let (a, ta) = MOLTEN[i];
+        let k = (t - ta) / (tb - ta);
+        std::array::from_fn(|c| a[c] + (b[c] - a[c]) * k)
+    }
+
+    /// `c` with its alpha multiplied by `a`.
+    pub fn fade(c: [f32; 4], a: f32) -> [f32; 4] {
+        [c[0], c[1], c[2], c[3] * a]
+    }
+}
+
 /// Warm tint multiplied into the light and sky colors behind menus.
 const MENU_WARMTH: Vec3 = Vec3::new(1.0, 0.86, 0.68);
 
@@ -51,6 +107,19 @@ mod tests {
         assert!(warmth(g.sky_zenith) > warmth(track.sky_zenith));
         assert_eq!(g.sun_dir, track.sun_dir, "the grade never moves the sun");
         assert_eq!(g.fog_density, track.fog_density);
+    }
+
+    #[test]
+    fn molten_hits_its_stops() {
+        use crucible::*;
+        for (c, at) in MOLTEN {
+            assert_eq!(molten(at), c);
+        }
+        assert_eq!(molten(-1.0), MOLTEN[0].0);
+        assert_eq!(molten(2.0), HOT);
+        let mid = molten(0.175);
+        assert!(mid[1] > MOLTEN[0].0[1] && mid[1] < MOLTEN[1].0[1]);
+        assert_eq!(CHAR, [20.0 / 255.0, 13.0 / 255.0, 10.0 / 255.0, 1.0]);
     }
 
     #[test]

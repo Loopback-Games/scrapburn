@@ -32,6 +32,70 @@ pub struct Args {
     pub join: Option<String>,
     /// Player name shown to others online.
     pub name: Option<String>,
+    /// Open this menu screen at launch (for offscreen screenshots of the menus).
+    pub menu: Option<MenuShot>,
+    /// Reduced motion: the menu embers and the molten flow stand still.
+    pub no_motion: bool,
+}
+
+/// A menu screen `--menu` opens. Names match the design mockup's screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuShot {
+    Title,
+    RaceSetup,
+    Tracks,
+    Garage,
+    Multiplayer,
+    /// A stand-in host lobby (no network).
+    Lobby,
+    /// A race paused at the start.
+    Pause,
+    /// The results of a race that has not finished.
+    Results,
+    Graphics,
+    Audio,
+    Controls,
+    Camera,
+    Gameplay,
+}
+
+impl MenuShot {
+    pub const ALL: [(MenuShot, &'static str); 13] = [
+        (MenuShot::Title, "title"),
+        (MenuShot::RaceSetup, "race-setup"),
+        (MenuShot::Tracks, "tracks"),
+        (MenuShot::Garage, "garage"),
+        (MenuShot::Multiplayer, "multiplayer"),
+        (MenuShot::Lobby, "lobby"),
+        (MenuShot::Pause, "pause"),
+        (MenuShot::Results, "results"),
+        (MenuShot::Graphics, "graphics"),
+        (MenuShot::Audio, "audio"),
+        (MenuShot::Controls, "controls"),
+        (MenuShot::Camera, "camera"),
+        (MenuShot::Gameplay, "gameplay"),
+    ];
+
+    /// Pause and Results sit on top of a race; the rest open from the title screen.
+    pub fn in_race(self) -> bool {
+        matches!(self, MenuShot::Pause | MenuShot::Results)
+    }
+}
+
+impl std::str::FromStr for MenuShot {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.to_ascii_lowercase();
+        Self::ALL
+            .iter()
+            .find(|(_, name)| *name == s)
+            .map(|(m, _)| *m)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Self::ALL.iter().map(|(_, n)| *n).collect();
+                format!("unknown menu '{s}' (use {})", names.join(", "))
+            })
+    }
 }
 
 /// What to play.
@@ -62,7 +126,12 @@ impl std::str::FromStr for Mode {
 }
 
 pub const USAGE: &str = "usage: scrapburn [--adapter auto|integrated|discrete|<name>] [--size WxH] \
-[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway|orchard|helios] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--bench SECS [--offscreen [--screenshot FILE.png]]]";
+[--present vsync|immediate] [--mode race|timetrial|elimination] [--track dustbowl|castle|skyway|orchard|helios] [--garage] [--host | --join ADDR] [--name NAME] [--preset low|medium|high] [--no-motion] \
+[--menu title|race-setup|tracks|garage|multiplayer|lobby|pause|results|graphics|audio|controls|camera|gameplay] \
+[--bench SECS [--offscreen [--screenshot FILE.png]]]
+
+  --no-motion  reduced motion: the menu embers and the molten flow stand still
+  --menu NAME  open that menu screen at launch (with --bench --offscreen, for screenshots)";
 
 /// Parses CLI args (without the program name). `env_adapter` is `RIVET_ADAPTER`.
 pub fn parse(
@@ -85,6 +154,8 @@ pub fn parse(
     let mut host_loopback = false;
     let mut join = None;
     let mut name = None;
+    let mut menu: Option<MenuShot> = None;
+    let mut no_motion = false;
     while let Some(flag) = args.next() {
         let mut value = || {
             args.next()
@@ -127,6 +198,8 @@ pub fn parse(
             "--host" => host = true,
             "--join" => join = Some(value()?),
             "--name" => name = Some(value()?),
+            "--menu" => menu = Some(value()?.parse()?),
+            "--no-motion" => no_motion = true,
             "--track" => {
                 let v = value()?.to_ascii_lowercase();
                 track = crate::track::TRACKS
@@ -149,6 +222,10 @@ pub fn parse(
             "--screenshot needs --bench and --offscreen\n{USAGE}"
         ));
     }
+    // The title-screen menus run over the attract race.
+    if menu.is_some_and(|m| !m.in_race()) {
+        attract = true;
+    }
     let present = present.unwrap_or(if bench.is_some() {
         PresentChoice::Immediate
     } else {
@@ -170,6 +247,8 @@ pub fn parse(
         host_loopback,
         join,
         name,
+        menu,
+        no_motion,
     })
 }
 
@@ -291,6 +370,29 @@ mod tests {
         assert_eq!(parse_strs(&["--track", "skyway"], None).unwrap().track, 2);
         assert_eq!(parse_strs(&["--track", "castle"], None).unwrap().track, 1);
         assert!(parse_strs(&["--track", "moon"], None).is_err());
+    }
+
+    #[test]
+    fn args_menu() {
+        assert_eq!(parse_strs(&[], None).unwrap().menu, None);
+        let a = parse_strs(&["--menu", "race-setup"], None).unwrap();
+        assert_eq!(a.menu, Some(MenuShot::RaceSetup));
+        assert!(a.attract, "title-screen menus run over the attract race");
+        let a = parse_strs(&["--menu", "pause"], None).unwrap();
+        assert_eq!(a.menu, Some(MenuShot::Pause));
+        assert!(!a.attract, "pause sits on a race");
+        for (m, name) in MenuShot::ALL {
+            assert_eq!(name.parse::<MenuShot>(), Ok(m));
+        }
+        assert!(parse_strs(&["--menu", "options"], None).is_err());
+        assert!(parse_strs(&["--menu"], None).is_err());
+    }
+
+    #[test]
+    fn args_no_motion() {
+        assert!(!parse_strs(&[], None).unwrap().no_motion);
+        assert!(parse_strs(&["--no-motion"], None).unwrap().no_motion);
+        assert!(USAGE.contains("--no-motion"));
     }
 
     #[test]
