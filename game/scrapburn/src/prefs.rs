@@ -628,11 +628,13 @@ mod tests {
     #[test]
     fn bindings_are_saved_one_line_per_action() {
         let text = Prefs::default().to_text();
-        assert!(text.contains("controls.bind.use_item key:KeyE key:ControlLeft pad:West\n"));
+        assert!(
+            text.contains("controls.bind.use_item key:KeyE key:ControlLeft key:KeyJ pad:West\n")
+        );
         assert!(text.contains("controls.bind.steer_left key:KeyA key:ArrowLeft pad:Stick\n"));
         let p = Prefs::parse("controls.bind.respawn key:KeyT pad:North\n");
         let r = p.controls.bindings.keys_for(Action::Respawn);
-        assert_eq!(r, [Some(KeyCode::KeyT), None]);
+        assert_eq!(r, [Some(KeyCode::KeyT), None, None]);
     }
 
     #[test]

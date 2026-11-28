@@ -1613,7 +1613,7 @@ mod tests {
         assert_eq!(rows[0].1, "W / Up");
         assert_eq!(rows[0].2, vec![PadGlyph::RightTrigger, PadGlyph::A]);
         assert_eq!(rows[2].1, "A D / Left Right");
-        assert_eq!(rows[4].1, "E / Ctrl");
+        assert_eq!(rows[4].1, "E / Ctrl / J");
         let mut b = Bindings::default();
         b.capture(Action::UseItem, Press::Key(winit::keyboard::KeyCode::KeyG));
         b.capture(
@@ -1621,7 +1621,7 @@ mod tests {
             Press::Pad(rivet_platform::PadButtons::NORTH),
         );
         let rows = driving_controls(&b);
-        assert_eq!(rows[4].1, "G / Ctrl");
+        assert_eq!(rows[4].1, "G / Ctrl / J");
         assert_eq!(rows[4].2, vec![PadGlyph::Y]);
         assert_eq!(rows[6].2, vec![PadGlyph::X], "look behind swapped to X");
     }

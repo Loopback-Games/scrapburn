@@ -365,6 +365,9 @@ impl Row {
     }
 }
 
+/// Help for the steering rows on the gamepad device, where Enter changes nothing.
+const STEER_PAD_HELP: &str = "On a gamepad, steering is always the left stick.";
+
 /// Online screen: the typed address row.
 pub const ONLINE_ADDRESS: usize = 4;
 /// Online screen: the row that opens the Tailscale peer list.
@@ -1112,6 +1115,10 @@ impl MenuState {
                         ),
                         BindRow::Action(Action::Brake) => {
                             ("Brake & reverse", "Hold to brake, keep holding to reverse.")
+                        }
+                        BindRow::Action(Action::SteerLeft) if pad => ("Steer left", STEER_PAD_HELP),
+                        BindRow::Action(Action::SteerRight) if pad => {
+                            ("Steer right", STEER_PAD_HELP)
                         }
                         BindRow::Action(Action::SteerLeft) => (
                             "Steer left",
@@ -2035,6 +2042,10 @@ mod tests {
         assert_eq!(rows[1], "ACCELERATE  RT OR A");
         pick(&mut m, &s, RowId::Bind(BindRow::Action(Action::SteerLeft)));
         assert_eq!(texts(&m, &s)[m.selected], "STEER LEFT  LEFT STICK");
+        assert_eq!(
+            m.rows(&s)[m.selected].help,
+            "On a gamepad, steering is always the left stick."
+        );
         // Gamepad steering is always the stick: nothing to capture.
         m.handle(press(|i| i.select = true), &mut s);
         assert_eq!(m.capturing, None);
@@ -2083,7 +2094,7 @@ mod tests {
             MenuAction::BindingCaptured
         );
         assert_eq!(m.capturing, None);
-        assert_eq!(texts(&m, &s)[m.selected], "USE ITEM  F / CTRL");
+        assert_eq!(texts(&m, &s)[m.selected], "USE ITEM  F / CTRL / J");
     }
 
     #[test]

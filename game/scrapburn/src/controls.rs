@@ -46,10 +46,24 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-/// Analog steering response: `sign(s)·|s|^e` with `e = lerp(1.6, 0.6, sensitivity / 100)`,
-/// so low sensitivity is gentle near center and high is sharp. Full lock stays full lock.
+/// The steer curve exponent: 1.6 at sensitivity 0, exactly 1.0 at 50, 0.6 at 100, linear
+/// on each side of 50.
+fn steer_exponent(sensitivity: u8) -> f32 {
+    let s = f32::from(sensitivity.min(100));
+    if s <= 50.0 {
+        1.0 + 0.6 * (50.0 - s) / 50.0
+    } else {
+        1.0 - 0.4 * (s - 50.0) / 50.0
+    }
+}
+
+/// Analog steering response: `sign(s)·|s|^e` (see `steer_exponent`). Low sensitivity is
+/// gentle near center, high is sharp, 50 leaves the stick as it is, and full lock stays full.
 pub fn steer_curve(s: f32, sensitivity: u8) -> f32 {
-    let e = lerp(1.6, 0.6, f32::from(sensitivity.min(100)) / 100.0);
+    let e = steer_exponent(sensitivity);
+    if e == 1.0 {
+        return s;
+    }
     s.abs().powf(e).copysign(s)
 }
 
@@ -219,15 +233,20 @@ mod tests {
         assert_eq!(ramp.apply(1.0, true, 1.0 / 60.0, 50), 1.0);
         let back = ramp.apply(0.0, true, 1.0 / 60.0, 50);
         assert!(back < 0.9, "and ramps out faster: {back}");
-        let analog = SteerRamp::default().apply(0.37, false, 1.0 / 60.0, 50);
-        assert_eq!(analog, steer_curve(0.37, 50));
+        assert_eq!(
+            SteerRamp::default().apply(0.37, false, 1.0 / 60.0, 50),
+            0.37
+        );
     }
 
     #[test]
     fn sensitivity_curves_the_stick() {
-        // e = lerp(1.6, 0.6, sens / 100): 0 is gentle near center, 100 is sharp.
+        // e runs 1.6 at 0, exactly 1.0 at 50 (the stick passes through), 0.6 at 100.
         assert!((steer_curve(0.5, 0) - 0.5f32.powf(1.6)).abs() < 1e-6);
-        assert!((steer_curve(0.5, 50) - 0.5f32.powf(1.1)).abs() < 1e-6);
+        assert_eq!(steer_curve(0.5, 50), 0.5);
+        assert_eq!(steer_curve(-0.37, 50), -0.37);
+        assert!((steer_curve(0.5, 25) - 0.5f32.powf(1.3)).abs() < 1e-6);
+        assert!((steer_curve(0.5, 75) - 0.5f32.powf(0.8)).abs() < 1e-6);
         assert!((steer_curve(-0.5, 100) + 0.5f32.powf(0.6)).abs() < 1e-6);
         assert!(steer_curve(0.5, 0) < steer_curve(0.5, 50));
         assert!(steer_curve(0.5, 50) < steer_curve(0.5, 100));
@@ -382,8 +401,11 @@ mod tests {
         k.on_key(KeyCode::KeyE, true);
         assert!(actions(&k, None, &d()).fire);
         let mut k = KeyInput::default();
+        k.on_key(KeyCode::KeyJ, true);
+        assert!(actions(&k, None, &d()).fire, "J still fires");
+        let mut k = KeyInput::default();
         k.on_key(KeyCode::ControlRight, true);
-        assert!(actions(&k, None, &d()).fire, "either Ctrl fires");
+        assert!(!actions(&k, None, &d()).fire, "only Left Ctrl fires");
         let pad = PadState {
             just_pressed: PadButtons::WEST,
             ..Default::default()

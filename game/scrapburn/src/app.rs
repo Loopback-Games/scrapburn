@@ -1362,6 +1362,7 @@ impl Game {
                     || self.menu.screen == Screen::Online
                         && self.menu.selected == scrapburn::menu::ONLINE_ADDRESS;
                 let capturing = self.menu.capturing.is_some();
+                let mut captured = MenuAction::None;
                 let mut input = if capturing {
                     // A capture takes this frame's presses; none of them navigate the menu.
                     self.clicked = None;
@@ -1369,7 +1370,7 @@ impl Game {
                         if self.menu.capturing.is_none() {
                             break;
                         }
-                        self.menu.capture(press, &mut self.settings);
+                        captured = self.menu.capture(press, &mut self.settings);
                     }
                     Default::default()
                 } else if typing {
@@ -1400,7 +1401,10 @@ impl Game {
                 // Save on leaving Settings, not on switching between its tabs.
                 let was_settings = matches!(self.menu.screen, Screen::Settings(_));
                 let before = (self.menu.screen, self.menu.selected);
-                let action = self.menu.handle(input, &mut self.settings);
+                let action = match captured {
+                    MenuAction::None => self.menu.handle(input, &mut self.settings),
+                    a => a,
+                };
                 if let (Some(audio), Some(sfx)) = (
                     &self.audio,
                     scrapburn::sound::ui_sound(

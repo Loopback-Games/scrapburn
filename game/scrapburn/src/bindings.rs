@@ -4,9 +4,9 @@
 //! Menu navigation, pause (Esc / Start), and the FPS display (F3 / Select) are fixed and
 //! are not actions, so a player can never lock themselves out of the menus.
 //!
-//! Settings file lines, one per action: `controls.bind.<action> key:<Key> key:<Key>
-//! pad:<Button> pad:<Button>`, e.g. `controls.bind.use_item key:KeyE key:ControlLeft pad:West`.
-//! The second key and the second button are optional. A line with an unknown name, a
+//! Settings file lines, one per action: `controls.bind.<action> key:<Key>... pad:<Button>...`
+//! with one to three keys and one or two buttons, e.g.
+//! `controls.bind.use_item key:KeyE key:ControlLeft key:KeyJ pad:West`. A line with an unknown name, a
 //! reserved key, or no key or button for a device leaves that action on its default.
 
 use rivet_platform::{KeyInput, PadButtons, PadState};
@@ -86,8 +86,8 @@ pub enum Press {
 }
 
 /// Bindable keys: code, settings file name, and display label. Esc, F3 (the FPS display)
-/// and anything not listed can't be bound. The right-hand Shift, Ctrl and Alt count as the
-/// left ones.
+/// and anything not listed can't be bound. Right Shift counts as Shift, as it always has for
+/// drifting; Ctrl and Alt are the left-hand keys only.
 pub const KEY_NAMES: &[(KeyCode, &str, &str)] = {
     use KeyCode::*;
     &[
@@ -189,24 +189,17 @@ pub const PAD_NAMES: &[(PadBind, &str, &str)] = &[
     (PadBind::Stick, "Stick", "Left stick"),
 ];
 
-/// The right-hand modifiers stand for the left ones.
+/// Right Shift stands for Shift.
 fn canonical(code: KeyCode) -> KeyCode {
     match code {
         KeyCode::ShiftRight => KeyCode::ShiftLeft,
-        KeyCode::ControlRight => KeyCode::ControlLeft,
-        KeyCode::AltRight => KeyCode::AltLeft,
         c => c,
     }
 }
 
-/// The other physical key a binding of `code` also answers to.
+/// The other physical key a binding of `code` also answers to: either Shift is Shift.
 fn twin(code: KeyCode) -> Option<KeyCode> {
-    match code {
-        KeyCode::ShiftLeft => Some(KeyCode::ShiftRight),
-        KeyCode::ControlLeft => Some(KeyCode::ControlRight),
-        KeyCode::AltLeft => Some(KeyCode::AltRight),
-        _ => None,
-    }
+    (code == KeyCode::ShiftLeft).then_some(KeyCode::ShiftRight)
 }
 
 pub fn key_name(code: KeyCode) -> Option<&'static str> {
@@ -249,7 +242,11 @@ fn pad_bind_of(bit: PadButtons) -> Option<PadBind> {
 
 /// Point `slots[a]`'s primary at `new`. Wherever else `new` was bound, the action's old
 /// primary takes its place, so two actions swap rather than one losing its binding.
-fn assign<T: Copy + PartialEq>(slots: &mut [[Option<T>; 2]; Action::COUNT], a: usize, new: T) {
+fn assign<T: Copy + PartialEq, const N: usize>(
+    slots: &mut [[Option<T>; N]; Action::COUNT],
+    a: usize,
+    new: T,
+) {
     let old = slots[a][0];
     if old == Some(new) {
         return;
@@ -262,22 +259,35 @@ fn assign<T: Copy + PartialEq>(slots: &mut [[Option<T>; 2]; Action::COUNT], a: u
         }
     }
     slots[a][0] = Some(new);
-    for pair in slots.iter_mut() {
-        if pair[0].is_none() {
-            pair.swap(0, 1);
-        }
-        if pair[1] == pair[0] {
-            pair[1] = None;
-        }
+    for slot in slots.iter_mut() {
+        *slot = packed(slot.iter().flatten().copied());
     }
 }
 
-/// The player's control bindings: up to two keys and two gamepad bindings per action.
+/// `items` without repeats, filled from the first slot; extras past `N` are dropped.
+fn packed<T: Copy + PartialEq, const N: usize>(items: impl Iterator<Item = T>) -> [Option<T>; N] {
+    let mut out = [None; N];
+    let mut n = 0;
+    for item in items {
+        if n < N && !out.contains(&Some(item)) {
+            out[n] = Some(item);
+            n += 1;
+        }
+    }
+    out
+}
+
+/// Keys per action.
+pub const KEY_SLOTS: usize = 3;
+/// Gamepad bindings per action.
+pub const PAD_SLOTS: usize = 2;
+
+/// The player's control bindings: up to three keys and two gamepad bindings per action.
 /// The first of each is the primary, which a capture replaces; it is never empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bindings {
-    pub keys: [[Option<KeyCode>; 2]; Action::COUNT],
-    pub pad: [[Option<PadBind>; 2]; Action::COUNT],
+    pub keys: [[Option<KeyCode>; KEY_SLOTS]; Action::COUNT],
+    pub pad: [[Option<PadBind>; PAD_SLOTS]; Action::COUNT],
 }
 
 impl Default for Bindings {
@@ -287,14 +297,14 @@ impl Default for Bindings {
         let b = PadBind::Button;
         Self {
             keys: [
-                [Some(KeyW), Some(ArrowUp)],
-                [Some(KeyS), Some(ArrowDown)],
-                [Some(KeyA), Some(ArrowLeft)],
-                [Some(KeyD), Some(ArrowRight)],
-                [Some(Space), Some(ShiftLeft)],
-                [Some(KeyE), Some(ControlLeft)],
-                [Some(KeyR), None],
-                [Some(KeyQ), None],
+                [Some(KeyW), Some(ArrowUp), None],
+                [Some(KeyS), Some(ArrowDown), None],
+                [Some(KeyA), Some(ArrowLeft), None],
+                [Some(KeyD), Some(ArrowRight), None],
+                [Some(Space), Some(ShiftLeft), None],
+                [Some(KeyE), Some(ControlLeft), Some(KeyJ)],
+                [Some(KeyR), None, None],
+                [Some(KeyQ), None, None],
             ],
             pad: [
                 [Some(PadBind::RightTrigger), Some(b(PadButtons::SOUTH))],
@@ -336,11 +346,11 @@ impl BindRow {
 }
 
 impl Bindings {
-    pub fn keys_for(&self, a: Action) -> [Option<KeyCode>; 2] {
+    pub fn keys_for(&self, a: Action) -> [Option<KeyCode>; KEY_SLOTS] {
         self.keys[a.index()]
     }
 
-    pub fn pad_for(&self, a: Action) -> [Option<PadBind>; 2] {
+    pub fn pad_for(&self, a: Action) -> [Option<PadBind>; PAD_SLOTS] {
         self.pad[a.index()]
     }
 
@@ -463,13 +473,11 @@ impl Bindings {
                 return;
             }
         }
-        keys.dedup();
-        pads.dedup();
-        if keys.is_empty() || keys.len() > 2 || pads.is_empty() || pads.len() > 2 {
+        if keys.is_empty() || keys.len() > KEY_SLOTS || pads.is_empty() || pads.len() > PAD_SLOTS {
             return;
         }
-        self.keys[a.index()] = [keys.first().copied(), keys.get(1).copied()];
-        self.pad[a.index()] = [pads.first().copied(), pads.get(1).copied()];
+        self.keys[a.index()] = packed(keys.into_iter());
+        self.pad[a.index()] = packed(pads.into_iter());
     }
 
     /// Display text for a Controls row: keys joined by " / ", buttons by " or ".
@@ -504,7 +512,7 @@ impl Bindings {
             self.keys_for(Action::SteerLeft),
             self.keys_for(Action::SteerRight),
         );
-        (0..2)
+        (0..KEY_SLOTS)
             .filter_map(|i| match (l[i], r[i]) {
                 (Some(a), Some(b)) => Some(format!("{} {}", key_label(a), key_label(b))),
                 (Some(a), None) | (None, Some(a)) => Some(key_label(a).to_string()),
@@ -530,7 +538,15 @@ mod tests {
         let d = b();
         assert_eq!(
             d.keys_for(Action::Accelerate),
-            [Some(KeyCode::KeyW), Some(KeyCode::ArrowUp)]
+            [Some(KeyCode::KeyW), Some(KeyCode::ArrowUp), None]
+        );
+        assert_eq!(
+            d.keys_for(Action::UseItem),
+            [
+                Some(KeyCode::KeyE),
+                Some(KeyCode::ControlLeft),
+                Some(KeyCode::KeyJ)
+            ]
         );
         assert_eq!(
             d.pad_for(Action::Accelerate),
@@ -539,7 +555,10 @@ mod tests {
                 Some(PadBind::Button(PadButtons::SOUTH))
             ]
         );
-        assert_eq!(d.keys_for(Action::LookBehind), [Some(KeyCode::KeyQ), None]);
+        assert_eq!(
+            d.keys_for(Action::LookBehind),
+            [Some(KeyCode::KeyQ), None, None]
+        );
         assert_eq!(
             d.pad_for(Action::LookBehind),
             [Some(PadBind::Button(PadButtons::NORTH)), None]
@@ -588,8 +607,19 @@ mod tests {
         assert_eq!(y, x);
         assert_eq!(
             b().line(Action::UseItem),
-            "key:KeyE key:ControlLeft pad:West"
+            "key:KeyE key:ControlLeft key:KeyJ pad:West"
         );
+        // A two-key line from before the third slot still parses.
+        let mut z = b();
+        z.set_line("use_item", "key:KeyE key:ControlLeft pad:West");
+        assert_eq!(
+            z.keys_for(Action::UseItem),
+            [Some(KeyCode::KeyE), Some(KeyCode::ControlLeft), None]
+        );
+        // Four keys is too many.
+        let mut z = b();
+        z.set_line("use_item", "key:KeyE key:KeyF key:KeyG key:KeyH pad:West");
+        assert_eq!(z, b());
     }
 
     #[test]
@@ -598,7 +628,11 @@ mod tests {
         assert!(x.capture(Action::UseItem, Press::Key(KeyCode::KeyZ)));
         assert_eq!(
             x.keys_for(Action::UseItem),
-            [Some(KeyCode::KeyZ), Some(KeyCode::ControlLeft)]
+            [
+                Some(KeyCode::KeyZ),
+                Some(KeyCode::ControlLeft),
+                Some(KeyCode::KeyJ)
+            ]
         );
         assert!(x.capture(Action::UseItem, Press::Pad(PadButtons::DPAD_UP)));
         assert_eq!(
@@ -615,14 +649,21 @@ mod tests {
         assert_eq!(x.keys_for(Action::UseItem)[0], Some(KeyCode::KeyW));
         assert_eq!(
             x.keys_for(Action::Accelerate),
-            [Some(KeyCode::KeyE), Some(KeyCode::ArrowUp)]
+            [Some(KeyCode::KeyE), Some(KeyCode::ArrowUp), None]
         );
         // Binding an action's own secondary key swaps its two slots.
         assert!(x.capture(Action::Accelerate, Press::Key(KeyCode::ArrowUp)));
         assert_eq!(
             x.keys_for(Action::Accelerate),
-            [Some(KeyCode::ArrowUp), Some(KeyCode::KeyE)]
+            [Some(KeyCode::ArrowUp), Some(KeyCode::KeyE), None]
         );
+        // A third-slot key moves the same way: J goes to respawn, which gives up R.
+        assert!(x.capture(Action::Respawn, Press::Key(KeyCode::KeyJ)));
+        assert_eq!(
+            x.keys_for(Action::Respawn),
+            [Some(KeyCode::KeyJ), None, None]
+        );
+        assert_eq!(x.keys_for(Action::UseItem)[2], Some(KeyCode::KeyR));
         // Pads too: B respawns; give it to look behind.
         assert!(x.capture(Action::LookBehind, Press::Pad(PadButtons::EAST)));
         assert_eq!(
@@ -641,6 +682,8 @@ mod tests {
             Press::Key(KeyCode::KeyE),
             Press::Key(KeyCode::ShiftRight),
             Press::Key(KeyCode::KeyQ),
+            Press::Key(KeyCode::KeyJ),
+            Press::Key(KeyCode::ControlLeft),
             Press::Pad(PadButtons::SOUTH),
             Press::Pad(PadButtons::LEFT_TRIGGER),
             Press::Pad(PadButtons::RIGHT_BUMPER),
@@ -674,14 +717,24 @@ mod tests {
     }
 
     #[test]
-    fn right_modifiers_count_as_the_left_one() {
+    fn only_shift_counts_either_side() {
         let mut x = b();
-        assert!(x.capture(Action::Respawn, Press::Key(KeyCode::ControlRight)));
-        assert_eq!(x.keys_for(Action::Respawn)[0], Some(KeyCode::ControlLeft));
+        // Right Shift binds as Shift, and either Shift drifts (as it always has).
+        assert!(x.capture(Action::Respawn, Press::Key(KeyCode::ShiftRight)));
+        assert_eq!(x.keys_for(Action::Respawn)[0], Some(KeyCode::ShiftLeft));
         let mut k = KeyInput::default();
         k.on_key(KeyCode::ShiftRight, true);
         assert!(b().held(Action::DriftHop, &k, None));
         assert!(b().pressed(Action::DriftHop, &k, None));
+        // Ctrl and Alt are the left key only: the right ones fire nothing and can't be bound.
+        let mut k = KeyInput::default();
+        k.on_key(KeyCode::ControlRight, true);
+        k.on_key(KeyCode::AltRight, true);
+        for a in Action::ALL {
+            assert!(!b().held(a, &k, None), "{a:?}");
+        }
+        assert!(!x.capture(Action::Respawn, Press::Key(KeyCode::ControlRight)));
+        assert!(!x.capture(Action::Respawn, Press::Key(KeyCode::AltRight)));
     }
 
     #[test]
