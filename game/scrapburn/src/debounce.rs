@@ -1,5 +1,6 @@
-//! Debounce for renderer rebuilds: a rebuild is expensive, so a burst of quality edits
-//! (holding an arrow on a slider) rebuilds once, shortly after the last one.
+//! Debounce for expensive settings changes: a burst of edits (holding an arrow on a menu
+//! row) applies once, shortly after the last one. Used for renderer rebuilds, display-mode
+//! switches, and V-sync surface reconfigures.
 
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,16 @@ impl RebuildSchedule {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// True once when a pending change should be applied: after the quiet time while the
+    /// player is still `editing` that setting's screen, or at once after they leave it.
+    pub fn settle(&mut self, now: Instant, editing: bool) -> bool {
+        if editing {
+            self.take_due(now)
+        } else {
+            self.flush()
         }
     }
 
@@ -72,6 +83,20 @@ mod tests {
         s.request(t + Duration::from_millis(300));
         assert!(!s.take_due(t + Duration::from_millis(500)));
         assert!(s.take_due(t + Duration::from_millis(650)));
+    }
+
+    #[test]
+    fn settle_waits_while_editing_and_flushes_after() {
+        let mut s = RebuildSchedule::default();
+        let t = Instant::now();
+        s.request(t);
+        assert!(!s.settle(t + Duration::from_millis(100), true));
+        assert!(s.settle(t + Duration::from_millis(350), true));
+        assert!(!s.settle(t + Duration::from_secs(1), true), "settled once");
+        // Leaving the editing screen applies a pending change at once.
+        s.request(t);
+        assert!(s.settle(t + Duration::from_millis(1), false));
+        assert!(!s.settle(t + Duration::from_millis(2), false));
     }
 
     #[test]

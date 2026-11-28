@@ -188,9 +188,9 @@ fn on_wayland(window: &Window) -> bool {
         .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)))
 }
 
-/// Exclusive fullscreen on the window's monitor, in the video mode closest to `want` at its
-/// highest refresh rate. Borderless when the monitor lists no modes, or on Wayland.
-fn exclusive_fullscreen(window: &Window, want: PhysicalSize<u32>) -> Fullscreen {
+/// Exclusive fullscreen on the window's monitor in its native mode (the largest size at its
+/// highest refresh rate). Borderless when the monitor lists no modes, or on Wayland.
+fn exclusive_fullscreen(window: &Window) -> Fullscreen {
     use scrapburn::display::{ModeInfo, pick_video_mode};
     let modes: Vec<_> = window
         .current_monitor()
@@ -204,7 +204,7 @@ fn exclusive_fullscreen(window: &Window, want: PhysicalSize<u32>) -> Fullscreen 
             refresh_mhz: m.refresh_rate_millihertz(),
         })
         .collect();
-    let Some(i) = pick_video_mode(&infos, (want.width, want.height)) else {
+    let Some(i) = pick_video_mode(&infos) else {
         log::info!("the monitor lists no video modes; using borderless fullscreen");
         return Fullscreen::Borderless(None);
     };
@@ -338,8 +338,12 @@ struct Game {
     cli: CliOverrides,
     /// The display mode the window is in now.
     display: DisplayMode,
-    /// The window's size when it was last windowed, restored on returning to Windowed.
-    windowed_size: PhysicalSize<u32>,
+    /// The window's size while windowed, restored on returning to Windowed.
+    windowed_size: scrapburn::display::WindowedSize,
+    /// Display-mode and V-sync edits wait for a pause, like renderer rebuilds: holding an
+    /// arrow on those rows would otherwise switch modes several times a second.
+    display_change: scrapburn::debounce::RebuildSchedule,
+    vsync_change: scrapburn::debounce::RebuildSchedule,
     /// With a frame cap, when the next frame may start (see `limiter`).
     next_frame: Option<Instant>,
     /// `--bench-cap`: a benchmark's frame cap.
@@ -446,10 +450,9 @@ fn placeholder_kart() -> MeshData {
 impl Game {
     fn new(event_loop: &ActiveEventLoop, args: &Args) -> anyhow::Result<Self> {
         let (prefs, cli) = initial_prefs(args, scrapburn::ghost::data_dir().as_deref());
-        let windowed_size = PhysicalSize::new(args.size.0, args.size.1);
         let attrs = Window::default_attributes()
             .with_title("Scrapburn")
-            .with_inner_size(windowed_size);
+            .with_inner_size(PhysicalSize::new(args.size.0, args.size.1));
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
@@ -757,7 +760,9 @@ impl Game {
             net_ticks: 0,
             cli,
             display: DisplayMode::Windowed,
-            windowed_size,
+            windowed_size: scrapburn::display::WindowedSize::new(args.size),
+            display_change: Default::default(),
+            vsync_change: Default::default(),
             next_frame: None,
             bench_cap: args.bench_cap,
             tuner: {
@@ -781,28 +786,33 @@ impl Game {
         if self.bench.is_some() || want == self.display {
             return;
         }
-        if self.display == DisplayMode::Windowed {
-            let size = self.window.inner_size();
-            if size.width > 0 && size.height > 0 {
-                self.windowed_size = size;
-            }
-        }
-        match want {
+        // The windowed size is kept up to date from `Resized` while windowed (see
+        // `window_event`), so it is never read here mid-switch.
+        let applied = match want {
             DisplayMode::Windowed => {
                 self.window.set_fullscreen(None);
+                self.windowed_size.begin_restore();
                 // Leaving fullscreen usually restores the size; ask in case it does not.
-                let _ = self.window.request_inner_size(self.windowed_size);
+                let (w, h) = self.windowed_size.get();
+                let _ = self.window.request_inner_size(PhysicalSize::new(w, h));
+                "Windowed"
             }
             DisplayMode::Borderless => {
                 self.window
                     .set_fullscreen(Some(Fullscreen::Borderless(None)));
+                "Borderless"
             }
             DisplayMode::Fullscreen => {
-                let mode = exclusive_fullscreen(&self.window, self.windowed_size);
+                let mode = exclusive_fullscreen(&self.window);
+                let applied = match mode {
+                    Fullscreen::Exclusive(_) => "Fullscreen (exclusive)",
+                    Fullscreen::Borderless(_) => "Borderless (exclusive unavailable)",
+                };
                 self.window.set_fullscreen(Some(mode));
+                applied
             }
-        }
-        log::info!("display: {want:?}");
+        };
+        log::info!("display: {applied}");
         self.display = want;
     }
 
@@ -1651,12 +1661,12 @@ impl Game {
                         }
                         self.rebuild.request(Instant::now());
                     }
-                    MenuAction::DisplayChanged => self.apply_display(),
+                    // Applied after a pause in the edits (see `display_change`).
+                    MenuAction::DisplayChanged => self.display_change.request(Instant::now()),
                     MenuAction::VsyncChanged => {
                         // A menu edit replaces any `--present`.
                         self.cli.vsync = None;
-                        self.ctx
-                            .set_present(present_choice(self.settings.prefs.graphics.vsync));
+                        self.vsync_change.request(Instant::now());
                     }
                     // `about_to_wait` reads the cap every iteration.
                     MenuAction::FrameCapChanged => {}
@@ -1801,13 +1811,17 @@ impl Game {
         self.stats.push(cpu_ms, gpu_ms);
         // Auto graphics: settle the preset on the title screen. Without a GPU timer there is
         // nothing reliable to measure, so play safe on Medium.
-        // Graphics edits rebuild after a pause, or at once on leaving the Graphics tab.
-        if self.menu.screen != Screen::Settings(scrapburn::menu::Tab::Graphics) {
-            if self.rebuild.flush() {
-                self.rebuild_renderer();
-            }
-        } else if self.rebuild.take_due(now) {
+        // Graphics edits apply after a pause, or at once on leaving the Graphics tab.
+        let editing = self.menu.screen == Screen::Settings(scrapburn::menu::Tab::Graphics);
+        if self.rebuild.settle(now, editing) {
             self.rebuild_renderer();
+        }
+        if self.display_change.settle(now, editing) {
+            self.apply_display();
+        }
+        if self.vsync_change.settle(now, editing) {
+            self.ctx
+                .set_present(present_choice(self.settings.prefs.graphics.vsync));
         }
         if self.tuner.active() && self.timer.is_none() {
             self.tuner.stop();
@@ -2885,6 +2899,14 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 game.minimized = size.width == 0 || size.height == 0;
+                if game.display == DisplayMode::Windowed && game.window.fullscreen().is_none() {
+                    let fills_monitor = game
+                        .window
+                        .current_monitor()
+                        .is_some_and(|m| m.size() == size);
+                    game.windowed_size
+                        .on_resized((size.width, size.height), fills_monitor);
+                }
                 game.ctx.resize(size.width, size.height);
                 game.scene.resize(&game.ctx.device, game.ctx.size());
             }
