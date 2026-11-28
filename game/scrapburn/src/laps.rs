@@ -249,6 +249,29 @@ mod tests {
         }
     }
 
+    /// A kart may drive anywhere the race keeps it on track (no off-track respawn), so a
+    /// checkpoint crossed out wide, after a crash or a wrong-way turn, must still count.
+    #[test]
+    fn a_wide_crossing_inside_the_track_band_still_counts() {
+        let t = build_graybox_loop();
+        let mut laps = LapTracker::new(t.checkpoints.len());
+        let cp = &t.checkpoints[3];
+        let side = cp.forward.cross(glam::Vec3::Y).normalize();
+        let wide = cp.center + side * (crate::track::ROAD_HALF_WIDTH + 9.0);
+        for k in 1..3 {
+            let c = &t.checkpoints[k];
+            laps.update(
+                c.center - c.forward,
+                c.center + c.forward,
+                &t.checkpoints,
+                1.0,
+            );
+        }
+        assert_eq!(laps.next_checkpoint(), 3);
+        laps.update(wide - cp.forward, wide + cp.forward, &t.checkpoints, 2.0);
+        assert_eq!(laps.next_checkpoint(), 4, "the wide crossing was missed");
+    }
+
     #[test]
     fn last_checkpoint_tracks_progress() {
         let t = build_graybox_loop();
