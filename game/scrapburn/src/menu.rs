@@ -1253,15 +1253,17 @@ impl MenuState {
         }
     }
 
-    /// Apply left/right (`dir`) or select to a settings row. Choices and toggles step forward
-    /// on select; sliders only move with left and right. Returns an action only when the
-    /// value actually changed.
+    /// Apply left/right (`dir`) or select to a settings row. Select steps forward, like
+    /// right, so a mouse click (select, or left on the "<") can move any row both ways.
+    /// Returns an action only when the value actually changed.
     fn edit_setting(&mut self, id: RowId, dir: i32, select: bool, s: &mut Settings) -> MenuAction {
         use MenuAction as A;
         let step = if dir != 0 { dir } else { i32::from(select) };
         if step == 0 {
             return A::None;
         }
+        // Sliders step the same way choices do; they clamp rather than wrap.
+        let dir = step;
         let p = &mut s.prefs;
         let g = &mut p.graphics;
         match id {
@@ -2338,14 +2340,23 @@ mod tests {
         assert_eq!(
             m.handle(press(|i| i.select = true), &mut s),
             MenuAction::None,
-            "select doesn't move a slider"
+            "select (a mouse click) can't raise a slider past its top"
         );
+        assert_eq!(s.prefs.graphics, before);
         let mut m = open_tab(Tab::Audio);
         pick(&mut m, &s, RowId::EffectsVolume);
         assert_eq!(
             m.handle(press(|i| i.right = true), &mut s),
             MenuAction::None
         );
+        // A click lowers on "<" and raises anywhere else, so a mouse can undo either way.
+        m.handle(press(|i| i.left = true), &mut s);
+        assert_eq!(s.prefs.audio.effects, 95);
+        assert_eq!(
+            m.handle(press(|i| i.select = true), &mut s),
+            MenuAction::VolumeChanged
+        );
+        assert_eq!(s.prefs.audio.effects, 100);
         // Moving between rows changes nothing.
         assert_eq!(m.handle(press(|i| i.down = true), &mut s), MenuAction::None);
         assert_eq!(s.prefs, Settings::default().prefs);

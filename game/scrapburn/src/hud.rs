@@ -1195,7 +1195,11 @@ pub fn draw_menu(
                 .iter()
                 .position(|t| *t == tab)
                 .unwrap_or(0);
-            tab_section = format!("SETTINGS {} / 5   Q E  LB RB", page + 1);
+            tab_section = format!(
+                "SETTINGS {} / {}   Q E  LB RB",
+                page + 1,
+                crate::menu::Tab::ALL.len()
+            );
             (tab.name(), tab_section.as_str())
         }
         Screen::Paused => ("Paused", "RACE MENU"),
