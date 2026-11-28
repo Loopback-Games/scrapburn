@@ -884,21 +884,7 @@ fn draw_footer(o: &mut Overlay, h: f32, s: f32, v: &MenuView) {
     let cy = h - FOOTER_BOTTOM * s;
     let mut x = HEADER_X * s;
     let fpx = FOOTER_PX * s;
-    let mut items: Vec<(Prompt, &str)> = if v.menu.capturing.is_some() {
-        vec![(Prompt::new("ESC", &[PadGlyph::Menu]), "Cancel")]
-    } else {
-        vec![
-            (Prompt::new("ENTER", &[PadGlyph::A]), "Select"),
-            (Prompt::new("ESC", &[PadGlyph::B]), "Back"),
-        ]
-    };
-    if matches!(v.menu.screen, Screen::Settings(_)) && v.menu.capturing.is_none() {
-        items.push((
-            Prompt::new("Q E", &[PadGlyph::LeftBumper, PadGlyph::RightBumper]),
-            "Tab",
-        ));
-    }
-    for (prompt, word) in items {
+    for (prompt, word) in footer_prompts(v.menu) {
         if v.pad {
             let size = 20.0 * s;
             for g in prompt.pad {
@@ -911,6 +897,25 @@ fn draw_footer(o: &mut Overlay, h: f32, s: f32, v: &MenuView) {
         }
         x += tracked(o, Face::Row, x, cy, fpx, 0.2, ASH_DIM, word) + 22.0 * s;
     }
+}
+
+/// The footer's prompts for `menu`'s screen.
+fn footer_prompts(menu: &MenuState) -> Vec<(Prompt, &'static str)> {
+    if menu.capturing.is_some() {
+        return vec![(Prompt::new("ESC", &[PadGlyph::Menu]), "Cancel")];
+    }
+    let mut items = vec![(Prompt::new("ENTER", &[PadGlyph::A]), "Select")];
+    // The title screen has nowhere to go back to.
+    if menu.screen != Screen::Title {
+        items.push((Prompt::new("ESC", &[PadGlyph::B]), "Back"));
+    }
+    if matches!(menu.screen, Screen::Settings(_)) {
+        items.push((
+            Prompt::new("Q E", &[PadGlyph::LeftBumper, PadGlyph::RightBumper]),
+            "Tab",
+        ));
+    }
+    items
 }
 
 struct Prompt {
@@ -1210,6 +1215,24 @@ mod tests {
         });
         seen.sort_unstable();
         assert_eq!(seen, [(0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn the_title_footer_has_no_back_prompt() {
+        let words = |screen| {
+            let mut m = MenuState::new(Screen::Title);
+            m.go(screen);
+            footer_prompts(&m)
+                .into_iter()
+                .map(|(_, w)| w)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(words(Screen::Title), ["Select"]);
+        assert_eq!(words(Screen::RaceSetup), ["Select", "Back"]);
+        assert_eq!(
+            words(Screen::Settings(Tab::Audio)),
+            ["Select", "Back", "Tab"]
+        );
     }
 
     #[test]
